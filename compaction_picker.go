@@ -122,12 +122,12 @@ func newPickedCompaction(
 	adjustedOutputLevel := 1 + outputLevel - baseLevel
 
 	pc := &pickedCompaction{
-		cmp:                 opts.Comparer.Compare,
-		version:             cur,
-		inputs:              []compactionLevel{{level: startLevel}, {level: outputLevel}},
-		maxOutputFileSize:   uint64(opts.Level(adjustedOutputLevel).TargetFileSize),
-		maxOverlapBytes:     maxGrandparentOverlapBytes(opts, adjustedOutputLevel),
-		maxExpandedBytes:    expandedCompactionByteSizeLimit(opts, adjustedOutputLevel),
+		cmp:               opts.Comparer.Compare,
+		version:           cur,
+		inputs:            []compactionLevel{{level: startLevel}, {level: outputLevel}},
+		maxOutputFileSize: uint64(opts.Level(adjustedOutputLevel).TargetFileSize),
+		maxOverlapBytes:   maxGrandparentOverlapBytes(opts, adjustedOutputLevel),
+		maxExpandedBytes:  expandedCompactionByteSizeLimit(opts, adjustedOutputLevel),
 	}
 	pc.startLevel = &pc.inputs[0]
 	pc.outputLevel = &pc.inputs[1]
@@ -155,27 +155,24 @@ func newPickedCompactionFromL0(lcf *manifest.L0CompactionFiles, opts *Options, v
 	return pc
 }
 
-func (pc *pickedCompaction) setupInputs() {
-	// Expand the initial inputs to a clean cut.
-	pc.startLevel.files = pc.expandInputs(pc.startLevel.level, pc.startLevel.files)
-	pc.smallest, pc.largest = manifest.KeyRange(pc.cmp, pc.startLevel.files, nil)
+func (pc *pickedCompaction) setupInputs(startFiles manifest.LevelSlice, outputLevel int) {
+	switch {
+	case outputLevel == 0:
+		// An intra-L0 compaction:
 
-	// Determine the sstables in the output level which overlap with the input
-	// sstables, and then expand those tables to a clean cut. No need to do
-	// this for intra-L0 compactions; outputLevel.files is left empty for those.
-	if pc.startLevel.level != pc.outputLevel.level {
-		pc.outputLevel.files = pc.version.Overlaps(pc.outputLevel.level, pc.cmp, pc.smallest.UserKey, pc.largest.UserKey)
-		pc.outputLevel.files = pc.expandInputs(pc.outputLevel.level, pc.outputLevel.files)
-		pc.smallest, pc.largest = manifest.KeyRange(pc.cmp, pc.startLevel.files, pc.outputLevel.files)
-	}
+	case pc.lcf != nil && pc.startLevel.level == 0:
+		// An L0->Lbase compaction, while sublevels are enabled.
+		sm, la := startFiles.KeyRange(pc.cmp)
 
-	// Grow the sstables in pc.startLevel.level as long as it doesn't affect the number
-	// of sstables included from pc.outputLevel.level.
-	if pc.lcf != nil && pc.startLevel.level == 0 && pc.outputLevel.level != 0 {
+		// Determine the sstables in the output level which overlap with the input
+		// sstables, and then expand those tables to a clean cut.
+		outputFiles := vers.Overlaps(outputLevel, pc.cmp, sm.UserKey, la.UserKey)
+		outputFiles = expandInputs(pc.cmp, outputFiles)
+
 		// Call the L0-specific compaction extension method. Similar logic as
 		// pc.grow. Additional L0 files are optionally added to the compaction at
 		// this step.
-		if pc.version.L0Sublevels.ExtendL0ForBaseCompactionTo(pc.smallest, pc.largest, pc.lcf) {
+		if pc.version.L0Sublevels.ExtendL0ForBaseCompactionTo(pc.sm, pc.la, pc.lcf) {
 			pc.startLevel.files = pc.startLevel.files[:0]
 			for j := range pc.lcf.FilesIncluded {
 				if pc.lcf.FilesIncluded[j] {
@@ -184,8 +181,17 @@ func (pc *pickedCompaction) setupInputs() {
 			}
 			pc.smallest, pc.largest = manifest.KeyRange(pc.cmp, pc.startLevel.files, pc.outputLevel.files)
 		}
-	} else if pc.grow(pc.smallest, pc.largest) {
-		pc.smallest, pc.largest = manifest.KeyRange(pc.cmp, pc.startLevel.files, pc.outputLevel.files)
+
+	default:
+		// An ordinary Ln->Ln+1 compaction:
+		// Expand the initial inputs to a clean cut.
+		startFiles = expandInputs(pc.cmp, startFiles)
+
+		// Determine the sstables in the output level which overlap with the input
+		// sstables, and then expand those tables to a clean cut.
+		sm, la := startFiles.KeyRange(pc.cmp)
+		outputFiles := vers.Overlaps(outputLevel, pc.cmp, sm.UserKey, la.UserKey)
+		outputFiles = expandInputs(pc.cmp, outputFiles)
 	}
 }
 
@@ -306,6 +312,51 @@ func (pc *pickedCompaction) expandInputs(level int, inputs []*fileMetadata) []*f
 		// in the compaction.
 	}
 	return files[start:end]
+}
+
+func expandInputs(cmp base.Compare, inputs manifest.LevelSlice) manifest.LevelSubslice {
+	if inputs.Len() == 0 {
+		// Nothing to expand.
+		return inputs
+	}
+
+	// Reposition the start iterator, backwards to a clean cut.
+	start := inputs.StartIter()
+	for prev := start.PeekPrev(); prev != nil; start.Prev() {
+		cur := start.Current()
+		if cmp(prev.Largest.UserKey, cur.Smallest.UserKey) < 0 {
+			break
+		}
+		if prev.Largest.Trailer == InternalKeyRangeDeleteSentinel {
+			// The range deletion sentinel key is set for the largest key in a
+			// table when a range deletion tombstone straddles a table. It
+			// isn't necessary to include the prev table in the atomic
+			// compaction unit as prev.largest.UserKey does not actually exist
+			// in the prev table.
+			break
+		}
+		// prev.Largest.UserKey == cur.Smallest.UserKey, so we need to include prev
+		// in the compaction.
+	}
+
+	// Reposition the end iterator, backwards to a clean cut.
+	for end := inputs.EndIter(); end.Valid(); end.Next() {
+		cur := end.PeekPrev()
+		next := end.Current()
+		if cmp(cur.Largest.UserKey, next.Smallest.UserKey) < 0 {
+			break
+		}
+		if cur.Largest.Trailer == InternalKeyRangeDeleteSentinel {
+			// The range deletion sentinel key is set for the largest key in a table
+			// when a range deletion tombstone straddles a table. It isn't necessary
+			// to include the next table in the compaction as cur.largest.UserKey
+			// does not actually exist in the table.
+			break
+		}
+		// cur.Largest.UserKey == next.Smallest.UserKey, so we need to include next
+		// in the compaction.
+	}
+	return inputs
 }
 
 func newCompactionPicker(
