@@ -367,7 +367,7 @@ func (v *Version) InitL0Sublevels(
 	cmp Compare, formatKey base.FormatKey, flushSplitBytes int64,
 ) error {
 	var err error
-	v.L0Sublevels, err = NewL0Sublevels(v.Levels[0], cmp, formatKey, flushSplitBytes)
+	v.L0Sublevels, err = NewL0Sublevels(v.Levels[0].Collect(), cmp, formatKey, flushSplitBytes)
 	return err
 }
 
@@ -376,7 +376,7 @@ func (v *Version) InitL0Sublevels(
 // searches among the files. If level is zero, Contains scans the entire
 // level.
 func (v *Version) Contains(level int, cmp Compare, m *FileMetadata) bool {
-	iter := v.Levels[level].Slice().Iter()
+	iter := v.Levels[level].Iter()
 	if level > 0 {
 		iter = v.Overlaps(level, cmp, m.Smallest.UserKey, m.Largest.UserKey).Iter()
 	}
@@ -399,7 +399,7 @@ func (v *Version) Contains(level int, cmp Compare, m *FileMetadata) bool {
 func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice {
 	if level == 0 {
 		// Indices that have been selected as overlapping.
-		selectedIndices := make([]bool, len(v.Levels[level]))
+		selectedIndices := make([]bool, v.Levels[level].Len())
 		numSelected := 0
 		var slice LevelSlice
 		for {
@@ -408,7 +408,7 @@ func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice
 				if selected {
 					continue
 				}
-				meta := v.Levels[level][i]
+				meta := v.Levels[level].files[i]
 				smallest := meta.Smallest.UserKey
 				largest := meta.Largest.UserKey
 				if cmp(largest, start) < 0 {
@@ -442,7 +442,7 @@ func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice
 				slice.files = make([]*FileMetadata, 0, numSelected)
 				for i, selected := range selectedIndices {
 					if selected {
-						slice.files = append(slice.files, v.Levels[level][i])
+						slice.files = append(slice.files, v.Levels[level].files[i])
 					}
 				}
 				slice.end = len(slice.files)
@@ -454,9 +454,9 @@ func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice
 	}
 
 	var slice LevelSlice
-	lower, upper := overlaps(v.Levels[level], cmp, start, end)
+	lower, upper := overlaps(v.Levels[level].files, cmp, start, end)
 	if lower < upper {
-		slice.files = v.Levels[level]
+		slice.files = v.Levels[level].files
 		slice.start = lower
 		slice.end = upper
 	}
