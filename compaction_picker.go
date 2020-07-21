@@ -193,25 +193,14 @@ func (pc *pickedCompaction) setupInputs() {
 		// to include files that "touch" it.
 		smallestBaseKey := base.InvalidInternalKey
 		largestBaseKey := base.InvalidInternalKey
-		baseFiles := pc.version.Levels[pc.outputLevel.level]
-		if len(baseFiles) != 0 {
-			// smallestBaseFileIdx is the index of the smallest
-			// (by key ordering) base file already in the compaction.
-			smallestBaseFileIdx := sort.Search(len(baseFiles), func(i int) bool {
-				return base.InternalCompare(pc.cmp, baseFiles[i].Largest, pc.smallest) >= 0
-			})
-			if smallestBaseFileIdx > 0 {
-				smallestBaseKey = baseFiles[smallestBaseFileIdx-1].Largest
-			}
-			// largestBaseFileIdx is the index that's one higher than the
-			// largest base file included in the compaction.
-			largestBaseFileIdx := sort.Search(len(baseFiles), func(i int) bool {
-				return base.InternalCompare(pc.cmp, baseFiles[i].Smallest, pc.largest) > 0
-			})
-			if largestBaseFileIdx < len(baseFiles) {
-				largestBaseKey = baseFiles[largestBaseFileIdx].Smallest
-			}
+		baseIter := pc.version.Levels[pc.outputLevel.level].Slice().Iter()
+		if sm := baseIter.SeekGE(pc.cmp, pc.smallest.UserKey); sm != nil && baseIter.Prev() != nil {
+			smallestBaseKey = sm.Largest
 		}
+		if la := baseIter.SeekLT(pc.cmp, pc.largest.UserKey); la != nil {
+			largestBaseKey = la.Smallest
+		}
+
 		oldLcf := *pc.lcf
 		if pc.version.L0Sublevels.ExtendL0ForBaseCompactionTo(smallestBaseKey, largestBaseKey, pc.lcf) {
 			var newStartLevelFiles []*fileMetadata
@@ -826,7 +815,7 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 		if p.opts.Experimental.L0SublevelCompactions {
 			l0ReadAmp = p.vers.L0Sublevels.MaxDepthAfterOngoingCompactions()
 		} else {
-			l0ReadAmp = len(p.vers.Levels[0])
+			l0ReadAmp = p.vers.Levels[0].Slice().Len()
 		}
 		if l0ReadAmp < n*p.opts.Experimental.L0CompactionConcurrency {
 			return nil
@@ -996,7 +985,7 @@ func pickL0(env compactionEnv, opts *Options, vers *version, baseLevel int) (pc 
 	//
 	// TODO(bilal) Remove the minCompactionDepth parameter once fixing it at 1
 	// has been shown to not cause a performance regression.
-	lcf, err := vers.L0Sublevels.PickBaseCompaction(1, vers.Levels[baseLevel])
+	lcf, err := vers.L0Sublevels.PickBaseCompaction(1, vers.Levels[baseLevel].Slice())
 	if err != nil {
 		opts.Logger.Infof("error when picking base compaction: %s", err)
 		return

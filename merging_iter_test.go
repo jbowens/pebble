@@ -158,7 +158,8 @@ func TestMergingIterCornerCases(t *testing.T) {
 		switch d.Cmd {
 		case "define":
 			lines := strings.Split(d.Input, "\n")
-			v = version{}
+
+			var files [numLevels][]*fileMetadata
 			var level int
 			for i := 0; i < len(lines); i++ {
 				line := lines[i]
@@ -168,11 +169,10 @@ func TestMergingIterCornerCases(t *testing.T) {
 					level++
 					continue
 				}
-				files := &v.Levels[level]
 				keys := strings.Fields(line)
 				smallestKey := base.ParseInternalKey(keys[0])
 				largestKey := base.ParseInternalKey(keys[1])
-				*files = append(*files, &fileMetadata{
+				files[level] = append(files[level], &fileMetadata{
 					FileNum:  fileNum,
 					Smallest: smallestKey,
 					Largest:  largestKey,

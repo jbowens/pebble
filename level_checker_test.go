@@ -81,7 +81,7 @@ func (f *failMerger) Close() error {
 func TestCheckLevelsCornerCases(t *testing.T) {
 	memFS := vfs.NewMem()
 	cmp := DefaultComparer.Compare
-	var levels [][]*fileMetadata
+	var levels [numLevels][]*fileMetadata
 	formatKey := DefaultComparer.FormatKey
 	// Indexed by fileNum
 	var readers []*sstable.Reader
@@ -122,16 +122,17 @@ func TestCheckLevelsCornerCases(t *testing.T) {
 		switch d.Cmd {
 		case "define":
 			lines := strings.Split(d.Input, "\n")
-			levels = levels[:0]
+			levels = [numLevels][]*fileMetadata{}
+			level := 1
 			for i := 0; i < len(lines); i++ {
 				line := lines[i]
 				line = strings.TrimSpace(line)
 				if line == "L" {
 					// start next level
-					levels = append(levels, nil)
+					level++
 					continue
 				}
-				li := &levels[len(levels)-1]
+				li := &levels[level]
 				keys := strings.Fields(line)
 				smallestKey := base.ParseInternalKey(keys[0])
 				largestKey := base.ParseInternalKey(keys[1])
@@ -235,12 +236,11 @@ func TestCheckLevelsCornerCases(t *testing.T) {
 					return fmt.Sprintf("unknown arg: %s", arg.Key)
 				}
 			}
-			version := &version{}
-			for i := range levels {
-				// Start from level 1 in this test.
-				version.Levels[i+1] = levels[i]
-			}
-			version.InitL0Sublevels(base.DefaultComparer.Compare, base.DefaultFormatter, 0)
+			version := manifest.NewVersion(
+				base.DefaultComparer.Compare,
+				base.DefaultFormatter,
+				0,
+				levels)
 			readState := &readState{current: version}
 			c := &checkConfig{
 				cmp:       cmp,

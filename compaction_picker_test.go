@@ -20,6 +20,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newVersion(opts *Options, files [numLevels][]*fileMetadata) *version {
+	return manifest.NewVersion(
+		opts.Comparer.Compare,
+		opts.Comparer.FormatKey,
+		opts.Experimental.FlushSplitBytes,
+		files)
+}
+
 func loadVersion(d *datadriven.TestData) (*version, *Options, string) {
 	opts := &Options{}
 	opts.EnsureDefaults()
@@ -33,7 +41,7 @@ func loadVersion(d *datadriven.TestData) (*version, *Options, string) {
 		return nil, nil, err.Error()
 	}
 
-	vers := &version{}
+	var files [numLevels][]*fileMetadata
 	if len(d.Input) > 0 {
 		for _, data := range strings.Split(d.Input, "\n") {
 			parts := strings.Split(data, ":")
@@ -44,7 +52,7 @@ func loadVersion(d *datadriven.TestData) (*version, *Options, string) {
 			if err != nil {
 				return nil, nil, err.Error()
 			}
-			if vers.Levels[level] != nil {
+			if files[level] != nil {
 				return nil, nil, fmt.Sprintf("level %d already filled", level)
 			}
 			size, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 64)
@@ -53,7 +61,7 @@ func loadVersion(d *datadriven.TestData) (*version, *Options, string) {
 			}
 			for i := uint64(1); i <= size; i++ {
 				key := base.MakeInternalKey([]byte(fmt.Sprintf("%04d", i)), i, InternalKeyKindSet)
-				vers.Levels[level] = append(vers.Levels[level], &fileMetadata{
+				files[level] = append(files[level], &fileMetadata{
 					Smallest:       key,
 					Largest:        key,
 					SmallestSeqNum: key.SeqNum(),
@@ -68,13 +76,13 @@ func loadVersion(d *datadriven.TestData) (*version, *Options, string) {
 					// TODO(peter): There is tension between the testing in
 					// TestCompactionPickerLevelMaxBytes and
 					// TestCompactionPickerTargetLevel. Clean this up somehow.
-					vers.Levels[level][len(vers.Levels[level])-1].Size = size
+					files[level][len(files[level])-1].Size = size
 					break
 				}
 			}
 		}
 	}
-
+	vers := newVersion(opts, files)
 	return vers, opts, ""
 }
 
@@ -133,10 +141,10 @@ func TestCompactionPickerTargetLevel(t *testing.T) {
 	}
 
 	resetCompacting := func() {
-		for _, files := range vers.Levels {
-			for _, f := range files {
+		for _, lm := range vers.Levels {
+			lm.Slice().Each(func(f *fileMetadata) {
 				f.Compacting = false
-			}
+			})
 		}
 	}
 
@@ -404,11 +412,9 @@ func TestCompactionPickerIntraL0(t *testing.T) {
 					}
 				}
 
-				c := pickIntraL0(env, opts, &version{
-					Levels: [7]manifest.LevelMetadata{
-						0: files,
-					},
-				})
+				c := pickIntraL0(env, opts, newVersion(opts, [numLevels][]*fileMetadata{
+					0: files,
+				}))
 				if c == nil {
 					return "<nil>\n"
 				}
@@ -475,7 +481,7 @@ func TestCompactionPickerL0(t *testing.T) {
 	datadriven.RunTest(t, "testdata/compaction_picker_L0", func(td *datadriven.TestData) string {
 		switch td.Cmd {
 		case "define":
-			fileMetas := [manifest.NumLevels]manifest.LevelMetadata{}
+			var fileMetas [numLevels][]*fileMetadata
 			baseLevel := manifest.NumLevels - 1
 			level := 0
 			var err error
@@ -499,13 +505,7 @@ func TestCompactionPickerL0(t *testing.T) {
 				}
 			}
 
-			version := &version{
-				Levels: fileMetas,
-			}
-			if err := version.InitL0Sublevels(DefaultComparer.Compare, base.DefaultFormatter, 0); err != nil {
-				t.Fatal(err)
-			}
-
+			version := newVersion(opts, fileMetas)
 			vs := &versionSet{
 				opts:    opts,
 				cmp:     DefaultComparer.Compare,
@@ -521,12 +521,13 @@ func TestCompactionPickerL0(t *testing.T) {
 			vs.picker = picker
 			inProgressCompactions := []compactionInfo{}
 			for level, files := range version.Levels {
-				for _, f := range files {
+				iter := files.Iter()
+				for f := iter.First(); f != nil; f = iter.Next() {
 					if f.Compacting {
 						c := compactionInfo{
 							inputs: []compactionLevel{
 								{level: level},
-								{level: level + 1, files: manifest.NewLevelSlice([]*fileMetadata{f})},
+								{level: level + 1, files: iter.Take().Slice()},
 							},
 							outputLevel: level + 1,
 						}
@@ -589,6 +590,7 @@ func TestPickedCompactionSetupInputs(t *testing.T) {
 		m.LargestSeqNum = m.Largest.SeqNum()
 		return m
 	}
+	opts := (*Options)(nil).EnsureDefaults()
 
 	datadriven.RunTest(t, "testdata/compaction_setup_inputs",
 		func(d *datadriven.TestData) string {
@@ -599,12 +601,12 @@ func TestPickedCompactionSetupInputs(t *testing.T) {
 				}
 
 				pc := &pickedCompaction{
-					cmp:              DefaultComparer.Compare,
-					version:          &version{},
+					cmp:              opts.Comparer.Compare,
 					inputs:           []compactionLevel{{level: -1}, {level: -1}},
 					maxExpandedBytes: 1 << 30,
 				}
 				pc.startLevel, pc.outputLevel = &pc.inputs[0], &pc.inputs[1]
+				var files [numLevels][]*fileMetadata
 				var currentLevel int
 				fileNum := FileNum(1)
 
@@ -632,9 +634,11 @@ func TestPickedCompactionSetupInputs(t *testing.T) {
 						meta := parseMeta(data)
 						meta.FileNum = fileNum
 						fileNum++
-						pc.version.Levels[currentLevel] = append(pc.version.Levels[currentLevel], meta)
+						files[currentLevel] = append(files[currentLevel], meta)
 					}
 				}
+
+				pc.version = newVersion(opts, files)
 
 				if pc.outputLevel.level == -1 {
 					pc.outputLevel.level = pc.startLevel.level + 1
@@ -664,7 +668,8 @@ func TestPickedCompactionSetupInputs(t *testing.T) {
 }
 
 func TestPickedCompactionExpandInputs(t *testing.T) {
-	cmp := DefaultComparer.Compare
+	opts := (*Options)(nil).EnsureDefaults()
+	cmp := opts.Comparer.Compare
 	var files []*fileMetadata
 
 	parseMeta := func(s string) *fileMetadata {
@@ -696,12 +701,13 @@ func TestPickedCompactionExpandInputs(t *testing.T) {
 
 			case "expand-inputs":
 				pc := &pickedCompaction{
-					cmp:     cmp,
-					version: &version{},
-					inputs:  []compactionLevel{{level: 1}},
+					cmp:    cmp,
+					inputs: []compactionLevel{{level: 1}},
 				}
 				pc.startLevel = &pc.inputs[0]
-				pc.version.Levels[pc.startLevel.level] = files
+				var levels [numLevels][]*fileMetadata
+				levels[pc.startLevel.level] = files
+				pc.version = newVersion(opts, levels)
 				if len(d.CmdArgs) != 1 {
 					return fmt.Sprintf("%s expects 1 argument", d.Cmd)
 				}
