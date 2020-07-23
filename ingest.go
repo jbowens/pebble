@@ -81,6 +81,8 @@ func ingestLoad1(
 	// calculating stats before we can remove the original link.
 	if r.Properties.NumRangeDeletions == 0 {
 		meta.Stats.Valid = true
+		meta.Stats.NumEntries = r.Properties.NumEntries
+		meta.Stats.NumDeletions = r.Properties.NumDeletions
 		meta.Stats.RangeDeletionsBytesEstimate = 0
 	}
 

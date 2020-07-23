@@ -117,11 +117,13 @@ func TestIngestLoadRand(t *testing.T) {
 			expected[i].Largest = keys[len(keys)-1]
 
 			w := sstable.NewWriter(f, sstable.WriterOptions{})
+			var keyCount uint64
 			for i := range keys {
 				if i > 0 && base.InternalCompare(cmp, keys[i-1], keys[i]) == 0 {
 					// Duplicate key, ignore.
 					continue
 				}
+				keyCount++
 				w.Add(keys[i], nil)
 			}
 			require.NoError(t, w.Close())
@@ -130,6 +132,7 @@ func TestIngestLoadRand(t *testing.T) {
 			require.NoError(t, err)
 
 			expected[i].Size = meta.Size
+			expected[i].Stats.NumEntries = keyCount
 		}()
 	}
 

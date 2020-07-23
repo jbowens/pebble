@@ -1339,6 +1339,7 @@ func TestCompactionOutputLevel(t *testing.T) {
 				d.ScanArgs(t, "start", &start)
 				d.ScanArgs(t, "base", &base)
 				pc := newPickedCompaction(opts, version, start, base)
+				pc.startLevel.files = manifest.NewLevelSlice([]*fileMetadata{&fileMetadata{}})
 				c := newCompaction(pc, opts, new(uint64))
 				return fmt.Sprintf("output=%d\nmax-output-file-size=%d\n",
 					c.outputLevel.level, c.maxOutputFileSize)
@@ -1532,6 +1533,40 @@ func TestCompactionDeleteOnlyHints(t *testing.T) {
 			}
 		})
 }
+
+/*
+func TestCompactionDeleteEverything(t *testing.T) {
+	opts := &Options{FS: vfs.NewMem(), EventListener: MakeLoggingEventListener(nil)}
+	d, err := Open("", opts)
+	require.NoError(t, err)
+	for i := 0; i < 1000; i++ {
+		k := []byte(fmt.Sprintf("key%06d", i))
+		require.NoError(t, d.Set(k, k, nil))
+	}
+	require.NoError(t, d.Compact([]byte("a"), []byte("z")))
+	require.NoError(t, d.DeleteRange([]byte("a"), []byte("z"), nil))
+	require.NoError(t, d.Flush())
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(5 * time.Second)
+	for {
+		m := d.Metrics()
+		var count int64
+		for i := range m.Levels {
+			count += m.Levels[i].NumFiles
+		}
+		if count == 0 {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout:
+			t.Fatalf("Expected LSM to eventually contain zero files:\n%s\n", m)
+		}
+	}
+	require.NoError(t, d.Close())
+}
+*/
 
 func TestCompactionInuseKeyRanges(t *testing.T) {
 	parseMeta := func(s string) *fileMetadata {

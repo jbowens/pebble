@@ -222,9 +222,19 @@ func newCompaction(pc *pickedCompaction, opts *Options, bytesCompacted *uint64) 
 	// level to the next. We avoid such a move if there is lots of overlapping
 	// grandparent data. Otherwise, the move could create a parent file that
 	// will require a very expensive merge later on.
-	if c.outputLevel.files.Empty() && c.startLevel.files.Len() == 1 &&
+	startIter := c.startLevel.files.Iter()
+	m := startIter.First()
+	if c.outputLevel.files.Empty() && startIter.Next() == nil &&
 		c.grandparents.SizeSum() <= c.maxOverlapBytes {
-		c.kind = compactionKindMove
+
+		// If the compaction is outputting into the bottommost level, avoid
+		// moving files that contain only deletions. We might be able to drop
+		// the entire file during an ordinary compaction if no open snapshots
+		// prevent it.
+		if (c.outputLevel.level != numLevels-1) ||
+			m.Stats.Valid && m.Stats.NumEntries > m.Stats.NumDeletions {
+			c.kind = compactionKindMove
+		}
 	}
 	return c
 }
@@ -1611,6 +1621,8 @@ func (d *DB) runCompaction(
 		if writerMeta.Properties.NumRangeDeletions == 0 {
 			meta.Stats = manifest.TableStats{
 				Valid:                       true,
+				NumEntries:                  writerMeta.Properties.NumEntries,
+				NumDeletions:                writerMeta.Properties.NumDeletions,
 				RangeDeletionsBytesEstimate: 0,
 			}
 		}
