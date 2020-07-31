@@ -504,33 +504,35 @@ func (b *BulkVersionEdit) Apply(
 			levelMetadata := curr.Levels[level]
 			v.Levels[level] = levelMetadata
 			// We still have to bump the ref count for all files.
-			for i := range levelMetadata.files {
-				atomic.AddInt32(&levelMetadata.files[i].refs, 1)
+			iter := levelMetadata.Iter()
+			for f := iter.First(); f != nil; f = iter.Next() {
+				atomic.AddInt32(&f.refs, 1)
 			}
 			continue
 		}
 
 		// Some edits on this level.
-		var currFiles []*FileMetadata
 		if curr != nil {
-			currFiles = curr.Levels[level].files
+			v.Levels[level].tree = curr.Levels[level].tree.Clone()
 		}
+		t := &v.Levels[level].tree
 		addedFiles := b.Added[level]
 		deletedMap := b.Deleted[level]
-		n := len(currFiles) + len(addedFiles)
-		if n == 0 {
+		if len(addedFiles) == 0 && t.length == 0 && len(deletedMap) > 0 {
 			return nil, nil, errors.Errorf(
 				"pebble: internal error: No current or added files but have deleted files: %d",
 				errors.Safe(len(deletedMap)))
 		}
-		v.Levels[level].files = make([]*FileMetadata, 0, n)
-		// We have 2 lists of files, currFiles and addedFiles either of which (but not both) can
-		// be empty.
+
+		// We have 2 sources of files, the current version's btree and
+		// addedFiles, either of which (but not both) can be empty.
+		//
 		// - currFiles is internally consistent, since it comes from curr.
-		// - addedFiles is not necessarily internally consistent, since it does not reflect deletions
-		//   in deletedMap (since b could have accumulated multiple VersionEdits, the same file can
-		//   be added and deleted). And we can delay checking consistency of it until we merge
-		//   currFiles, addedFiles and deletedMap.
+		// - addedFiles is not necessarily internally consistent, since it does
+		//   not reflect deletions in deletedMap (since b could have accumulated
+		//   multiple VersionEdits, the same file can be added and deleted). And
+		//   we can delay checking consistency of it until we merge the
+		//   current version's files with addedFiles and deletedMap.
 		if level == 0 {
 			// - Note that any ingested single sequence number (ssn) file contained inside a multi-sequence
 			//   number (msn) file must have been added before the latter. So it is not possible for

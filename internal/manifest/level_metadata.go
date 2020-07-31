@@ -4,27 +4,30 @@
 
 package manifest
 
-import "sort"
+import (
+	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/pebble/internal/invariants"
+)
 
 // LevelMetadata contains metadata for all of the files within
 // a level of the LSM.
 type LevelMetadata struct {
-	files []*FileMetadata
+	tree btree
 }
 
 // Len returns the number of files within the level.
 func (lm *LevelMetadata) Len() int {
-	return len(lm.files)
+	return lm.tree.length
 }
 
 // Iter constructs a LevelIterator over the entire level.
 func (lm *LevelMetadata) Iter() LevelIterator {
-	return LevelIterator{files: lm.files, end: len(lm.files)}
+	return LevelIterator{iter: lm.tree.MakeIter()}
 }
 
 // Slice constructs a slice containing the entire level.
 func (lm *LevelMetadata) Slice() LevelSlice {
-	return LevelSlice{files: lm.files, end: len(lm.files)}
+	return LevelSlice{start: lm.tree.MakeIter()}
 }
 
 // LevelFile holds a file's metadata along with its position
@@ -39,30 +42,47 @@ func (lf LevelFile) Slice() LevelSlice {
 	return lf.slice
 }
 
+type Ordering struct {
+	name string
+	cmp  func(*FileMetadata, *FileMetadata) int
+}
+
+func KeyOrdering(cmp Compare) Ordering {
+	return Ordering{
+		name: "key",
+		cmp:  func(a, b *FileMetadata) int { return a.cmpSmallestKey(b, cmp) },
+	}
+}
+
+var SeqOrdering = Ordering{
+	name: "seq",
+	cmp:  func(a, b *FileMetadata) int { return a.cmpSeqNum(b) },
+}
+
 // NewLevelSlice constructs a LevelSlice over the provided files. This
 // function is expected to be a temporary adapter between interfaces.
 // TODO(jackson): Revisit once the conversion of Version.Files to a btree is
 // complete.
-func NewLevelSlice(files []*FileMetadata) LevelSlice {
-	return LevelSlice{files: files, start: 0, end: len(files)}
+func NewLevelSlice(files []*FileMetadata, order Ordering) LevelSlice {
+	t := new(btree)
+	t.cmp = order.cmp
+	for _, f := range files {
+		t.Set(f)
+	}
+	if invariants.Enabled {
+		if t.length != len(files) {
+			panic(errors.New("duplicates passed to NewLevelSlice"))
+		}
+	}
+	return LevelSlice{start: t.MakeIter()}
 }
 
 // LevelSlice contains a slice of the files within a level of the LSM.
 type LevelSlice struct {
-	files []*FileMetadata
-	start int
-	end   int
-}
-
-// Collect returns a Go slice of all files in the slice. The returned slice is
-// owned by the LevelSlice. This method is intended to be a temporary adatpter
-// between interfaces, and callers should prefer using the iterator directory
-// when possible.
-//
-// TODO(jackson): Revisit once the conversion of Version.Files to a btree is
-// complete.
-func (ls LevelSlice) Collect() []*FileMetadata {
-	return ls.files[ls.start:ls.end]
+	// start and end form the inclusive bounds of a slice of files within a
+	// level of the LSM.
+	start iterator
+	end   iterator
 }
 
 // Each invokes fn for each element in the slice.
@@ -75,27 +95,36 @@ func (ls LevelSlice) Each(fn func(*FileMetadata)) {
 
 // Empty indicates whether the slice contains any files.
 func (ls LevelSlice) Empty() bool {
-	return ls.start >= ls.end
+	return ls.start.r == nil
 }
 
 // Iter constructs a LevelIterator that iterates over the slice.
 func (ls LevelSlice) Iter() LevelIterator {
 	return LevelIterator{
-		files: ls.files,
-		start: ls.start,
-		end:   ls.end,
+		start: &ls.start,
+		end:   &ls.end,
 	}
 }
 
 // Len returns the number of files in the slice.
 func (ls LevelSlice) Len() int {
-	return ls.end - ls.start
+	// TODO(jackson): Avoid an O(n) scan by annotating the nodes of the
+	// B-Tree.
+	var count int
+	iter := ls.Iter()
+	for f := iter.First(); f != nil; f = iter.Next() {
+		count++
+	}
+	return count
 }
 
 // SizeSum sums the size of all files in the slice.
 func (ls LevelSlice) SizeSum() uint64 {
+	// TODO(jackson): Avoid an O(n) scan by annotating the nodes of the
+	// B-Tree.
 	var sum uint64
-	for _, f := range ls.files[ls.start:ls.end] {
+	iter := ls.Iter()
+	for f := iter.First(); f != nil; f = iter.Next() {
 		sum += f.Size
 	}
 	return sum
@@ -110,88 +139,76 @@ func (ls LevelSlice) SizeSum() uint64 {
 // returns a new LevelSlice with the final bounds of the iterators after
 // calling resliceFunc.
 func (ls LevelSlice) Reslice(resliceFunc func(start, end *LevelIterator)) LevelSlice {
-	start := LevelIterator{
-		files: ls.files,
-		cur:   ls.start,
-		start: 0,
-		end:   len(ls.files),
-	}
-	end := LevelIterator{
-		files: ls.files,
-		cur:   ls.end - 1,
-		start: 0,
-		end:   len(ls.files),
-	}
+	// NB: We leave LevelIterator's start and end nil so the iterators are
+	// unbounded in the underlying B-Tree.
+	start := LevelIterator{iter: ls.start}
+	end := LevelIterator{iter: ls.end}
 	resliceFunc(&start, &end)
 	return LevelSlice{
-		files: ls.files,
-		start: start.cur,
-		end:   end.cur + 1,
+		start: start.iter,
+		end:   end.iter,
 	}
 }
 
 // LevelIterator iterates over a set of files' metadata. Its zero value is an
 // empty iterator.
 type LevelIterator struct {
-	files []*FileMetadata
-	cur   int
-	start int
-	end   int
+	// iter is the current position of the LevelIterator.
+	iter iterator
+	// start and end, if non-nil, are the inclusive bounds of files visible to
+	// the LevelIterator. Typically, these pointers point into a LevelSlice's
+	// start and end fields. These iterators must not be modified.
+	start *iterator
+	end   *iterator
 }
 
 // Clone copies the iterator, returning an independent iterator at the same
-// position.
+// position with the same bounds.
 func (i *LevelIterator) Clone() LevelIterator {
-	return *i
+	// The start and end iterators are not cloned and are treated as
+	// immutable.
+	return LevelIterator{
+		iter:  i.iter.clone(),
+		start: i.start,
+		end:   i.end,
+	}
 }
 
 // Empty indicates whether there are remaining files in the iterator.
 func (i LevelIterator) Empty() bool {
-	return i.cur >= i.end
+	return i.iter.r == nil
 }
 
 // Current returns the item at the current iterator position.
 func (i LevelIterator) Current() *FileMetadata {
-	if i.cur < i.start || i.cur >= i.end {
+	if !i.iter.Valid() {
 		return nil
 	}
-	return i.files[i.cur]
+	return i.iter.Cur()
 }
 
 // First seeks to the first file in the iterator and returns it.
 func (i *LevelIterator) First() *FileMetadata {
-	i.cur = i.start
-	if i.cur < i.start || i.cur >= i.end {
-		return nil
-	}
-	return i.files[i.cur]
+	i.iter.First()
+	return i.Current()
 }
 
 // Last seeks to the last file in the iterator and returns it.
 func (i *LevelIterator) Last() *FileMetadata {
-	i.cur = i.end - 1
-	if i.cur < i.start || i.cur >= i.end {
-		return nil
-	}
-	return i.files[i.cur]
+	i.iter.Last()
+	return i.Current()
 }
 
 // Next advances the iterator to the next file and returns it.
 func (i *LevelIterator) Next() *FileMetadata {
-	i.cur++
-	if i.cur < i.start || i.cur >= i.end {
-		return nil
-	}
-	return i.files[i.cur]
+	i.iter.Next()
+	return i.Current()
 }
 
 // Prev moves the iterator the previous file and returns it.
 func (i *LevelIterator) Prev() *FileMetadata {
-	i.cur--
-	if i.cur < i.start || i.cur >= i.end {
-		return nil
-	}
-	return i.files[i.cur]
+	i.iter.Prev()
+	return i.Current()
 }
 
 // SeekGE seeks to the first file in the iterator's file set with a largest
@@ -199,14 +216,18 @@ func (i *LevelIterator) Prev() *FileMetadata {
 // have been constructed from L1+, because it requires the underlying files to
 // be sorted by user keys and non-overlapping.
 func (i *LevelIterator) SeekGE(cmp Compare, userKey []byte) *FileMetadata {
-	files := i.files[i.start:i.end]
-	i.cur = i.start + sort.Search(len(files), func(j int) bool {
-		return cmp(userKey, files[j].Largest.UserKey) <= 0
+	i.iter.Seek(func(m *FileMetadata) int {
+		return cmp(userKey, m.Largest.UserKey)
 	})
-	if i.cur >= i.end {
-		return nil
-	}
-	return i.files[i.cur]
+	return i.iter.Cur()
+	//files := i.files[i.start:i.end]
+	//i.cur = i.start + sort.Search(len(files), func(j int) bool {
+	//return cmp(userKey, files[j].Largest.UserKey) <= 0
+	//})
+	//if i.cur >= i.end {
+	//return nil
+	//}
+	//return i.files[i.cur]
 }
 
 // SeekLT seeks to the last file in the iterator's file set with a smallest
@@ -214,14 +235,18 @@ func (i *LevelIterator) SeekGE(cmp Compare, userKey []byte) *FileMetadata {
 // constructed from L1+, because it requries the underlying files to be sorted
 // by user keys and non-overlapping.
 func (i *LevelIterator) SeekLT(cmp Compare, userKey []byte) *FileMetadata {
-	files := i.files[i.start:i.end]
-	i.cur = i.start + sort.Search(len(files), func(j int) bool {
-		return cmp(files[j].Smallest.UserKey, userKey) >= 0
+	i.iter.Seek(func(m *FileMetadata) int {
+		return cmp(m.Smallest.UserKey, userKey)
 	})
-	if i.cur < i.start {
-		return nil
-	}
-	return i.Prev()
+	return i.iter.Cur()
+	//files := i.files[i.start:i.end]
+	//i.cur = i.start + sort.Search(len(files), func(j int) bool {
+	//return cmp(files[j].Smallest.UserKey, userKey) >= 0
+	//})
+	//if i.cur < i.start {
+	//return nil
+	//}
+	//return i.Prev()
 }
 
 // Take constructs a LevelFile containing the file at the iterator's current
@@ -232,12 +257,12 @@ func (i LevelIterator) Take() LevelFile {
 	if m == nil {
 		panic("Take called on invalid LevelIterator")
 	}
+
 	return LevelFile{
 		FileMetadata: m,
 		slice: LevelSlice{
-			files: i.files,
-			start: i.cur,
-			end:   i.cur + 1,
+			start: i.iter,
+			end:   i.iter,
 		},
 	}
 }

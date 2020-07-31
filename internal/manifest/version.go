@@ -125,23 +125,42 @@ func (m *FileMetadata) TableInfo() TableInfo {
 	}
 }
 
-func (m *FileMetadata) lessSeqNum(b *FileMetadata) bool {
+func (m *FileMetadata) cmpSeqNum(b *FileMetadata) int {
 	// NB: This is the same ordering that RocksDB uses for L0 files.
-
+	switch {
 	// Sort first by largest sequence number.
-	if m.LargestSeqNum != b.LargestSeqNum {
-		return m.LargestSeqNum < b.LargestSeqNum
-	}
+	case m.LargestSeqNum < b.LargestSeqNum:
+		return -1
+	case m.LargestSeqNum > b.LargestSeqNum:
+		return 1
+
 	// Then by smallest sequence number.
-	if m.SmallestSeqNum != b.SmallestSeqNum {
-		return m.SmallestSeqNum < b.SmallestSeqNum
-	}
+	case m.SmallestSeqNum < b.SmallestSeqNum:
+		return -1
+	case m.LargestSeqNum > b.LargestSeqNum:
+		return 1
+
 	// Break ties by file number.
-	return m.FileNum < b.FileNum
+	case m.FileNum < b.FileNum:
+		return -1
+	case m.FileNum > b.FileNum:
+		return 1
+
+	default:
+		return 0
+	}
+}
+
+func (m *FileMetadata) cmpSmallestKey(b *FileMetadata, cmp Compare) int {
+	return base.InternalCompare(cmp, m.Smallest, b.Smallest)
+}
+
+func (m *FileMetadata) lessSeqNum(b *FileMetadata) bool {
+	return m.cmpSeqNum(b) < 0
 }
 
 func (m *FileMetadata) lessSmallestKey(b *FileMetadata, cmp Compare) bool {
-	return base.InternalCompare(cmp, m.Smallest, b.Smallest) < 0
+	return m.cmpSmallestKey(b, cmp) < 0
 }
 
 // KeyRange returns the minimum smallest and maximum largest internalKey for
@@ -196,18 +215,6 @@ func SortBySmallest(files []*FileMetadata, cmp Compare) {
 	sort.Sort(bySmallest{files, cmp})
 }
 
-func overlaps(files []*FileMetadata, cmp Compare, start, end []byte) (lower, upper int) {
-	// Binary search to find the range of files which overlaps with our target
-	// range.
-	lower = sort.Search(len(files), func(i int) bool {
-		return cmp(files[i].Largest.UserKey, start) >= 0
-	})
-	upper = sort.Search(len(files), func(i int) bool {
-		return cmp(files[i].Smallest.UserKey, end) > 0
-	})
-	return lower, upper
-}
-
 // NumLevels is the number of levels a Version contains.
 const NumLevels = 7
 
@@ -220,9 +227,18 @@ func NewVersion(
 	files [NumLevels][]*FileMetadata,
 ) *Version {
 	var v Version
-	for i := range files {
-		v.Levels[i].files = files[i]
+	v.Levels[0].tree.cmp = SeqOrdering.cmp
+
+	keyCmp := KeyOrdering(cmp)
+	for i := 1; i < NumLevels; i++ {
+		v.Levels[i].tree.cmp = keyCmp.cmp
 	}
+	for i, levelFiles := range files {
+		for _, f := range levelFiles {
+			v.Levels[i].tree.Set(f)
+		}
+	}
+
 	if err := v.InitL0Sublevels(cmp, formatKey, flushSplitBytes); err != nil {
 		panic(err)
 	}
@@ -474,13 +490,13 @@ func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice
 			}
 
 			if !restart {
-				slice.files = make([]*FileMetadata, 0, numSelected)
+				files := make([]*FileMetadata, 0, numSelected)
 				for i, meta := 0, l0Iter.First(); meta != nil; i, meta = i+1, l0Iter.Next() {
 					if selectedIndices[i] {
-						slice.files = append(slice.files, meta)
+						files = append(files, meta)
 					}
 				}
-				slice.end = len(slice.files)
+				slice = NewLevelSlice(files, SeqOrdering)
 				break
 			}
 			// Continue looping to retry the files that were not selected.
@@ -488,13 +504,16 @@ func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice
 		return slice
 	}
 
-	var slice LevelSlice
-	lower, upper := overlaps(v.Levels[level].files, cmp, start, end)
-	if lower < upper {
-		slice.files = v.Levels[level].files
-		slice.start = lower
-		slice.end = upper
+	slice := LevelSlice{
+		start: v.Levels[level].tree.MakeIter(),
+		end:   v.Levels[level].tree.MakeIter(),
 	}
+	slice.start.Seek(func(m *FileMetadata) int {
+		return cmp(start, m.Largest.UserKey)
+	})
+	slice.end.Seek(func(m *FileMetadata) int {
+		return cmp(end, m.Smallest.UserKey)
+	})
 	return slice
 }
 
@@ -502,8 +521,9 @@ func (v *Version) Overlaps(level int, cmp Compare, start, end []byte) LevelSlice
 // increasing file numbers (for level 0 files) and increasing and non-
 // overlapping internal key ranges (for level non-0 files).
 func (v *Version) CheckOrdering(cmp Compare, format base.FormatKey) error {
+	keyOrder := KeyOrdering(cmp)
 	for sublevel := len(v.L0Sublevels.Levels) - 1; sublevel >= 0; sublevel-- {
-		iter := NewLevelSlice(v.L0Sublevels.Levels[sublevel]).Iter()
+		iter := NewLevelSlice(v.L0Sublevels.Levels[sublevel], keyOrder).Iter()
 		if err := CheckOrdering(cmp, format, L0Sublevel(sublevel), iter); err != nil {
 			return errors.Errorf("%s\n%s", err, v.DebugString(format))
 		}
