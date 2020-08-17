@@ -469,7 +469,7 @@ func (b *BulkVersionEdit) Accumulate(ve *VersionEdit) error {
 // disk as they are still in use by the incoming Version.
 func (b *BulkVersionEdit) Apply(
 	curr *Version, cmp Compare, formatKey base.FormatKey, flushSplitBytes int64,
-) (_ *Version, zombies map[base.FileNum]uint64, _ error) {
+) (_ *Version, zombies map[base.FileNum]uint64, err error) {
 	addZombie := func(fileNum base.FileNum, size uint64) {
 		if zombies == nil {
 			zombies = make(map[base.FileNum]uint64)
@@ -485,155 +485,169 @@ func (b *BulkVersionEdit) Apply(
 	}
 
 	v := new(Version)
-	for level := range v.Levels {
-		if len(b.Added[level]) == 0 && len(b.Deleted[level]) == 0 {
-			// There are no edits on this level.
-			if level == 0 {
-				// Initialize L0Sublevels.
-				if curr == nil || curr.L0Sublevels == nil {
-					if err := v.InitL0Sublevels(cmp, formatKey, flushSplitBytes); err != nil {
-						return nil, nil, errors.Wrap(err, "pebble: internal error")
-					}
-				} else {
-					v.L0Sublevels = curr.L0Sublevels
-				}
-			}
-			if curr == nil {
-				continue
-			}
-			levelMetadata := curr.Levels[level]
-			v.Levels[level] = levelMetadata
-			// We still have to bump the ref count for all files.
-			for i := range levelMetadata.files {
-				atomic.AddInt32(&levelMetadata.files[i].refs, 1)
-			}
-			continue
-		}
-
-		// Some edits on this level.
-		var currFiles []*FileMetadata
+	// L0 is sorted by sequence number and treated specially.
+	{
+		var currL0 LevelMetadata
 		if curr != nil {
-			currFiles = curr.Levels[level].files
+			currL0 = curr.Levels[0]
 		}
-		addedFiles := b.Added[level]
-		deletedMap := b.Deleted[level]
-		n := len(currFiles) + len(addedFiles)
-		if n == 0 {
-			return nil, nil, base.CorruptionErrorf(
-				"pebble: internal error: No current or added files but have deleted files: %d",
-				errors.Safe(len(deletedMap)))
-		}
-		v.Levels[level].files = make([]*FileMetadata, 0, n)
-		// We have 2 lists of files, currFiles and addedFiles either of which (but not both) can
-		// be empty.
-		// - currFiles is internally consistent, since it comes from curr.
-		// - addedFiles is not necessarily internally consistent, since it does not reflect deletions
-		//   in deletedMap (since b could have accumulated multiple VersionEdits, the same file can
-		//   be added and deleted). And we can delay checking consistency of it until we merge
-		//   currFiles, addedFiles and deletedMap.
-		if level == 0 {
-			// - Note that any ingested single sequence number (ssn) file contained inside a multi-sequence
-			//   number (msn) file must have been added before the latter. So it is not possible for
-			//   an ssn file to be in addedFiles and its corresponding msn file to be in currFiles,
-			//   but the reverse is possible. So for consistency checking we may need to look back
-			//   into currFiles for ssn files that overlap with an msn file in addedFiles.
-			// - The previous bullet does not hold for sequence number 0 files that can be added
-			//   later. See the CheckOrdering func in version.go for a detailed explanation.
-			//   Due to these files, the LargestSeqNums may not be increasing across the slice formed by
-			//   concatenating addedFiles and currFiles.
-			// - Instead of constructing a custom variant of the CheckOrdering logic, that is aware
-			//   of the 2 slices, we observe that the number of L0 files is small so we can afford
-			//   to repeat the full check on the combined slices (and CheckOrdering only does
-			//   sequence num comparisons and not expensive key comparisons).
-			for _, ff := range [2][]*FileMetadata{currFiles, addedFiles} {
-				for i := range ff {
-					f := ff[i]
-					if deletedMap[f.FileNum] {
-						addZombie(f.FileNum, f.Size)
-						continue
-					}
-					atomic.AddInt32(&f.refs, 1)
-					v.Levels[level].files = append(v.Levels[level].files, f)
-				}
-			}
-			SortBySeqNum(v.Levels[level].files)
+		v.Levels[0] = newLevelZero(currL0, b.Added[0], b.Deleted[0], addZombie, removeZombie)
+
+		// Initialize sublevels, copying the old verion's sublevel state if there are no edits.
+		if curr != nil && curr.L0Sublevels != nil && len(b.Added) == 0 && len(b.Deleted) == 0 {
+			v.L0Sublevels = curr.L0Sublevels
+		} else {
 			if err := v.InitL0Sublevels(cmp, formatKey, flushSplitBytes); err != nil {
 				return nil, nil, errors.Wrap(err, "pebble: internal error")
 			}
-			if err := CheckOrdering(cmp, formatKey, Level(0), v.Levels[level].Iter()); err != nil {
+		}
+		// If there were edits to L0, check the entire level's ordering. See
+		// the comment in newLevelZero.
+		if len(b.Added) != 0 || len(b.Deleted) != 0 {
+			if err := CheckOrdering(cmp, formatKey, Level(0), v.Levels[0].Iter()); err != nil {
 				return nil, nil, errors.Wrap(err, "pebble: internal error")
 			}
-			continue
 		}
+	}
 
-		// level > 0.
-		// - Sort the addedFiles in increasing order of the smallest key.
-		// - In a large db, addedFiles is expected to be much smaller than currFiles, so we
-		//   want to avoid comparing the addedFiles with each file in currFile.
-		SortBySmallest(addedFiles, cmp)
-		for i := range addedFiles {
-			f := addedFiles[i]
-			if deletedMap[f.FileNum] {
-				addZombie(f.FileNum, f.Size)
-				continue
-			}
-			removeZombie(f.FileNum)
-			atomic.AddInt32(&f.refs, 1)
-			// We need to add f. Find the first file in currFiles such that its smallest key
-			// is > f.Largest. This file (if it is kept) will be the immediate successor of f.
-			// The files in currFiles before this file (if they are kept) will precede f.
-			//
-			// Typically all the added files in a VersionEdit are from a single compaction
-			// output, so after we add the first file, the subsequent files should have keys
-			// preceding currFiles[0], so we could fast-path by first testing for that case before
-			// calling sort.Search().
-			j := sort.Search(len(currFiles), func(i int) bool {
-				return base.InternalCompare(cmp, currFiles[i].Smallest, f.Largest) > 0
-			})
-			// Add the preceding files from currFiles.
-			for k := 0; k < j; k++ {
-				cf := currFiles[k]
-				if deletedMap[cf.FileNum] {
-					addZombie(cf.FileNum, cf.Size)
-					continue
-				}
-				removeZombie(cf.FileNum)
-				atomic.AddInt32(&cf.refs, 1)
-				v.Levels[level].files = append(v.Levels[level].files, cf)
-			}
-			currFiles = currFiles[j:]
-			numFiles := len(v.Levels[level].files)
-			if numFiles > 0 {
-				// We expect k to typically be large, and we can avoid doing consistency
-				// checks of the files within that set of k, since they are already mutually
-				// consistent.
-				//
-				// Check the consistency of f with its predecessor in v.Files[level]. Note that
-				// its predecessor either came from currFiles or addedFiles, and both are ones
-				// which we need to check against f for consistency (since we have not checked
-				// addedFiles for internal consistency).
-				if base.InternalCompare(cmp, v.Levels[level].files[numFiles-1].Largest, f.Smallest) >= 0 {
-					cf := v.Levels[level].files[numFiles-1]
-					return nil, nil, base.CorruptionErrorf(
-						"pebble: internal error: L%d files %s and %s have overlapping ranges: [%s-%s] vs [%s-%s]",
-						errors.Safe(level), errors.Safe(cf.FileNum), errors.Safe(f.FileNum),
-						cf.Smallest.Pretty(formatKey), cf.Largest.Pretty(formatKey),
-						f.Smallest.Pretty(formatKey), f.Largest.Pretty(formatKey))
-				}
-			}
-			v.Levels[level].files = append(v.Levels[level].files, f)
+	// Construct all other levels.
+	for level := 1; level < len(v.Levels); level++ {
+		var currLevel LevelMetadata
+		if curr != nil {
+			currLevel = curr.Levels[level]
 		}
-		// Add any remaining files in currFiles that are after all the added files.
-		for i := range currFiles {
-			f := currFiles[i]
-			if deletedMap[f.FileNum] {
-				addZombie(f.FileNum, f.Size)
-				continue
-			}
-			removeZombie(f.FileNum)
-			atomic.AddInt32(&f.refs, 1)
-			v.Levels[level].files = append(v.Levels[level].files, f)
+		v.Levels[level], err = newLevelPositive(cmp, currLevel,
+			b.Added[level], b.Deleted[level], addZombie, removeZombie, formatKey)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "pebble: internal error: L%d", errors.Safe(level))
 		}
 	}
 	return v, zombies, nil
+}
+
+func newLevelZero(
+	curr LevelMetadata,
+	add []*FileMetadata,
+	deleted map[base.FileNum]bool,
+	addZombie func(base.FileNum, uint64),
+	removeZombie func(base.FileNum),
+) (ret LevelMetadata) {
+	if len(add) == 0 && len(deleted) == 0 {
+		// There are no edits, but we still need to ref the levels's files.
+		for i := range curr.files {
+			atomic.AddInt32(&curr.files[i].refs, 1)
+		}
+		return curr
+	}
+
+	// - Note that any ingested single sequence number (ssn) file contained inside a multi-sequence
+	//   number (msn) file must have been added before the latter. So it is not possible for
+	//   an ssn file to be in addedFiles and its corresponding msn file to be in currFiles,
+	//   but the reverse is possible. So for consistency checking we may need to look back
+	//   into currFiles for ssn files that overlap with an msn file in addedFiles.
+	// - The previous bullet does not hold for sequence number 0 files that can be added
+	//   later. See the CheckOrdering func in version.go for a detailed explanation.
+	//   Due to these files, the LargestSeqNums may not be increasing across the slice formed by
+	//   concatenating addedFiles and currFiles.
+	// - Instead of constructing a custom variant of the CheckOrdering logic, that is aware
+	//   of the 2 slices, we observe that the number of L0 files is small so we can afford
+	//   to repeat the full check on the combined slices (and CheckOrdering only does
+	//   sequence num comparisons and not expensive key comparisons).
+	for _, ff := range [2][]*FileMetadata{curr.files, add} {
+		for _, f := range ff {
+			if deleted[f.FileNum] {
+				addZombie(f.FileNum, f.Size)
+				continue
+			}
+			atomic.AddInt32(&f.refs, 1)
+			ret.files = append(ret.files, f)
+		}
+	}
+	SortBySeqNum(ret.files)
+	return ret
+}
+
+func newLevelPositive(
+	cmp Compare,
+	curr LevelMetadata,
+	add []*FileMetadata,
+	deleted map[base.FileNum]bool,
+	addZombie func(base.FileNum, uint64),
+	removeZombie func(base.FileNum),
+	formatKey base.FormatKey,
+) (ret LevelMetadata, err error) {
+	if len(add) == 0 && len(deleted) == 0 {
+		// There are no edits, but we still need to ref the levels's files.
+		for i := range curr.files {
+			atomic.AddInt32(&curr.files[i].refs, 1)
+		}
+		return curr, nil
+	}
+
+	ret.files = make([]*FileMetadata, 0, len(add)+len(curr.files))
+	SortBySmallest(add, cmp)
+	for _, f := range add {
+		if deleted[f.FileNum] {
+			addZombie(f.FileNum, f.Size)
+			continue
+		}
+		atomic.AddInt32(&f.refs, 1)
+
+		// We need to add f. Find the first file in curr.files such that its smallest key
+		// is > f.Largest. This file (if it is kept) will be the immediate successor of f.
+		// The files in curr.files before this file (if they are kept) will precede f.
+		//
+		// Typically all the added files in a VersionEdit are from a single compaction
+		// output, so after we add the first file, the subsequent files should have keys
+		// preceding curr.files[0], so we could fast-path by first testing for that case before
+		// calling sort.Search().
+		j := sort.Search(len(curr.files), func(i int) bool {
+			return base.InternalCompare(cmp, curr.files[i].Smallest, f.Largest) > 0
+		})
+
+		// Add the preceding files from curr.files.
+		for k := 0; k < j; k++ {
+			cf := curr.files[k]
+			if deleted[cf.FileNum] {
+				addZombie(cf.FileNum, cf.Size)
+				continue
+			}
+			removeZombie(cf.FileNum)
+			atomic.AddInt32(&cf.refs, 1)
+			ret.files = append(ret.files, cf)
+		}
+		curr.files = curr.files[j:]
+		numFiles := len(ret.files)
+		if numFiles > 0 {
+			// We expect k to typically be large, and we can avoid doing consistency
+			// checks of the files within that set of k, since they are already mutually
+			// consistent.
+			//
+			// Check the consistency of f with its predecessor in ret.files. Note that
+			// its predecessor either came from currFiles or addedFiles, and both are ones
+			// which we need to check against f for consistency (since we have not checked
+			// the add files for internal consistency).
+			if base.InternalCompare(cmp, ret.files[numFiles-1].Largest, f.Smallest) >= 0 {
+				cf := ret.files[numFiles-1]
+				return ret, errors.Errorf(
+					"files %s and %s have overlapping ranges: [%s-%s] vs [%s-%s]",
+					errors.Safe(cf.FileNum), errors.Safe(f.FileNum),
+					cf.Smallest.Pretty(formatKey), cf.Largest.Pretty(formatKey),
+					f.Smallest.Pretty(formatKey), f.Largest.Pretty(formatKey))
+			}
+		}
+		ret.files = append(ret.files, f)
+	}
+
+	// Add any remaining files in curr that are after all the added files.
+	for _, f := range curr.files {
+		if deleted[f.FileNum] {
+			addZombie(f.FileNum, f.Size)
+			continue
+		}
+		removeZombie(f.FileNum)
+		atomic.AddInt32(&f.refs, 1)
+		ret.files = append(ret.files, f)
+	}
+	return ret, nil
 }
