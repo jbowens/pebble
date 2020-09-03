@@ -27,7 +27,7 @@ type compactionEnv struct {
 }
 
 type compactionPicker interface {
-	getScores([]compactionInfo) [numLevels]float64
+	getScores(env compactionEnv) [numLevels]float64
 	getBaseLevel() int
 	getEstimatedMaxWAmp() float64
 	estimatedCompactionDebt(l0ExtraSize uint64) uint64
@@ -381,18 +381,26 @@ type candidateLevelInfo struct {
 
 // compensatedSize returns f's file size, inflated according to compaction
 // priorities.
-func compensatedSize(f *fileMetadata) uint64 {
+func compensatedSize(f *fileMetadata, earliestSnapshotSeqNum uint64) uint64 {
 	sz := f.Size
-	// Add in the estimate of disk space that may be reclaimed by compacting
-	// the file's range tombstones.
-	sz += f.Stats.RangeDeletionsBytesEstimate
+
+	// Add an estimate of disk space that may be reclaimed by compacting
+	// the file's range tombstones. An open snapshot at a sequence
+	// number less than a tombstone's may prevent us from reclaiming disk
+	// space. We don't know the tombstones' sequence numbers here, so be
+	// conversative and only compensate if all of the file's keys fall into
+	// the last snapshot stripe.
+	if f.LargestSeqNum < earliestSnapshotSeqNum {
+		sz += f.Stats.RangeDeletionsBytesEstimate
+	}
+
 	return sz
 }
 
-func totalCompensatedSize(iter manifest.LevelIterator) uint64 {
+func totalCompensatedSize(iter manifest.LevelIterator, earliestSnapshotSeqNum uint64) uint64 {
 	var sz uint64
 	for f := iter.First(); f != nil; f = iter.Next() {
-		sz += compensatedSize(f)
+		sz += compensatedSize(f, earliestSnapshotSeqNum)
 	}
 	return sz
 }
@@ -427,9 +435,9 @@ type compactionPickerByScore struct {
 
 var _ compactionPicker = &compactionPickerByScore{}
 
-func (p *compactionPickerByScore) getScores(inProgress []compactionInfo) [numLevels]float64 {
+func (p *compactionPickerByScore) getScores(env compactionEnv) [numLevels]float64 {
 	var scores [numLevels]float64
-	for _, info := range p.calculateScores(inProgress) {
+	for _, info := range p.calculateScores(env) {
 		scores[info.level] = info.score
 	}
 	return scores
@@ -584,7 +592,7 @@ func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []comp
 	}
 }
 
-func calculateSizeAdjust(inProgressCompactions []compactionInfo) [numLevels]int64 {
+func calculateSizeAdjust(env compactionEnv) [numLevels]int64 {
 	// Compute a size adjustment for each level based on the in-progress
 	// compactions. We subtract the compensated size of start level inputs.
 	// Since compensated file sizes may be compensated because they reclaim
@@ -592,12 +600,12 @@ func calculateSizeAdjust(inProgressCompactions []compactionInfo) [numLevels]int6
 	// output level. This is slightly different from RocksDB's behavior, which
 	// simply elides compacting files from the level size calculation.
 	var sizeAdjust [numLevels]int64
-	for i := range inProgressCompactions {
-		c := &inProgressCompactions[i]
+	for i := range env.inProgressCompactions {
+		c := &env.inProgressCompactions[i]
 
 		for _, input := range c.inputs {
 			real := int64(input.files.SizeSum())
-			compensated := int64(totalCompensatedSize(input.files.Iter()))
+			compensated := int64(totalCompensatedSize(input.files.Iter(), env.earliestSnapshotSeqNum))
 
 			if input.level != c.outputLevel {
 				sizeAdjust[input.level] -= compensated
@@ -611,18 +619,19 @@ func calculateSizeAdjust(inProgressCompactions []compactionInfo) [numLevels]int6
 }
 
 func (p *compactionPickerByScore) calculateScores(
-	inProgressCompactions []compactionInfo,
+	env compactionEnv,
 ) [numLevels]candidateLevelInfo {
 	var scores [numLevels]candidateLevelInfo
 	for i := range scores {
 		scores[i].level = i
 		scores[i].outputLevel = i + 1
 	}
-	scores[0] = p.calculateL0Score(inProgressCompactions)
+	scores[0] = p.calculateL0Score(env.inProgressCompactions)
 
-	sizeAdjust := calculateSizeAdjust(inProgressCompactions)
+	sizeAdjust := calculateSizeAdjust(env)
 	for level := 1; level < numLevels; level++ {
-		levelSize := int64(totalCompensatedSize(p.vers.Levels[level].Iter())) + sizeAdjust[level]
+		compensated := totalCompensatedSize(p.vers.Levels[level].Iter(), env.earliestSnapshotSeqNum)
+		levelSize := int64(compensated) + sizeAdjust[level]
 		scores[level].score = float64(levelSize) / float64(p.levelMaxBytes[level])
 		scores[level].origScore = scores[level].score
 	}
@@ -750,7 +759,7 @@ func (p *compactionPickerByScore) calculateL0Score(
 	return info
 }
 
-func (p *compactionPickerByScore) pickFile(level, outputLevel int) (manifest.LevelFile, bool) {
+func (p *compactionPickerByScore) pickFile(level, outputLevel int, earliestSnapshotSeqNum uint64) (manifest.LevelFile, bool) {
 	// Select the file within the level to compact. We want to minimize write
 	// amplification, but also ensure that deletes are propagated to the
 	// bottom level in a timely fashion so as to reclaim disk space. A table's
@@ -811,7 +820,7 @@ func (p *compactionPickerByScore) pickFile(level, outputLevel int) (manifest.Lev
 			continue
 		}
 
-		scaledRatio := overlappingBytes * 1024 / compensatedSize(f)
+		scaledRatio := overlappingBytes * 1024 / compensatedSize(f, earliestSnapshotSeqNum)
 		if scaledRatio < smallestRatio && !f.Compacting {
 			smallestRatio = scaledRatio
 			file = startIter.Take()
@@ -846,7 +855,7 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 		}
 	}
 
-	scores := p.calculateScores(env.inProgressCompactions)
+	scores := p.calculateScores(env)
 
 	// TODO(peter): Either remove, or change this into an event sent to the
 	// EventListener.
@@ -869,9 +878,10 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 			if pc.startLevel.level == info.level {
 				marker = "*"
 			}
+			compensatedSize := totalCompensatedSize(p.vers.Levels[info.level].Iter(), env.earliestSnapshotSeqNum)
 			fmt.Fprintf(&buf, "  %sL%d: %5.1f  %5.1f  %8s  %8s",
 				marker, info.level, info.score, info.origScore,
-				humanize.Int64(int64(totalCompensatedSize(p.vers.Levels[info.level].Iter()))),
+				humanize.Int64(int64(compensatedSize)),
 				humanize.Int64(p.levelMaxBytes[info.level]),
 			)
 
@@ -926,7 +936,7 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 		}
 
 		var ok bool
-		info.file, ok = p.pickFile(info.level, info.outputLevel)
+		info.file, ok = p.pickFile(info.level, info.outputLevel, env.earliestSnapshotSeqNum)
 		if !ok {
 			continue
 		}

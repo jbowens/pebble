@@ -528,6 +528,30 @@ func runTableStatsCmd(td *datadriven.TestData, d *DB) string {
 	return "(not found)"
 }
 
+func runCompensatedSizeCmd(td *datadriven.TestData, d *DB) string {
+	u, err := strconv.ParseUint(strings.TrimSpace(td.Input), 10, 64)
+	if err != nil {
+		return err.Error()
+	}
+	fileNum := base.FileNum(u)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	v := d.mu.versions.currentVersion()
+	for _, levelMetadata := range v.Levels {
+		iter := levelMetadata.Iter()
+		for f := iter.First(); f != nil; f = iter.Next() {
+			if f.FileNum != fileNum {
+				continue
+			}
+
+			sz := compensatedSize(f, d.mu.snapshots.earliest())
+			return fmt.Sprintf("%d", sz)
+		}
+	}
+	return "(not found)"
+}
+
 // waitTableStats waits until all new files' statistics have been loaded. It's
 // used in tests. The d.mu mutex must be locked while calling this method.
 func (d *DB) waitTableStats() {

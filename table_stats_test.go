@@ -6,6 +6,8 @@ package pebble
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/pebble/internal/base"
@@ -103,6 +105,30 @@ func TestTableStats(t *testing.T) {
 			s := loadedInfo.String()
 			d.mu.Unlock()
 			return s
+
+		case "close-snapshot":
+			seqNum, err := strconv.ParseUint(strings.TrimSpace(td.Input), 0, 64)
+			if err != nil {
+				return err.Error()
+			}
+			d.mu.Lock()
+			var s *Snapshot
+			l := &d.mu.snapshots
+			for i := l.root.next; i != &l.root; i = i.next {
+				if i.seqNum == seqNum {
+					s = i
+				}
+			}
+			d.mu.Unlock()
+			if s == nil {
+				return "(not found)"
+			} else if err := s.Close(); err != nil {
+				return err.Error()
+			}
+			return ""
+
+		case "compensated-size":
+			return runCompensatedSizeCmd(td, d)
 
 		case "compact":
 			if err := runCompactCmd(td, d); err != nil {

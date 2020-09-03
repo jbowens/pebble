@@ -44,7 +44,7 @@ type compactionPickerForTesting struct {
 
 var _ compactionPicker = &compactionPickerForTesting{}
 
-func (p *compactionPickerForTesting) getScores([]compactionInfo) [numLevels]float64 {
+func (p *compactionPickerForTesting) getScores(compactionEnv) [numLevels]float64 {
 	return [numLevels]float64{}
 }
 

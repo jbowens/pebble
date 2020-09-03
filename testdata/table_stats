@@ -192,3 +192,35 @@ wait-pending-table-stats
 num-entries: 2
 num-deletions: 1
 range-deletions-bytes-estimate: 26
+
+define snapshots=(10)
+L5
+  a.RANGEDEL.15:z
+L6
+  e.SET.5:5
+----
+5:
+  000004:[a-z]
+6:
+  000005:[e-e]
+
+wait-pending-table-stats
+000004
+----
+num-entries: 1
+num-deletions: 1
+range-deletions-bytes-estimate: 771
+
+compensated-size
+000004
+----
+836
+
+close-snapshot
+10
+----
+
+compensated-size
+000004
+----
+1607

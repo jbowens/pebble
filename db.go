@@ -1066,8 +1066,12 @@ func (d *DB) Metrics() *Metrics {
 	}
 	metrics.WAL.BytesWritten = metrics.Levels[0].BytesIn + metrics.WAL.Size
 	if p := d.mu.versions.picker; p != nil {
-		compactions := d.getInProgressCompactionInfoLocked(nil)
-		for level, score := range p.getScores(compactions) {
+		env := compactionEnv{
+			earliestSnapshotSeqNum:  d.mu.snapshots.earliest(),
+			earliestUnflushedSeqNum: d.getEarliestUnflushedSeqNumLocked(),
+			inProgressCompactions:   d.getInProgressCompactionInfoLocked(nil),
+		}
+		for level, score := range p.getScores(env) {
 			metrics.Levels[level].Score = score
 		}
 	}
