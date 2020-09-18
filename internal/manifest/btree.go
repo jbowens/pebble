@@ -7,6 +7,7 @@ package manifest
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -882,43 +883,52 @@ func (i *iterator) ascend() {
 	i.pos = f.pos
 }
 
-// seekGE seeks to the first item greater-than or equal to the provided
-// item.
-func (i *iterator) seekGE(item *FileMetadata) {
+// seekGE seeks to the first file containing keys greater-than or equal to the
+// provided user key. The iterator's underlying btree must be sorted by keys.
+// (eg, the btree must belong to a level other than L0)
+func (i *iterator) seekGE(cmp base.Compare, userKey []byte) {
 	i.reset()
 	if i.n == nil {
 		return
 	}
 	for {
-		pos, found := i.n.find(i.cmp, item)
+		pos := sort.Search(int(i.n.count), func(j int) bool {
+			return cmp(userKey, i.n.items[j].Largest.UserKey) <= 0
+		})
 		i.pos = int16(pos)
-		if found {
-			return
-		}
 		if i.n.leaf {
 			if i.pos == i.n.count {
 				i.next()
 			}
-			return
+			break
 		}
 		i.descend(i.n, i.pos)
 	}
 }
 
-// seekLT seeks to the first item less-than the provided item.
-func (i *iterator) seekLT(item *FileMetadata) {
+// seekLT seeks to the last file in the tree with a smallest user key less
+// than the provided user key. The iterator's underlying btree must be sorted
+// by keys. (eg, the btree must belong to a level other than L0).
+func (i *iterator) seekLT(cmp base.Compare, userKey []byte) {
 	i.reset()
 	if i.n == nil {
 		return
 	}
 	for {
-		pos, found := i.n.find(i.cmp, item)
+		pos := sort.Search(int(i.n.count), func(j int) bool {
+			return cmp(userKey, i.n.items[j].Smallest.UserKey) <= 0
+		})
 		i.pos = int16(pos)
-		if found || i.n.leaf {
-			i.prev()
-			return
+		if i.n.leaf {
+			if i.pos == i.n.count {
+				i.prev()
+			}
+			break
 		}
 		i.descend(i.n, i.pos)
+	}
+	for i.valid() && cmp(userKey, i.cur().Smallest.UserKey) <= 0 {
+		i.prev()
 	}
 }
 

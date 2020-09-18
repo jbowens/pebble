@@ -321,7 +321,7 @@ func TestIterCmpRand(t *testing.T) {
 	for i := 0; i < iterCount; i++ {
 		k := rng.Intn(itemCount)
 		iter := tr.iter()
-		iter.seekGE(newItem(key(k)))
+		iter.seekGE(base.DefaultComparer.Compare, key(k).UserKey)
 		iters1[i] = &iter
 		iters2[i] = &iter
 	}
@@ -350,7 +350,7 @@ func TestBTreeSeek(t *testing.T) {
 
 	it := tr.iter()
 	for i := 0; i < 2*count-1; i++ {
-		it.seekGE(newItem(key(i)))
+		it.seekGE(base.DefaultComparer.Compare, key(i).UserKey)
 		if !it.valid() {
 			t.Fatalf("%d: expected valid iterator", i)
 		}
@@ -360,13 +360,13 @@ func TestBTreeSeek(t *testing.T) {
 			t.Fatalf("%d: expected %s, but found %s", i, expected, item.Smallest)
 		}
 	}
-	it.seekGE(newItem(key(2*count - 1)))
+	it.seekGE(base.DefaultComparer.Compare, key(2*count-1).UserKey)
 	if it.valid() {
 		t.Fatalf("expected invalid iterator")
 	}
 
 	for i := 1; i < 2*count; i++ {
-		it.seekLT(newItem(key(i)))
+		it.seekLT(base.DefaultComparer.Compare, key(i).UserKey)
 		if !it.valid() {
 			t.Fatalf("%d: expected valid iterator", i)
 		}
@@ -376,7 +376,7 @@ func TestBTreeSeek(t *testing.T) {
 			t.Fatalf("%d: expected %s, but found %s", i, expected, item.Smallest)
 		}
 	}
-	it.seekLT(newItem(key(0)))
+	it.seekLT(base.DefaultComparer.Compare, key(0).UserKey)
 	if it.valid() {
 		t.Fatalf("expected invalid iterator")
 	}
@@ -682,7 +682,7 @@ func BenchmarkBTreeIterSeekGE(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			k := keys[rng.Intn(len(keys))]
 			it := tr.iter()
-			it.seekGE(newItem(k))
+			it.seekGE(base.DefaultComparer.Compare, k.UserKey)
 			if testing.Verbose() {
 				if !it.valid() {
 					b.Fatal("expected to find key")
@@ -715,7 +715,7 @@ func BenchmarkBTreeIterSeekLT(b *testing.B) {
 			j := rng.Intn(len(keys))
 			k := keys[j]
 			it := tr.iter()
-			it.seekLT(newItem(k))
+			it.seekLT(base.DefaultComparer.Compare, k.UserKey)
 			if testing.Verbose() {
 				if j == 0 {
 					if it.valid() {
