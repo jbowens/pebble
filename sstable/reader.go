@@ -1461,11 +1461,14 @@ func (r *Reader) readBlock(
 
 	checksum0 := binary.LittleEndian.Uint32(b[bh.Length+1:])
 	checksum1 := crc.New(b[:bh.Length+1]).Value()
+	corrupt := false
 	if checksum0 != checksum1 {
-		r.opts.Cache.Free(v)
-		return cache.Handle{}, base.CorruptionErrorf(
-			"pebble/table: invalid table %s (checksum mismatch at %d/%d)",
-			errors.Safe(r.fileNum), errors.Safe(bh.Offset), errors.Safe(bh.Length))
+		corrupt = true
+		//r.opts.Cache.Free(v)
+		fmt.Printf("checksum didn't match %x (%0b), %x (%0b): %s\n",
+			checksum0, checksum0, checksum1, checksum1, base.CorruptionErrorf(
+				"pebble/table: invalid table %s (checksum mismatch at %d/%d)",
+				errors.Safe(r.fileNum), errors.Safe(bh.Offset), errors.Safe(bh.Length)))
 	}
 
 	typ := b[bh.Length]
@@ -1476,26 +1479,77 @@ func (r *Reader) readBlock(
 	case noCompressionBlockType:
 		break
 	case snappyCompressionBlockType:
-		decodedLen, err := snappy.DecodedLen(b)
-		if err != nil {
+		if corrupt {
+			bitCount := bh.Length * 8
+			fmt.Printf("Trying flipping all %d bits of the block.\n", bitCount)
+			bCopy := make([]byte, bh.Length+1)
+			for i := uint64(0); i < bitCount; i++ {
+				if n := copy(bCopy[0:], b); uint64(n) != bh.Length {
+					panic("copied fewer than expected bytes")
+				}
+				bCopy[bh.Length] = typ
+				flipByte, flipBit := i/8, i%8
+				unflipped := bCopy[flipByte]
+				flipped := unflipped ^ 1<<flipBit
+				fmt.Printf("Flipping bit %d (byte %d, bit %d): %08b -> %08b\n", i, flipByte, flipBit, unflipped, flipped)
+				bCopy[flipByte] = flipped
+
+				newChecksum := crc.New(bCopy[:bh.Length+1]).Value()
+				if checksum0 == newChecksum {
+					fmt.Printf("Checksum OK at bit %d!\n", i)
+				}
+
+				decodedLen, err := snappy.DecodedLen(bCopy[:bh.Length])
+				if err != nil {
+					fmt.Printf("Unable to decode!: %s\n", err)
+					continue
+					//r.opts.Cache.Free(v)
+					//return cache.Handle{}, base.MarkCorruptionError(err)
+				}
+				decoded := r.opts.Cache.Alloc(decodedLen)
+				decodedBuf := decoded.Buf()
+				result, err := snappy.Decode(decodedBuf, bCopy[:bh.Length])
+				//r.opts.Cache.Free(v)
+				if err != nil {
+					fmt.Printf("Unable to decode!: %s\n", err)
+					r.opts.Cache.Free(decoded)
+					//return cache.Handle{}, base.MarkCorruptionError(err)
+				} else {
+					fmt.Printf("decoded OK\n")
+					if len(result) != 0 &&
+						(len(result) != len(decodedBuf) || &result[0] != &decodedBuf[0]) {
+						r.opts.Cache.Free(decoded)
+						return cache.Handle{}, base.CorruptionErrorf("pebble/table: snappy decoded into unexpected buffer: %p != %p",
+							errors.Safe(result), errors.Safe(decodedBuf))
+					}
+				}
+				//v, b = decoded, decodedBuf
+			}
+			fmt.Printf("Done trying corrupt block\n")
+			os.Exit(1)
+		} else {
+			decodedLen, err := snappy.DecodedLen(b)
+			if err != nil {
+				r.opts.Cache.Free(v)
+				return cache.Handle{}, base.MarkCorruptionError(err)
+			}
+			decoded := r.opts.Cache.Alloc(decodedLen)
+			decodedBuf := decoded.Buf()
+			result, err := snappy.Decode(decodedBuf, b)
 			r.opts.Cache.Free(v)
-			return cache.Handle{}, base.MarkCorruptionError(err)
+			if err != nil {
+				fmt.Printf("Unable to decode!\n")
+				r.opts.Cache.Free(decoded)
+				return cache.Handle{}, base.MarkCorruptionError(err)
+			}
+			if len(result) != 0 &&
+				(len(result) != len(decodedBuf) || &result[0] != &decodedBuf[0]) {
+				r.opts.Cache.Free(decoded)
+				return cache.Handle{}, base.CorruptionErrorf("pebble/table: snappy decoded into unexpected buffer: %p != %p",
+					errors.Safe(result), errors.Safe(decodedBuf))
+			}
+			v, b = decoded, decodedBuf
 		}
-		decoded := r.opts.Cache.Alloc(decodedLen)
-		decodedBuf := decoded.Buf()
-		result, err := snappy.Decode(decodedBuf, b)
-		r.opts.Cache.Free(v)
-		if err != nil {
-			r.opts.Cache.Free(decoded)
-			return cache.Handle{}, base.MarkCorruptionError(err)
-		}
-		if len(result) != 0 &&
-			(len(result) != len(decodedBuf) || &result[0] != &decodedBuf[0]) {
-			r.opts.Cache.Free(decoded)
-			return cache.Handle{}, base.CorruptionErrorf("pebble/table: snappy decoded into unexpected buffer: %p != %p",
-				errors.Safe(result), errors.Safe(decodedBuf))
-		}
-		v, b = decoded, decodedBuf
 	default:
 		r.opts.Cache.Free(v)
 		return cache.Handle{}, base.CorruptionErrorf("pebble/table: unknown block compression: %d", errors.Safe(typ))
