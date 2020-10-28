@@ -945,7 +945,8 @@ func (d *DB) Compact(
 	maxLevelWithFiles := 1
 	cur := d.mu.versions.currentVersion()
 	for level := 0; level < numLevels; level++ {
-		if !cur.Overlaps(level, d.cmp, start, end).Empty() {
+		o := cur.Overlaps(level, d.cmp, start, end)
+		if !o.Empty() {
 			maxLevelWithFiles = level + 1
 		}
 	}
@@ -1100,14 +1101,14 @@ type sstablesOptions struct {
 }
 
 // SSTablesOption set optional parameter used by `DB.SSTables`.
-type SSTablesOption func (*sstablesOptions)
+type SSTablesOption func(*sstablesOptions)
 
 // WithProperties enable return sstable properties in each TableInfo.
 //
 // NOTE: if most of the sstable properties need to be read from disk,
 // this options may make method `SSTables` quite slow.
 func WithProperties() SSTablesOption {
-	return func (opt *sstablesOptions) {
+	return func(opt *sstablesOptions) {
 		opt.withProperties = true
 	}
 }
@@ -1198,7 +1199,8 @@ func (d *DB) EstimateDiskUsage(start, end []byte) (uint64, error) {
 			// We can only use `Overlaps` to restrict `files` at L1+ since at L0 it
 			// expands the range iteratively until it has found a set of files that
 			// do not overlap any other L0 files outside that set.
-			iter = readState.current.Overlaps(level, d.opts.Comparer.Compare, start, end).Iter()
+			o := readState.current.Overlaps(level, d.opts.Comparer.Compare, start, end)
+			iter = o.Iter()
 		}
 		for file := iter.First(); file != nil; file = iter.Next() {
 			if d.opts.Comparer.Compare(start, file.Smallest.UserKey) <= 0 &&

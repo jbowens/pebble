@@ -248,11 +248,11 @@ func TestOverlaps(t *testing.T) {
 
 	cmp := base.DefaultComparer.Compare
 	for _, tc := range testCases {
-		o := v.Overlaps(tc.level, cmp, []byte(tc.ukey0), []byte(tc.ukey1)).Iter()
+		o := v.Overlaps(tc.level, cmp, []byte(tc.ukey0), []byte(tc.ukey1))
 		var s []string
-		for meta := o.First(); meta != nil; meta = o.Next() {
+		o.Each(func(meta *FileMetadata) {
 			s = append(s, fmt.Sprintf("m%02d", meta.FileNum%100))
-		}
+		})
 		got := strings.Join(s, " ")
 		if got != tc.want {
 			t.Errorf("level=%d, range=%s-%s\ngot  %v\nwant %v", tc.level, tc.ukey0, tc.ukey1, got, tc.want)

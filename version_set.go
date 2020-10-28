@@ -283,8 +283,9 @@ func (vs *versionSet) load(dirname string, opts *Options, mu *sync.Mutex) error 
 
 	for i := range vs.metrics.Levels {
 		l := &vs.metrics.Levels[i]
+		ls := newVersion.Levels[i].Slice()
 		l.NumFiles = int64(newVersion.Levels[i].Len())
-		l.Size = int64(newVersion.Levels[i].Slice().SizeSum())
+		l.Size = int64(ls.SizeSum())
 	}
 	vs.picker = newCompactionPicker(newVersion, vs.opts, nil, vs.metrics.levelSizes())
 	return nil
@@ -502,7 +503,8 @@ func (vs *versionSet) logAndApply(
 			if count := int64(newVersion.Levels[i].Len()); l.NumFiles != count {
 				vs.opts.Logger.Fatalf("versionSet metrics L%d NumFiles = %d, actual count = %d", i, l.NumFiles, count)
 			}
-			if size := int64(newVersion.Levels[i].Slice().SizeSum()); l.Size != size {
+			s := newVersion.Levels[i].Slice()
+			if size := int64(s.SizeSum()); l.Size != size {
 				vs.opts.Logger.Fatalf("versionSet metrics L%d Size = %d, actual size = %d", i, l.Size, size)
 			}
 		}

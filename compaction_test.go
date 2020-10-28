@@ -1465,7 +1465,8 @@ func TestCompactionDeleteOnlyHints(t *testing.T) {
 					tombstoneLevel := int(parseUint64(parts[0][1:]))
 					// Find the file in the current version.
 					v := d.mu.versions.currentVersion()
-					overlaps := v.Overlaps(tombstoneLevel, d.opts.Comparer.Compare, start, end).Iter()
+					o := v.Overlaps(tombstoneLevel, d.opts.Comparer.Compare, start, end)
+					overlaps := o.Iter()
 					for m := overlaps.First(); m != nil; m = overlaps.Next() {
 						if m.FileNum.String() == parts[1] {
 							tombstoneFile = m

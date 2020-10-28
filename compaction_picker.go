@@ -537,8 +537,10 @@ func (p *compactionPickerByScore) estimatedCompactionDebt(l0ExtraSize uint64) ui
 
 	// We assume that all the bytes in L0 need to be compacted to Lbase. This is
 	// unlike the RocksDB logic that figures out whether L0 needs compaction.
-	bytesAddedToNextLevel := l0ExtraSize + p.vers.Levels[0].Slice().SizeSum()
-	nextLevelSize := p.vers.Levels[p.baseLevel].Slice().SizeSum()
+	l0 := p.vers.Levels[0].Slice()
+	base := p.vers.Levels[p.baseLevel].Slice()
+	bytesAddedToNextLevel := l0ExtraSize + l0.SizeSum()
+	nextLevelSize := base.SizeSum()
 
 	var compactionDebt uint64
 	if bytesAddedToNextLevel > 0 && nextLevelSize > 0 {
@@ -550,7 +552,8 @@ func (p *compactionPickerByScore) estimatedCompactionDebt(l0ExtraSize uint64) ui
 
 	for level := p.baseLevel; level < numLevels-1; level++ {
 		levelSize := nextLevelSize + bytesAddedToNextLevel
-		nextLevelSize = p.vers.Levels[level+1].Slice().SizeSum()
+		nextLevel := p.vers.Levels[level+1].Slice()
+		nextLevelSize = nextLevel.SizeSum()
 		if levelSize > uint64(p.levelMaxBytes[level]) {
 			bytesAddedToNextLevel = levelSize - uint64(p.levelMaxBytes[level])
 			if nextLevelSize > 0 {
