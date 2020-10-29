@@ -1091,7 +1091,6 @@ func TestSSTables(t *testing.T) {
 	require.NoError(t, d.Set([]byte("world"), nil, nil))
 	require.NoError(t, d.Flush())
 
-
 	// by default returned table infos should not contain Properties
 	tableInfos, err := d.SSTables()
 	require.NoError(t, err)
@@ -1164,6 +1163,51 @@ func BenchmarkDelete(b *testing.B) {
 			benchmark(b, true)
 		}
 	})
+}
+
+func BenchmarkDBNewIterSeek(b *testing.B) {
+	rng := rand.New(rand.NewSource(uint64(time.Now().UnixNano())))
+	const keyCount = 10_000_000
+	var keys [keyCount][]byte
+	for i := 0; i < keyCount; i++ {
+		keys[i] = []byte(strconv.Itoa(rng.Int()))
+	}
+	val := bytes.Repeat([]byte("x"), 10)
+
+	d, err := Open("", &Options{FS: vfs.NewMem()})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, key := range keys {
+		if err := d.Set(key, val, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ResetTimer()
+
+	var wg sync.WaitGroup
+	wg.Add(16)
+	for k := 0; k < 16; k++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < b.N; j++ {
+				it := d.NewIter(nil)
+				_ = it.SeekGE(keys[rand.Intn(keyCount)])
+				if err := it.Error(); err != nil {
+					b.Fatal(err)
+				}
+				if err := it.Close(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	b.StopTimer()
+	if err := d.Close(); err != nil {
+		b.Fatal(err)
+	}
 }
 
 func verifyGet(t *testing.T, r Reader, key, expected []byte) {
