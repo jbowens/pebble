@@ -755,13 +755,19 @@ func (d *DB) newIterInternal(
 	mlevels = mlevels[start:]
 
 	levels := buf.levels[:]
+	var levelsOverflow []levelIter
+	if c := nonemptyLevels(current); len(levels) < c {
+		levelsOverflow = make([]levelIter, c-len(levels))
+	}
+
 	addLevelIterForFiles := func(files manifest.LevelIterator, level manifest.Level) {
 		var li *levelIter
 		if len(levels) > 0 {
 			li = &levels[0]
 			levels = levels[1:]
 		} else {
-			li = &levelIter{}
+			li = &levelsOverflow[0]
+			levelsOverflow = levelsOverflow[1:]
 		}
 
 		li.init(dbi.opts, d.cmp, d.newIters, files, level, nil)
@@ -794,6 +800,23 @@ func (d *DB) newIterInternal(
 	buf.merging.snapshot = seqNum
 	buf.merging.elideRangeTombstones = true
 	return dbi
+}
+
+// nonemptyLevels counts the number of levels, including L0 sublevels,
+// containing files.
+func nonemptyLevels(v *version) int {
+	var count int
+	for l := 0; l < len(v.L0Sublevels.Levels); l++ {
+		if !v.L0Sublevels.Levels[l].Empty() {
+			count++
+		}
+	}
+	for l := 1; l < numLevels; l++ {
+		if !v.Levels[l].Empty() {
+			count++
+		}
+	}
+	return count
 }
 
 // NewBatch returns a new empty write-only batch. Any reads on the batch will
@@ -1103,14 +1126,14 @@ type sstablesOptions struct {
 }
 
 // SSTablesOption set optional parameter used by `DB.SSTables`.
-type SSTablesOption func (*sstablesOptions)
+type SSTablesOption func(*sstablesOptions)
 
 // WithProperties enable return sstable properties in each TableInfo.
 //
 // NOTE: if most of the sstable properties need to be read from disk,
 // this options may make method `SSTables` quite slow.
 func WithProperties() SSTablesOption {
-	return func (opt *sstablesOptions) {
+	return func(opt *sstablesOptions) {
 		opt.withProperties = true
 	}
 }
