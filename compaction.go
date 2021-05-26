@@ -2566,7 +2566,7 @@ func (d *DB) scanObsoleteFiles(list []string) {
 	minUnflushedLogNum := d.mu.versions.minUnflushedLogNum
 	manifestFileNum := d.mu.versions.manifestFileNum
 
-	var obsoleteLogs []FileNum
+	var obsoleteLogs []logInfo
 	var obsoleteTables []*fileMetadata
 	var obsoleteManifests []FileNum
 	var obsoleteOptions []FileNum
@@ -2581,7 +2581,7 @@ func (d *DB) scanObsoleteFiles(list []string) {
 			if fileNum >= minUnflushedLogNum {
 				continue
 			}
-			obsoleteLogs = append(obsoleteLogs, fileNum)
+			obsoleteLogs = append(obsoleteLogs, logInfo{num: fileNum, physicalSize: 0})
 		case fileTypeManifest:
 			if fileNum >= manifestFileNum {
 				continue
@@ -2609,7 +2609,7 @@ func (d *DB) scanObsoleteFiles(list []string) {
 		}
 	}
 
-	d.mu.log.queue = merge(d.mu.log.queue, obsoleteLogs)
+	d.mu.log.queue = mergeLogs(d.mu.log.queue, obsoleteLogs)
 	d.mu.versions.metrics.WAL.Files += int64(len(obsoleteLogs))
 	d.mu.versions.obsoleteTables = mergeFileMetas(d.mu.versions.obsoleteTables, obsoleteTables)
 	d.mu.versions.incrementObsoleteTablesLocked(obsoleteTables)
@@ -2708,14 +2708,21 @@ func (d *DB) doDeleteObsoleteFiles(jobID int) {
 		}
 	}()
 
-	var obsoleteLogs []FileNum
+	logSizeMap := make(map[FileNum]uint64)
+	var obsoleteLogs []base.FileNum
 	for i := range d.mu.log.queue {
 		// NB: d.mu.versions.minUnflushedLogNum is the log number of the earliest
 		// log that has not had its contents flushed to an sstable. We can recycle
 		// the prefix of d.mu.log.queue with log numbers less than
 		// minUnflushedLogNum.
-		if d.mu.log.queue[i] >= d.mu.versions.minUnflushedLogNum {
-			obsoleteLogs = d.mu.log.queue[:i]
+		if d.mu.log.queue[i].num >= d.mu.versions.minUnflushedLogNum {
+			obsoleteLogInfos := d.mu.log.queue[:i]
+			obsoleteLogs = make([]base.FileNum, len(obsoleteLogInfos))
+			for j := 0; j < len(obsoleteLogInfos); j++ {
+				obsoleteLogs[j] = obsoleteLogInfos[j].num
+				logSizeMap[obsoleteLogInfos[j].num] = obsoleteLogInfos[j].physicalSize
+			}
+
 			d.mu.log.queue = d.mu.log.queue[i:]
 			d.mu.versions.metrics.WAL.Files -= int64(len(obsoleteLogs))
 			break
@@ -2762,7 +2769,7 @@ func (d *DB) doDeleteObsoleteFiles(jobID int) {
 			var fileSize uint64
 			switch f.fileType {
 			case fileTypeLog:
-				if !noRecycle && d.logRecycler.add(fileNum) {
+				if !noRecycle && d.logRecycler.add(fileNum, 0 /* TODO(jackson): not this */) {
 					continue
 				}
 				dir = d.walDirname
@@ -2883,6 +2890,26 @@ func merge(a, b []FileNum) []FileNum {
 	n := 0
 	for i := 0; i < len(a); i++ {
 		if n == 0 || a[i] != a[n-1] {
+			a[n] = a[i]
+			n++
+		}
+	}
+	return a[:n]
+}
+
+func mergeLogs(a, b []logInfo) []logInfo {
+	if len(b) == 0 {
+		return a
+	}
+
+	a = append(a, b...)
+	sort.Slice(a, func(i, j int) bool {
+		return a[i].num < a[j].num
+	})
+
+	n := 0
+	for i := 0; i < len(a); i++ {
+		if n == 0 || a[i].num != a[n-1].num {
 			a[n] = a[i]
 			n++
 		}

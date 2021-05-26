@@ -294,7 +294,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 		// Create an empty .log file.
 		newLogNum := d.mu.versions.getNextFileNum()
 		newLogName := base.MakeFilename(opts.FS, d.walDirname, fileTypeLog, newLogNum)
-		d.mu.log.queue = append(d.mu.log.queue, newLogNum)
+		d.mu.log.queue = append(d.mu.log.queue, logInfo{num: newLogNum, physicalSize: 0})
 		logFile, err := opts.FS.Create(newLogName)
 		if err != nil {
 			return nil, err
@@ -463,6 +463,10 @@ func (d *DB) replayWAL(
 		return 0, err
 	}
 	defer file.Close()
+	finfo, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
 
 	var (
 		b               Batch
@@ -552,6 +556,7 @@ func (d *DB) replayWAL(
 			b.data = append([]byte(nil), b.data...)
 			b.flushable = newFlushableBatch(&b, d.opts.Comparer)
 			entry := d.newFlushableEntry(b.flushable, logNum, b.SeqNum())
+			entry.logPhysicalSize = uint64(finfo.Size())
 			// Disable memory accounting by adding a reader ref that will never be
 			// removed.
 			entry.readerRefs++

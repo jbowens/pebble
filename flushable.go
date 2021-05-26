@@ -41,6 +41,10 @@ type flushableEntry struct {
 	logNum FileNum
 	// logSize is the size in bytes of the associated WAL. Protected by DB.mu.
 	logSize uint64
+	// logPhysicalSize is the physical on-disk size in bytes of the associated
+	// WAL, including currently unused recycled data.
+	// TODO(jackson): Document that this is a minimum.
+	logPhysicalSize uint64
 	// The current logSeqNum at the time the memtable was created. This is
 	// guaranteed to be less than or equal to any seqnum stored in the memtable.
 	logSeqNum uint64

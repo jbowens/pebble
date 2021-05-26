@@ -265,7 +265,7 @@ type DB struct {
 			// flushed logs will be a prefix, the unflushed logs a suffix. The
 			// delimeter between flushed and unflushed logs is
 			// versionSet.minUnflushedLogNum.
-			queue []FileNum
+			queue []logInfo
 			// The number of input bytes to the log. This is the raw size of the
 			// batches written to the WAL, without the overhead of the record
 			// envelopes.
@@ -377,9 +377,9 @@ func (d *DB) Get(key []byte) ([]byte, io.Closer, error) {
 }
 
 type getIterAlloc struct {
-	dbi                 Iterator
-	keyBuf              []byte
-	get                 getIter
+	dbi    Iterator
+	keyBuf []byte
+	get    getIter
 }
 
 var getIterAllocPool = sync.Pool{
@@ -411,16 +411,16 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 
 	get := &buf.get
 	*get = getIter{
-		logger: d.opts.Logger,
-		cmp: d.cmp,
-		equal: d.equal,
+		logger:   d.opts.Logger,
+		cmp:      d.cmp,
+		equal:    d.equal,
 		newIters: d.newIters,
 		snapshot: seqNum,
-		key: key,
-		batch: b,
-		mem: readState.memtables,
-		l0: readState.current.L0SublevelFiles,
-		version: readState.current,
+		key:      key,
+		batch:    b,
+		mem:      readState.memtables,
+		l0:       readState.current.L0SublevelFiles,
+		version:  readState.current,
 	}
 
 	// Strip off memtables which cannot possibly contain the seqNum being read
@@ -435,14 +435,14 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 
 	i := &buf.dbi
 	*i = Iterator{
-		getIterAlloc:        buf,
-		cmp:                 d.cmp,
-		equal:               d.equal,
-		iter:                get,
-		merge:               d.merge,
-		split:               d.split,
-		readState:           readState,
-		keyBuf:              buf.keyBuf,
+		getIterAlloc: buf,
+		cmp:          d.cmp,
+		equal:        d.equal,
+		iter:         get,
+		merge:        d.merge,
+		split:        d.split,
+		readState:    readState,
+		keyBuf:       buf.keyBuf,
 	}
 
 	if !i.First() {
@@ -1403,6 +1403,7 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 
 		var newLogNum FileNum
 		var newLogFile vfs.File
+		var newLogPhysicalSize uint64
 		var prevLogSize uint64
 		var err error
 
@@ -1431,7 +1432,7 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 			// preallocation is performed (e.g. fallocate).
 			var recycleLogNum base.FileNum
 			if err == nil {
-				recycleLogNum = d.logRecycler.peek()
+				recycleLogNum, newLogPhysicalSize = d.logRecycler.peek()
 				if recycleLogNum > 0 {
 					recycleLogName := base.MakeFilename(d.opts.FS, d.walDirname, fileTypeLog, recycleLogNum)
 					newLogFile, err = d.opts.FS.ReuseForWrite(recycleLogName, newLogName)
@@ -1486,7 +1487,7 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		}
 
 		if !d.opts.DisableWAL {
-			d.mu.log.queue = append(d.mu.log.queue, newLogNum)
+			d.mu.log.queue = append(d.mu.log.queue, logInfo{num: newLogNum, physicalSize: newLogPhysicalSize})
 			d.mu.log.LogWriter = record.NewLogWriter(newLogFile, newLogNum)
 			d.mu.log.LogWriter.SetMinSyncInterval(d.opts.WALMinSyncInterval)
 		}
@@ -1549,6 +1550,7 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		// that was not flushed).
 		var entry *flushableEntry
 		d.mu.mem.mutable, entry = d.newMemTable(newLogNum, logSeqNum)
+		entry.logPhysicalSize = newLogPhysicalSize
 		d.mu.mem.queue = append(d.mu.mem.queue, entry)
 		d.updateReadStateLocked(nil)
 		if immMem.writerUnref() {

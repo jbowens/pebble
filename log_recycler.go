@@ -23,15 +23,20 @@ type logRecycler struct {
 
 	mu struct {
 		sync.Mutex
-		logNums   []FileNum
+		logs      []logInfo
 		maxLogNum FileNum
 	}
+}
+
+type logInfo struct {
+	num          FileNum
+	physicalSize uint64
 }
 
 // add attempts to recycle the log file specified by logNum. Returns true if
 // the log file should not be deleted (i.e. the log is being recycled), and
 // false otherwise.
-func (r *logRecycler) add(logNum FileNum) bool {
+func (r *logRecycler) add(logNum FileNum, physicalSize uint64) bool {
 	if logNum < r.minRecycleLogNum {
 		return false
 	}
@@ -50,29 +55,29 @@ func (r *logRecycler) add(logNum FileNum) bool {
 		return true
 	}
 	r.mu.maxLogNum = logNum
-	if len(r.mu.logNums) >= r.limit {
+	if len(r.mu.logs) >= r.limit {
 		return false
 	}
-	r.mu.logNums = append(r.mu.logNums, logNum)
+	r.mu.logs = append(r.mu.logs, logInfo{num: logNum, physicalSize: physicalSize})
 	return true
 }
 
 // peek returns the log number at the head of the recycling queue, or zero if
-// the queue is empty.
-func (r *logRecycler) peek() FileNum {
+// the queue is empty. It returns the associated log file's physical size too.
+func (r *logRecycler) peek() (num FileNum, physicalSize uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if len(r.mu.logNums) == 0 {
-		return 0
+	if len(r.mu.logs) == 0 {
+		return 0, 0
 	}
-	return r.mu.logNums[0]
+	return r.mu.logs[0].num, r.mu.logs[0].physicalSize
 }
 
 func (r *logRecycler) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.mu.logNums)
+	return len(r.mu.logs)
 }
 
 // pop removes the log number at the head of the recycling queue, enforcing
@@ -82,12 +87,12 @@ func (r *logRecycler) pop(logNum FileNum) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if len(r.mu.logNums) == 0 {
+	if len(r.mu.logs) == 0 {
 		return errors.New("pebble: log recycler empty")
 	}
-	if r.mu.logNums[0] != logNum {
-		return errors.Errorf("pebble: log recycler invalid %d vs %d", errors.Safe(logNum), errors.Safe(r.mu.logNums))
+	if r.mu.logs[0].num != logNum {
+		return errors.Errorf("pebble: log recycler invalid %d vs %d", errors.Safe(logNum), errors.Safe(r.mu.logs))
 	}
-	r.mu.logNums = r.mu.logNums[1:]
+	r.mu.logs = r.mu.logs[1:]
 	return nil
 }
