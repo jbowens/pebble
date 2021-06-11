@@ -1479,3 +1479,17 @@ func conflictsWithInProgress(
 	}
 	return false
 }
+
+type compactionUnitIterator struct {
+	input  manifest.LevelIterator
+	output manifest.LevelIterator
+}
+
+func (i *compactionUnitIterator) next() (LevelSlice, LevelSlice, bool) {
+	if input.Current() == nil {
+		return LevelSlice{}, LevelSlice{}, false
+	}
+	curr := input.Slice()
+	for {
+	}
+}
