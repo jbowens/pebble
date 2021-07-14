@@ -25,7 +25,8 @@ import (
 // the range [min, max], but skews it towards max using a zipfian
 // distribution.
 type SkewedLatest struct {
-	mu struct {
+	min uint64
+	mu  struct {
 		sync.RWMutex
 		max  uint64
 		zipf *Zipf
@@ -43,6 +44,7 @@ func NewDefaultSkewedLatest() (*SkewedLatest, error) {
 // range.
 func NewSkewedLatest(min, max uint64, theta float64) (*SkewedLatest, error) {
 	z := &SkewedLatest{}
+	z.min = min
 	z.mu.max = max
 	zipf, err := NewZipf(0, max-min, theta)
 	if err != nil {
@@ -50,6 +52,18 @@ func NewSkewedLatest(min, max uint64, theta float64) (*SkewedLatest, error) {
 	}
 	z.mu.zipf = zipf
 	return z, nil
+}
+
+// Min returns the configured minimum.
+func (z *SkewedLatest) Min() uint64 {
+	return z.min
+}
+
+// Max returns the current max.
+func (z *SkewedLatest) Max() uint64 {
+	z.mu.RLock()
+	defer z.mu.RUnlock()
+	return z.mu.max
 }
 
 // IncMax increments max.

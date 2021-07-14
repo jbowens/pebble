@@ -40,6 +40,16 @@ func (g *Uniform) IncMax(delta int) {
 	atomic.AddUint64(&g.max, uint64(delta))
 }
 
+// Min returns the configured min.
+func (g *Uniform) Min() uint64 {
+	return g.min
+}
+
+// Max returns the current max.
+func (g *Uniform) Max() uint64 {
+	return g.max
+}
+
 // Uint64 returns a random Uint64 between min and max, drawn from a uniform
 // distribution.
 func (g *Uniform) Uint64(rng *rand.Rand) uint64 {

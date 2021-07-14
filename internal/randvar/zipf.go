@@ -109,6 +109,18 @@ func computeZetaFromScratch(n uint64, theta float64) float64 {
 	return computeZetaIncrementally(0, n, theta, 0.0)
 }
 
+// Min returns the configured minimum.
+func (z *Zipf) Min() uint64 {
+	return z.min
+}
+
+// Max returns the current max.
+func (z *Zipf) Max() uint64 {
+	z.mu.RLock()
+	defer z.mu.RUnlock()
+	return z.mu.max
+}
+
 // IncMax increments max and recomputes the internal values that depend on
 // it. Returns an error if the recomputation failed.
 func (z *Zipf) IncMax(delta int) {
