@@ -194,6 +194,13 @@ func (y *MemFS) Create(fullname string) (File, error) {
 			if frag == "" {
 				return errors.New("pebble/vfs: empty file name")
 			}
+			if _, ok := dir.children[frag]; ok {
+				return &os.PathError{
+					Op:   "create",
+					Path: fullname,
+					Err:  oserror.ErrExist,
+				}
+			}
 			n := &memNode{name: frag}
 			dir.children[frag] = n
 			ret = &memFile{
@@ -437,8 +444,16 @@ func (y *MemFS) Lock(fullname string) (io.Closer, error) {
 	// FS.Lock excludes other processes, but other processes cannot see this
 	// process' memory. We translate Lock into Create so that have the normal
 	// detection of non-existent directory paths.
-	return y.Create(fullname)
+	f, err := y.Create(fullname)
+	if oserror.IsExist(err) {
+		return noopCloser{}, nil
+	}
+	return f, nil
 }
+
+type noopCloser struct{}
+
+func (noopCloser) Close() error { return nil }
 
 // List implements FS.List.
 func (y *MemFS) List(dirname string) ([]string, error) {

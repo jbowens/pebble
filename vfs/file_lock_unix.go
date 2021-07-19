@@ -49,7 +49,7 @@ func (defaultFS) Lock(name string) (io.Closer, error) {
 		return nil, errors.New("lock held by current process")
 	}
 
-	f, err := os.Create(name)
+	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return nil, err
 	}

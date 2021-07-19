@@ -35,6 +35,7 @@ func TestIngestLoad(t *testing.T) {
 	datadriven.RunTest(t, "testdata/ingest_load", func(td *datadriven.TestData) string {
 		switch td.Cmd {
 		case "load":
+			require.NoError(t, mem.RemoveAll("ext"))
 			f, err := mem.Create("ext")
 			if err != nil {
 				return err.Error()

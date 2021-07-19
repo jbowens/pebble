@@ -141,7 +141,7 @@ var Default FS = defaultFS{}
 type defaultFS struct{}
 
 func (defaultFS) Create(name string) (File, error) {
-	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC|syscall.O_CLOEXEC, 0666)
+	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|syscall.O_CLOEXEC, 0666)
 	return f, errors.WithStack(err)
 }
 
