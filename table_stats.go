@@ -292,6 +292,15 @@ func (d *DB) loadTableStats(
 				// snapshot kept the tombstone around. Estimate disk usage
 				// within the file itself.
 				if level == numLevels-1 {
+					// There may also be a range tombstone in the file if the
+					// file was ingested. A range tombstone at the same
+					// sequence number as a key does not delete the key. If
+					// the tombstone's sequence number equals the file's
+					// smallest sequence number, skip the tombstone because it
+					// was ingested and deletes nothing.
+					if smallestSeqNum == meta.SmallestSeqNum {
+						return nil
+					}
 					size, err := r.EstimateDiskUsage(startUserKey, endUserKey)
 					if err != nil {
 						return err
