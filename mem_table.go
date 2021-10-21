@@ -301,7 +301,7 @@ func (f *rangeTombstoneFrags) get(m *memTable) []keyspan.Span {
 		}
 		it := m.rangeDelSkl.NewIter(nil, nil)
 		for key, val := it.First(); key != nil; key, val = it.Next() {
-			frag.Add(*key, val)
+			frag.Add(keyspan.Span{Start: *key, End: val})
 		}
 		frag.Finish()
 	})

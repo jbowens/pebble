@@ -59,7 +59,7 @@ func buildTombstones(t *testing.T, cmp base.Compare, formatKey base.FormatKey, s
 		}
 
 		t := parseTombstone(t, line)
-		f.Add(t.Start, t.End)
+		f.Add(t)
 	}
 	f.Finish()
 	return spans
@@ -177,7 +177,7 @@ func TestFragmenterDeleted(t *testing.T) {
 				switch {
 				case strings.HasPrefix(line, "add "):
 					t := parseTombstone(t, strings.TrimPrefix(line, "add "))
-					f.Add(t.Start, t.End)
+					f.Add(t)
 				case strings.HasPrefix(line, "deleted "):
 					key := base.ParseInternalKey(strings.TrimPrefix(line, "deleted "))
 					func() {

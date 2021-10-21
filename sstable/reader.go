@@ -2337,7 +2337,7 @@ func (r *Reader) transformRangeDelV1(b []byte) ([]byte, error) {
 	}
 	for i := range tombstones {
 		t := &tombstones[i]
-		frag.Add(t.Start, t.End)
+		frag.Add(keyspan.Span{Start: t.Start, End: t.End})
 	}
 	frag.Finish()
 

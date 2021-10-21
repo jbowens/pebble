@@ -13,8 +13,8 @@ import (
 	"github.com/cockroachdb/pebble/bloom"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/datadriven"
-	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/keyspan"
+	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
@@ -209,7 +209,7 @@ func TestMergingIterCornerCases(t *testing.T) {
 					value := []byte(kv[j+1:])
 					switch ikey.Kind() {
 					case InternalKeyKindRangeDelete:
-						frag.Add(ikey, value)
+						frag.Add(keyspan.Span{Start: ikey, End: value})
 					default:
 						if err := w.Add(ikey, value); err != nil {
 							return err.Error()

@@ -17,6 +17,9 @@ import (
 type Span struct {
 	Start base.InternalKey
 	End   []byte
+	// Value is empty for range deletion tombstones. It's used for
+	// color spans.
+	Value []byte
 }
 
 // Overlaps returns 0 if this span overlaps the other, -1 if there's no

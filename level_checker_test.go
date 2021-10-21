@@ -15,9 +15,9 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/datadriven"
+	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/private"
-	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
@@ -182,7 +182,7 @@ func TestCheckLevelsCornerCases(t *testing.T) {
 							err = w.Add(ikey, value)
 							break
 						}
-						frag.Add(ikey, value)
+						frag.Add(keyspan.Span{Start: ikey, End: value})
 					default:
 						err = w.Add(ikey, value)
 					}

@@ -25,26 +25,26 @@ func (v *spansByStartKey) Swap(i, j int) {
 	v.buf[i], v.buf[j] = v.buf[j], v.buf[i]
 }
 
-type SpansByEndKey struct {
+type spansByEndKey struct {
 	cmp base.Compare
 	buf []Span
 }
 
-func (v *SpansByEndKey) Len() int { return len(v.buf) }
-func (v *SpansByEndKey) Less(i, j int) bool {
+func (v *spansByEndKey) Len() int { return len(v.buf) }
+func (v *spansByEndKey) Less(i, j int) bool {
 	return v.cmp(v.buf[i].End, v.buf[j].End) < 0
 }
-func (v *SpansByEndKey) Swap(i, j int) {
+func (v *spansByEndKey) Swap(i, j int) {
 	v.buf[i], v.buf[j] = v.buf[j], v.buf[i]
 }
 
-type SpansBySeqNum []Span
+type spansBySeqNum []Span
 
-func (v *SpansBySeqNum) Len() int { return len(*v) }
-func (v *SpansBySeqNum) Less(i, j int) bool {
+func (v *spansBySeqNum) Len() int { return len(*v) }
+func (v *spansBySeqNum) Less(i, j int) bool {
 	return (*v)[i].Start.SeqNum() > (*v)[j].Start.SeqNum()
 }
-func (v *SpansBySeqNum) Swap(i, j int) {
+func (v *spansBySeqNum) Swap(i, j int) {
 	(*v)[i], (*v)[j] = (*v)[j], (*v)[i]
 }
 
@@ -80,9 +80,9 @@ type Fragmenter struct {
 	// reuse.
 	doneBuf []Span
 	// sortBuf is used to sort fragments by end key when flushing.
-	sortBuf SpansByEndKey
+	sortBuf spansByEndKey
 	// flushBuf is used to sort fragments by seqnum before emitting.
-	flushBuf SpansBySeqNum
+	flushBuf spansBySeqNum
 	// flushedKey is the key that fragments have been flushed up to. Any
 	// additional spans added to the fragmenter must have a start key >=
 	// flushedKey. A nil value indicates flushedKey has not been set.
@@ -172,23 +172,23 @@ func (f *Fragmenter) checkInvariants(buf []Span) {
 //
 // This process continues until there are no more fragments to flush.
 //
-// WARNING: the slices backing start.UserKey and end are retained after
-// this method returns and should not be modified. This is safe for
-// spans that are added from a memtable or batch. It is not safe for a
-// span added from a range tombstone from an sstable where the range-del
-// block has been prefix compressed.
-func (f *Fragmenter) Add(start base.InternalKey, end []byte) {
+// WARNING: the slices backing the span's start, end and value are
+// retained after this method returns and should not be modified. This
+// is safe for spans that are added from a memtable or batch. It is not
+// safe for a span added from a range tombstone from an sstable where
+// the range-del block has been prefix compressed.
+func (f *Fragmenter) Add(span Span) {
 	if f.finished {
 		panic("pebble: span fragmenter already finished")
 	}
 	if f.flushedKey != nil {
-		switch c := f.Cmp(start.UserKey, f.flushedKey); {
+		switch c := f.Cmp(span.Start.UserKey, f.flushedKey); {
 		case c < 0:
 			panic(fmt.Sprintf("pebble: start key (%s) < flushed key (%s)",
-				f.Format(start.UserKey), f.Format(f.flushedKey)))
+				f.Format(span.Start.UserKey), f.Format(f.flushedKey)))
 		}
 	}
-	if f.Cmp(start.UserKey, end) >= 0 {
+	if f.Cmp(span.Start.UserKey, span.End) >= 0 {
 		// An empty span, we can ignore it.
 		return
 	}
@@ -200,29 +200,23 @@ func (f *Fragmenter) Add(start base.InternalKey, end []byte) {
 	if len(f.pending) > 0 {
 		// Since all of the pending spans have the same start key, we only need
 		// to compare against the first one.
-		switch c := f.Cmp(f.pending[0].Start.UserKey, start.UserKey); {
+		switch c := f.Cmp(f.pending[0].Start.UserKey, span.Start.UserKey); {
 		case c > 0:
 			panic(fmt.Sprintf("pebble: keys must be added in order: %s > %s",
-				f.pending[0].Start.Pretty(f.Format), start.Pretty(f.Format)))
+				f.pending[0].Start.Pretty(f.Format), span.Start.Pretty(f.Format)))
 		case c == 0:
 			// The new span has the same start key as the existing pending
 			// spans. Add it to the pending buffer.
-			f.pending = append(f.pending, Span{
-				Start: start,
-				End:   end,
-			})
+			f.pending = append(f.pending, span)
 			return
 		}
 
 		// At this point we know that the new start key is greater than the pending
 		// spans start keys.
-		f.truncateAndFlush(start.UserKey)
+		f.truncateAndFlush(span.Start.UserKey)
 	}
 
-	f.pending = append(f.pending, Span{
-		Start: start,
-		End:   end,
-	})
+	f.pending = append(f.pending, span)
 }
 
 // Covers returns true if the specified key is covered by one of the pending
@@ -319,13 +313,14 @@ func (f *Fragmenter) FlushTo(key []byte) {
 	// would become empty.
 	pending := f.pending
 	f.pending = f.pending[:0]
-	for _, t := range pending {
-		if f.Cmp(key, t.End) < 0 {
-			//   t: a--+--e
+	for _, s := range pending {
+		if f.Cmp(key, s.End) < 0 {
+			//   s: a--+--e
 			// new:    c------
 			f.pending = append(f.pending, Span{
-				Start: base.MakeInternalKey(key, t.Start.SeqNum(), t.Start.Kind()),
-				End:   t.End,
+				Start: base.MakeInternalKey(key, s.Start.SeqNum(), s.Start.Kind()),
+				End:   s.End,
+				Value: s.Value,
 			})
 		}
 	}
@@ -407,21 +402,22 @@ func (f *Fragmenter) truncateAndFlush(key []byte) {
 	// pending and f.pending share the same underlying storage. As we iterate
 	// over pending we append to f.pending, but only one entry is appended in
 	// each iteration, after we have read the entry being overwritten.
-	for _, t := range pending {
-		if f.Cmp(key, t.End) < 0 {
-			//   t: a--+--e
+	for _, s := range pending {
+		if f.Cmp(key, s.End) < 0 {
+			//   s: a--+--e
 			// new:    c------
-			if f.Cmp(t.Start.UserKey, key) < 0 {
-				done = append(done, Span{Start: t.Start, End: key})
+			if f.Cmp(s.Start.UserKey, key) < 0 {
+				done = append(done, Span{Start: s.Start, End: key, Value: s.Value})
 			}
 			f.pending = append(f.pending, Span{
-				Start: base.MakeInternalKey(key, t.Start.SeqNum(), t.Start.Kind()),
-				End:   t.End,
+				Start: base.MakeInternalKey(key, s.Start.SeqNum(), s.Start.Kind()),
+				End:   s.End,
+				Value: s.Value,
 			})
 		} else {
-			//   t: a-----e
+			//   s: a-----e
 			// new:       e----
-			done = append(done, t)
+			done = append(done, s)
 		}
 	}
 
@@ -470,6 +466,7 @@ func (f *Fragmenter) flush(buf []Span, lastKey []byte) {
 			f.flushBuf = append(f.flushBuf, Span{
 				Start: buf[i].Start,
 				End:   split,
+				Value: buf[i].Value,
 			})
 		}
 

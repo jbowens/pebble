@@ -14,8 +14,8 @@ import (
 	"github.com/cockroachdb/pebble/bloom"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/datadriven"
-	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/keyspan"
+	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
@@ -202,7 +202,7 @@ func (lt *levelIterTest) runBuild(d *datadriven.TestData) string {
 		value := []byte(key[j+1:])
 		switch ikey.Kind() {
 		case InternalKeyKindRangeDelete:
-			f.Add(ikey, value)
+			f.Add(keyspan.Span{Start: ikey, End: value})
 		default:
 			if err := w.Add(ikey, value); err != nil {
 				return err.Error()
