@@ -2,7 +2,7 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package rangedel
+package keyspan
 
 import (
 	"bytes"
@@ -15,14 +15,14 @@ import (
 )
 
 func TestIter(t *testing.T) {
-	var tombstones []Tombstone
+	var spans []Span
 	datadriven.RunTest(t, "testdata/iter", func(d *datadriven.TestData) string {
 		switch d.Cmd {
 		case "define":
-			tombstones = nil
+			spans = nil
 			for _, key := range strings.Split(d.Input, "\n") {
 				j := strings.Index(key, ":")
-				tombstones = append(tombstones, Tombstone{
+				spans = append(spans, Span{
 					Start: base.ParseInternalKey(key[:j]),
 					End:   []byte(key[j+1:]),
 				})
@@ -30,7 +30,7 @@ func TestIter(t *testing.T) {
 			return ""
 
 		case "iter":
-			iter := NewIter(base.DefaultComparer.Compare, tombstones)
+			iter := NewIter(base.DefaultComparer.Compare, spans)
 			defer iter.Close()
 
 			var b bytes.Buffer

@@ -2,7 +2,7 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package rangedel
+package keyspan
 
 import (
 	"strings"
@@ -11,7 +11,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 )
 
-func TestTombstone_Overlaps(t *testing.T) {
+func TestSpan_Overlaps(t *testing.T) {
 	cmp := base.DefaultComparer.Compare
 	testCases := []struct {
 		a    string
@@ -42,18 +42,18 @@ func TestTombstone_Overlaps(t *testing.T) {
 	parse := func(s string) (start, end string) {
 		keyValue := strings.Split(s, ":")
 		if len(keyValue) != 2 {
-			t.Fatal("incorrectly formatted tombstone")
+			t.Fatal("incorrectly formatted Span")
 		}
 		return keyValue[0], keyValue[1]
 	}
 	for _, tc := range testCases {
 		start, end := parse(tc.a)
-		a := Tombstone{
+		a := Span{
 			Start: base.ParseInternalKey(start),
 			End:   []byte(end),
 		}
 		start, end = parse(tc.b)
-		b := Tombstone{
+		b := Span{
 			Start: base.ParseInternalKey(start),
 			End:   []byte(end),
 		}

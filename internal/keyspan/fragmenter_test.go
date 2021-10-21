@@ -2,7 +2,7 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package rangedel
+package keyspan
 
 import (
 	"bytes"
@@ -19,28 +19,26 @@ import (
 
 var tombstoneRe = regexp.MustCompile(`(\d+):\s*(\w+)-*(\w+)`)
 
-func parseTombstone(t *testing.T, s string) Tombstone {
+func parseTombstone(t *testing.T, s string) Span {
 	m := tombstoneRe.FindStringSubmatch(s)
 	if len(m) != 4 {
 		t.Fatalf("expected 4 components, but found %d: %s", len(m), s)
 	}
 	seqNum, err := strconv.Atoi(m[1])
 	require.NoError(t, err)
-	return Tombstone{
+	return Span{
 		Start: base.MakeInternalKey([]byte(m[2]), uint64(seqNum), base.InternalKeyKindRangeDelete),
 		End:   []byte(m[3]),
 	}
 }
 
-func buildTombstones(
-	t *testing.T, cmp base.Compare, formatKey base.FormatKey, s string,
-) []Tombstone {
-	var tombstones []Tombstone
+func buildTombstones(t *testing.T, cmp base.Compare, formatKey base.FormatKey, s string) []Span {
+	var spans []Span
 	f := &Fragmenter{
 		Cmp:    cmp,
 		Format: formatKey,
-		Emit: func(fragmented []Tombstone) {
-			tombstones = append(tombstones, fragmented...)
+		Emit: func(fragmented []Span) {
+			spans = append(spans, fragmented...)
 		},
 	}
 	for _, line := range strings.Split(s, "\n") {
@@ -64,10 +62,10 @@ func buildTombstones(
 		f.Add(t.Start, t.End)
 	}
 	f.Finish()
-	return tombstones
+	return spans
 }
 
-func formatTombstones(tombstones []Tombstone) string {
+func formatSpans(spans []Span) string {
 	isLetter := func(b []byte) bool {
 		if len(b) != 1 {
 			return false
@@ -76,7 +74,7 @@ func formatTombstones(tombstones []Tombstone) string {
 	}
 
 	var buf bytes.Buffer
-	for _, v := range tombstones {
+	for _, v := range spans {
 		if v.Empty() {
 			fmt.Fprintf(&buf, "<empty>\n")
 			continue
@@ -114,12 +112,12 @@ func TestFragmenter(t *testing.T) {
 	var iter base.InternalIterator
 
 	// Returns true if the specified <key,seq> pair is deleted at the specified
-	// read sequence number. Get ignores tombstones newer than the read sequence
+	// read sequence number. Get ignores spans newer than the read sequence
 	// number. This is a simple version of what full processing of range
 	// tombstones looks like.
 	deleted := func(key []byte, seq, readSeq uint64) bool {
-		tombstone := Get(cmp, iter, key, readSeq)
-		return tombstone.Deletes(seq)
+		span := Get(cmp, iter, key, readSeq)
+		return span.Covers(seq)
 	}
 
 	datadriven.RunTest(t, "testdata/fragmenter", func(d *datadriven.TestData) string {
@@ -134,7 +132,7 @@ func TestFragmenter(t *testing.T) {
 
 				tombstones := buildTombstones(t, cmp, fmtKey, d.Input)
 				iter = NewIter(cmp, tombstones)
-				return formatTombstones(tombstones)
+				return formatSpans(tombstones)
 			}()
 
 		case "get":
@@ -171,7 +169,7 @@ func TestFragmenterDeleted(t *testing.T) {
 			f := &Fragmenter{
 				Cmp:    base.DefaultComparer.Compare,
 				Format: base.DefaultComparer.FormatKey,
-				Emit: func(fragmented []Tombstone) {
+				Emit: func(fragmented []Span) {
 				},
 			}
 			var buf bytes.Buffer
@@ -188,7 +186,7 @@ func TestFragmenterDeleted(t *testing.T) {
 								fmt.Fprintf(&buf, "%s: %s\n", key, r)
 							}
 						}()
-						fmt.Fprintf(&buf, "%s: %t\n", key, f.Deleted(key, base.InternalKeySeqNumMax))
+						fmt.Fprintf(&buf, "%s: %t\n", key, f.Covers(key, base.InternalKeySeqNumMax))
 					}()
 				}
 			}
@@ -215,7 +213,7 @@ func TestFragmenterFlushTo(t *testing.T) {
 				}()
 
 				tombstones := buildTombstones(t, cmp, fmtKey, d.Input)
-				return formatTombstones(tombstones)
+				return formatSpans(tombstones)
 			}()
 
 		default:
@@ -239,7 +237,7 @@ func TestFragmenterTruncateAndFlushTo(t *testing.T) {
 				}()
 
 				tombstones := buildTombstones(t, cmp, fmtKey, d.Input)
-				return formatTombstones(tombstones)
+				return formatSpans(tombstones)
 			}()
 
 		default:
