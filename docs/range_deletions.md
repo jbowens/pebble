@@ -167,7 +167,7 @@ The range deletes written to these ssts are
 ```
 
 The Pebble code that achieves this effect is in
-`rangedel.Fragmenter`. It is a code structuring artifact that sst1
+`keyspan.Fragmenter`. It is a code structuring artifact that sst1
 does not contain a range delete equal to `["c", "f")#10` and sst4 does
 not contain `["f", "g")#10`. However for the range deletes in sst2 and
 sst3 we cannot do any better because we don't know what the key
