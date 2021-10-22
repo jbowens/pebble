@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/humanize"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/private"
+	"github.com/cockroachdb/pebble/internal/rangekey"
 	"github.com/cockroachdb/pebble/internal/rawalloc"
 )
 
@@ -72,9 +73,9 @@ func (d DeferredBatchOp) Finish() {
 	}
 }
 
-// A Batch is a sequence of Sets, Merges, Deletes, and/or DeleteRanges that are
-// applied atomically. Batch implements the Reader interface, but only an
-// indexed batch supports reading (without error) via Get or NewIter. A
+// A Batch is a sequence of Sets, Merges, Deletes, RangeKeys and/or DeleteRanges
+// that are applied atomically. Batch implements the Reader interface, but only
+// an indexed batch supports reading (without error) via Get or NewIter. A
 // non-indexed batch will return ErrNotIndexed when read from .
 //
 // Indexing
@@ -86,8 +87,8 @@ func (d DeferredBatchOp) Finish() {
 // in the LSM where every entry in the batch is considered newer than any entry
 // in the underlying database (batch entries have the InternalKeySeqNumBatch
 // bit set). By treating the batch as an additional layer in the LSM, iteration
-// supports all batch operations (i.e. Set, Merge, Delete, and DeleteRange)
-// with minimal effort.
+// supports all batch operations (i.e. Set, Merge, Delete, RangeKeys and
+// DeleteRange) with minimal effort.
 //
 // The same key can be operated on multiple times in a batch, though only the
 // latest operation will be visible. For example, Put("a", "b"), Delete("a")
@@ -160,9 +161,13 @@ func (d DeferredBatchOp) Finish() {
 //   InternalKeyKindSet          varstring varstring
 //   InternalKeyKindMerge        varstring varstring
 //   InternalKeyKindRangeDelete  varstring varstring
+//   InternalKeyKindRangeKey     varstring varstring
 //
 // The intuitive understanding here are that the arguments to Delete(), Set(),
-// Merge(), and DeleteRange() are encoded into the batch.
+// Merge() and DeleteRange() are encoded into the batch. The RangeKey()
+// operation is slightly more complicated, first encoding its end key and value
+// into a sinle varstring, which in turn is encoded as the second varstring
+// within the batch entry.
 //
 // The internal batch representation is the on disk format for a batch in the
 // WAL, and thus stable. New record kinds may be added, but the existing ones
@@ -215,11 +220,17 @@ type Batch struct {
 	// An optional skiplist keyed by offset into data of the entry.
 	index         *batchskl.Skiplist
 	rangeDelIndex *batchskl.Skiplist
+	rangeKeyIndex *batchskl.Skiplist
 
 	// Fragmented range deletion tombstones. Cached the first time a range
 	// deletion iterator is requested. The cache is invalidated whenever a new
 	// range deletion is added to the batch.
 	tombstones []keyspan.Span
+
+	// Fragmented range key spans. Cached the first time a range key iterator is
+	// requested. The cache is invalidated whenever a new range key is added to
+	// the batch.
+	rangeKeys []keyspan.Span
 
 	// The flushableBatch wrapper if the batch is too large to fit in the
 	// memtable.
@@ -290,7 +301,7 @@ func (b *Batch) release() {
 	if b.index == nil {
 		batchPool.Put(b)
 	} else {
-		b.index, b.rangeDelIndex = nil, nil
+		b.index, b.rangeDelIndex, b.rangeKeyIndex = nil, nil, nil
 		indexedBatchPool.Put((*indexedBatch)(unsafe.Pointer(b)))
 	}
 }
@@ -348,13 +359,20 @@ func (b *Batch) Apply(batch *Batch, _ *WriteOptions) error {
 			}
 			if b.index != nil {
 				var err error
-				if kind == InternalKeyKindRangeDelete {
+				switch kind {
+				case InternalKeyKindRangeDelete:
 					b.tombstones = nil
 					if b.rangeDelIndex == nil {
 						b.rangeDelIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
 					}
 					err = b.rangeDelIndex.Add(uint32(offset))
-				} else {
+				case InternalKeyKindRangeKey:
+					b.rangeKeys = nil
+					if b.rangeKeyIndex == nil {
+						b.rangeKeyIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
+					}
+					err = b.rangeKeyIndex.Add(uint32(offset))
+				default:
 					err = b.index.Add(uint32(offset))
 				}
 				if err != nil {
@@ -618,6 +636,59 @@ func (b *Batch) DeleteRangeDeferred(startLen, endLen int) *DeferredBatchOp {
 	return &b.deferredOp
 }
 
+// ExperimentalRangeKey adds an action to the batch that merges the provided value with the
+// existing range value for all of the keys in the range [start,end)
+// (inclusive on start, exclusive on end).
+//
+// It is safe to modify the contents of the arguments after RangeKey returns.
+//
+// WARNING: This functionality is experimental and expected to largely be
+// unfunctional. Range keys may not be durably persisted!
+func (b *Batch) ExperimentalRangeKey(start, end, value []byte, _ *WriteOptions) error {
+	encodedValLen := rangekey.EncodedValueLen(end, value)
+
+	deferredOp := b.rangeKeyDeferred(len(start), encodedValLen)
+	copy(deferredOp.Key, start)
+	n := rangekey.EncodeValue(deferredOp.Value, end, value)
+	if n != encodedValLen {
+		// TODO(jackson): remove this check later
+		panic(fmt.Sprintf("range key encoding value length mismatch: expected %d, encoded %d", encodedValLen, n))
+	}
+
+	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
+	// in go1.13 will remove the need for this.
+	if deferredOp.index != nil {
+		if err := deferredOp.index.Add(deferredOp.offset); err != nil {
+			// We never add duplicate entries, so an error should never occur.
+			panic(err)
+		}
+	}
+	return nil
+}
+
+// rangeKeyDeferred is similar to RangeKey in that it adds a range key
+// operation to the batch, except it only takes in key and value lengths instead of
+// complete slices, letting the caller encode into those objects and then call
+// Finish() on the returned object. Note that DeferredBatchOp.Key should be
+// populated with the start key, and DeferredBatchOp.Value should be populated
+// with a varint-encoded end key length, the end key, followed by the value.
+//
+// TODO(jackson): This isn't exported because the current interface requires the
+// caller to know how we encode range key values. We can provide facilities to
+// make this ergonomic before we export it.
+func (b *Batch) rangeKeyDeferred(startLen, combinedValLen int) *DeferredBatchOp {
+	b.prepareDeferredKeyValueRecord(startLen, combinedValLen, InternalKeyKindRangeKey)
+	if b.index != nil {
+		b.rangeKeys = nil
+		// Range keys are rare, so we lazily allocate the index for them.
+		if b.rangeKeyIndex == nil {
+			b.rangeKeyIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
+		}
+		b.deferredOp.index = b.rangeKeyIndex
+	}
+	return &b.deferredOp
+}
+
 // LogData adds the specified to the batch. The data will be written to the
 // WAL, but not added to memtables or sstables. Log data is never indexed,
 // which makes it useful for testing WAL performance.
@@ -728,6 +799,8 @@ func (b *Batch) newRangeDelIter(o *IterOptions) internalIterator {
 	return keyspan.NewIter(b.cmp, b.tombstones)
 }
 
+// TODO(jackson): Expose a newRangeKeyIter.
+
 // Commit applies the batch to its parent writer.
 func (b *Batch) Commit(o *WriteOptions) error {
 	return b.db.Apply(b, o)
@@ -767,6 +840,7 @@ func (b *Batch) Reset() {
 	b.memTableSize = 0
 	b.deferredOp = DeferredBatchOp{}
 	b.tombstones = nil
+	b.rangeKeys = nil
 	b.flushable = nil
 	b.commit = sync.WaitGroup{}
 	b.commitErr = nil
@@ -913,7 +987,7 @@ func (r *BatchReader) Next() (kind InternalKeyKind, ukey []byte, value []byte, o
 		return 0, nil, nil, false
 	}
 	switch kind {
-	case InternalKeyKindSet, InternalKeyKindMerge, InternalKeyKindRangeDelete:
+	case InternalKeyKindSet, InternalKeyKindMerge, InternalKeyKindRangeDelete, InternalKeyKindRangeKey:
 		*r, value, ok = batchDecodeStr(*r)
 		if !ok {
 			return 0, nil, nil, false
@@ -1012,11 +1086,14 @@ func (i *batchIter) Value() []byte {
 	}
 
 	switch InternalKeyKind(data[offset]) {
-	case InternalKeyKindSet, InternalKeyKindMerge, InternalKeyKindRangeDelete:
+	case InternalKeyKindSet, InternalKeyKindMerge, InternalKeyKindRangeDelete, InternalKeyKindRangeKey:
 		_, value, ok := batchDecodeStr(data[keyEnd:])
 		if !ok {
 			return nil
 		}
+		// TODO(jackson): For range keys, this returns the encoded range
+		// key value, leaving it up to the caller to parse out the value
+		// and end key. Add separate methods?
 		return value
 	default:
 		return nil
@@ -1077,6 +1154,8 @@ type flushableBatch struct {
 
 	// Fragmented range deletion tombstones.
 	tombstones []keyspan.Span
+
+	// TODO(jackson): Add support for flushing range keys in the batch.
 }
 
 var _ flushable = (*flushableBatch)(nil)
