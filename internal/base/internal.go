@@ -51,6 +51,9 @@ const (
 	// https://github.com/cockroachdb/pebble/issues/1255.
 	InternalKeyKindSetWithDelete InternalKeyKind = 18
 
+	// InternalKeyKindRangeKey ...
+	InternalKeyKindRangeKey InternalKeyKind = 19
+
 	// This maximum value isn't part of the file format. It's unlikely,
 	// but future extensions may increase this value.
 	//
@@ -60,7 +63,7 @@ const (
 	// which sorts 'less than or equal to' any other valid internalKeyKind, when
 	// searching for any kind of internal key formed by a certain user key and
 	// seqNum.
-	InternalKeyKindMax InternalKeyKind = 18
+	InternalKeyKindMax InternalKeyKind = 19
 
 	// A marker for an invalid key.
 	InternalKeyKindInvalid InternalKeyKind = 255
@@ -89,6 +92,7 @@ var internalKeyKindNames = []string{
 	InternalKeyKindRangeDelete:   "RANGEDEL",
 	InternalKeyKindSeparator:     "SEPARATOR",
 	InternalKeyKindSetWithDelete: "SETWITHDEL",
+	InternalKeyKindRangeKey:      "RANGEKEY",
 	InternalKeyKindInvalid:       "INVALID",
 }
 
@@ -154,6 +158,7 @@ var kindsMap = map[string]InternalKeyKind{
 	"INVALID":    InternalKeyKindInvalid,
 	"SEPARATOR":  InternalKeyKindSeparator,
 	"SETWITHDEL": InternalKeyKindSetWithDelete,
+	"RANGEKEY":   InternalKeyKindRangeKey,
 }
 
 // ParseInternalKey parses the string representation of an internal key. The
