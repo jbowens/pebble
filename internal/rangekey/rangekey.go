@@ -28,3 +28,18 @@ func EncodeValue(dst, endKey, value []byte) int {
 	copy(dst[n+len(endKey):], value)
 	return n + len(endKey) + len(value)
 }
+
+// DecodeValue ...
+//
+// TODO(jackson): document.
+func DecodeValue(rawValue []byte) (endKey, value []byte, ok bool) {
+	endLenUint, n := binary.Uvarint(rawValue)
+	if n < 0 {
+		return nil, nil, false
+	}
+	endLen := int(endLenUint)
+	if len(rawValue)-n-endLen < 0 {
+		return nil, nil, false
+	}
+	return rawValue[n : n+endLen], rawValue[n+endLen:], true
+}

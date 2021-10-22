@@ -399,6 +399,16 @@ type DB struct {
 		}
 	}
 
+	// rangeKeys is a temporary field so that Pebble can provide a non-durable
+	// implementation of range keys in advance of the real implementation.
+	// TODO(jackson): Remove this.
+	rangeKeys struct {
+		once     sync.Once
+		skl      arenaskl.Skiplist
+		arenaBuf []byte
+		cache    keySpanCache
+	}
+
 	// Normally equal to time.Now() but may be overridden in tests.
 	timeNow func() time.Time
 }
@@ -481,6 +491,7 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		equal:        d.equal,
 		iter:         get,
 		merge:        d.merge,
+		rangeMerge:   d.opts.Experimental.RangeValueMerger,
 		split:        d.split,
 		readState:    readState,
 		keyBuf:       buf.keyBuf,
@@ -648,6 +659,20 @@ func (d *DB) commitApply(b *Batch, mem *memTable) error {
 		return err
 	}
 
+	// If the batch contains range keys, add them to the range key skiplist.
+	// This is temporary, while we work on implementing range keys. It allows us
+	// to provide an implementation of range keys that aren't persisted, so
+	// CockroachDB packages may build and prototype against them.
+	// TODO(jackson): When the durable implementation is complete, remove this
+	// and the range-key arena.
+	if b.countRangeKeys > 0 {
+		// TODO(jackson): Allow range deletions to fragment and mark
+		// range keys as deleted. We can't actually drop the fragments
+		// unless we also incorporate knowledge of snapshots into the
+		// temporary in-memory range key implementation.
+		d.applyBatchRangeKeys(b)
+	}
+
 	// If the batch contains range tombstones and the database is configured
 	// to flush range deletions, schedule a delayed flush so that disk space
 	// may be reclaimed without additional writes or an explicit flush.
@@ -770,6 +795,7 @@ func (d *DB) newIterInternal(batch *Batch, s *Snapshot, o *IterOptions) *Iterato
 		equal:               d.equal,
 		iter:                &buf.merging,
 		merge:               d.merge,
+		rangeMerge:          d.opts.Experimental.RangeValueMerger,
 		split:               d.split,
 		readState:           readState,
 		keyBuf:              buf.keyBuf,
@@ -777,6 +803,7 @@ func (d *DB) newIterInternal(batch *Batch, s *Snapshot, o *IterOptions) *Iterato
 		batch:               batch,
 		newIters:            d.newIters,
 		seqNum:              seqNum,
+		rangeKeyIter:        d.newRangeKeyIter(o),
 	}
 	if o != nil {
 		dbi.opts = *o

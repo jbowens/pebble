@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/fastrand"
 	"github.com/cockroachdb/pebble/internal/invariants"
+	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/redact"
 )
@@ -106,21 +107,23 @@ var _ redact.SafeFormatter = &IteratorStats{}
 // Next, Prev) return without advancing if the iterator has an accumulated
 // error.
 type Iterator struct {
-	opts      IterOptions
-	cmp       Compare
-	equal     Equal
-	merge     Merge
-	split     Split
-	iter      internalIterator
-	readState *readState
-	err       error
+	opts       IterOptions
+	cmp        Compare
+	equal      Equal
+	merge      Merge
+	rangeMerge RangeValueMerger
+	split      Split
+	iter       internalIterator
+	readState  *readState
+	err        error
 	// When iterValidityState=IterValid, key represents the current key, which
 	// is backed by keyBuf.
-	key         []byte
-	keyBuf      []byte
-	value       []byte
-	valueBuf    []byte
-	valueCloser io.Closer
+	key           []byte
+	keyBuf        []byte
+	value         []byte
+	valueBuf      []byte
+	valueCloser   io.Closer
+	rangeValueBuf []RangeKeySpan
 	// iterKey, iterValue reflect the latest position of iter, except when
 	// SetBounds is called. In that case, these are explicitly set to nil.
 	iterKey             *InternalKey
@@ -130,6 +133,7 @@ type Iterator struct {
 	prefixOrFullSeekKey []byte
 	readSampling        readSampling
 	stats               IteratorStats
+	rangeKeyIter        *keyspan.Iter
 
 	// Following fields are only used in Clone.
 	// Non-nil if this Iterator includes a Batch.

@@ -150,6 +150,13 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 	// assigning sequence numbers from 1 to match rocksdb.
 	d.mu.versions.atomic.logSeqNum = 1
 
+	d.rangeKeys.cache = keySpanCache{
+		cmp:           d.cmp,
+		formatKey:     opts.Comparer.FormatKey,
+		valueSplitter: rangeKeyValueSplitter,
+		skl:           &d.rangeKeys.skl,
+	}
+
 	d.timeNow = time.Now
 
 	d.mu.Lock()

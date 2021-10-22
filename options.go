@@ -322,6 +322,9 @@ type Options struct {
 		// deletion pacing, which is also the default.
 		MinDeletionRate int
 
+		// RangeValueMerger ...
+		RangeValueMerger RangeValueMerger
+
 		// ReadCompactionRate controls the frequency of read triggered
 		// compactions by adjusting `AllowedSeeks` in manifest.FileMetadata:
 		//

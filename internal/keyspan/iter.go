@@ -53,6 +53,17 @@ func (i *Iter) SeekGE(key []byte) (*base.InternalKey, []byte) {
 	return &t.Start, t.End
 }
 
+// SpanValue returns the value under the current iterator position.
+// TODO(jackson): This is a hack for this prototype. Figure out how to surface
+// this in the internalIterator interface. Range keys have three (start, end,
+// value) pieces of data.
+func (i *Iter) SpanValue() []byte {
+	if i.index < 0 || i.index >= len(i.spans) {
+		return nil
+	}
+	return i.spans[i.index].Value
+}
+
 // SeekPrefixGE implements InternalIterator.SeekPrefixGE, as documented in the
 // internal/base package.
 func (i *Iter) SeekPrefixGE(prefix, key []byte, trySeekUsingNext bool) (*base.InternalKey, []byte) {

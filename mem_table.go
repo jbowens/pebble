@@ -16,6 +16,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/arenaskl"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
+	"github.com/cockroachdb/pebble/internal/rangekey"
 )
 
 func memTableEntrySize(keyBytes, valueBytes int) uint64 {
@@ -121,8 +122,18 @@ func newMemTable(opts memTableOptions) *memTable {
 		writerRefs: 1,
 		logSeqNum:  opts.logSeqNum,
 	}
-	m.tombstones.newIter = rangeDelsNewIter
-	m.rangeKeys.newIter = rangeKeysNewIter
+	m.tombstones = keySpanCache{
+		cmp:           m.cmp,
+		formatKey:     m.formatKey,
+		valueSplitter: tombstoneValueSplitter,
+		skl:           &m.rangeDelSkl,
+	}
+	m.rangeKeys = keySpanCache{
+		cmp:           m.cmp,
+		formatKey:     m.formatKey,
+		valueSplitter: rangeKeyValueSplitter,
+		skl:           &m.rangeKeySkl,
+	}
 
 	if m.arenaBuf == nil {
 		m.arenaBuf = make([]byte, opts.size)
@@ -135,12 +146,17 @@ func newMemTable(opts memTableOptions) *memTable {
 	return m
 }
 
-func rangeDelsNewIter(m *memTable) *arenaskl.Iterator {
-	return m.rangeDelSkl.NewIter(nil, nil)
+func tombstoneValueSplitter(v []byte) (endKey, value []byte) {
+	return v, nil
 }
 
-func rangeKeysNewIter(m *memTable) *arenaskl.Iterator {
-	return m.rangeKeySkl.NewIter(nil, nil)
+func rangeKeyValueSplitter(v []byte) (endKey, value []byte) {
+	var ok bool
+	endKey, value, ok = rangekey.DecodeValue(v)
+	if !ok {
+		panic("pebble: corrupt in-memory range key value")
+	}
+	return endKey, value
 }
 
 func (m *memTable) writerRef() {
@@ -259,7 +275,7 @@ func (m *memTable) newFlushIter(o *IterOptions, bytesFlushed *uint64) internalIt
 }
 
 func (m *memTable) newRangeDelIter(*IterOptions) internalIterator {
-	tombstones := m.tombstones.get(m)
+	tombstones := m.tombstones.get()
 	if tombstones == nil {
 		return nil
 	}
@@ -267,11 +283,11 @@ func (m *memTable) newRangeDelIter(*IterOptions) internalIterator {
 }
 
 func (m *memTable) newRangeKeyIter(*IterOptions) internalIterator {
-	Keys := m.rangeKeys.get(m)
-	if Keys == nil {
+	rangeKeys := m.rangeKeys.get()
+	if rangeKeys == nil {
 		return nil
 	}
-	return keyspan.NewIter(m.cmp, Keys)
+	return keyspan.NewIter(m.cmp, rangeKeys)
 }
 
 func (m *memTable) availBytes() uint32 {
@@ -309,32 +325,34 @@ func (m *memTable) empty() bool {
 // tombstones and  keys in a memTable only ever increases, which provides a
 // monotonically increasing sequence.
 type keySpanFrags struct {
-	count   uint32
-	once    sync.Once
-	spans   []keyspan.Span
-	newIter func(m *memTable) *arenaskl.Iterator
+	count         uint32
+	once          sync.Once
+	spans         []keyspan.Span
+	skl           *arenaskl.Skiplist
+	valueSplitter func(val []byte) (endKey, value []byte)
 }
 
 // get retrieves the fragmented key spans, populating them if necessary. Note
 // that the populated span fragments may be built from more than f.count
-// memTable  tombstones or range keys, but that is ok for correctness. All we're
+// memTable tombstones or range keys, but that is ok for correctness. All we're
 // requiring is that the memTable contains at least f.count
 // tombstones/keys. This situation can occur if there are multiple concurrent
-// additions of  tombstones/keys and a concurrent reader. The reader can load a
+// additions of tombstones/keys and a concurrent reader. The reader can load a
 // keySpanFrags and populate it even though is has been invalidated
 // (i.e. replaced with a newer keySpanFrags).
-func (f *keySpanFrags) get(m *memTable) []keyspan.Span {
+func (f *keySpanFrags) get(cmp Compare, formatKey base.FormatKey) []keyspan.Span {
 	f.once.Do(func() {
 		frag := &keyspan.Fragmenter{
-			Cmp:    m.cmp,
-			Format: m.formatKey,
+			Cmp:    cmp,
+			Format: formatKey,
 			Emit: func(fragmented []keyspan.Span) {
 				f.spans = append(f.spans, fragmented...)
 			},
 		}
-		it := f.newIter(m)
+		it := f.skl.NewIter(nil, nil)
 		for key, val := it.First(); key != nil; key, val = it.Next() {
-			frag.Add(keyspan.Span{Start: *key, End: val})
+			spanEndKey, spanVal := f.valueSplitter(val)
+			frag.Add(keyspan.Span{Start: *key, End: spanEndKey, Value: spanVal})
 		}
 		frag.Finish()
 	})
@@ -346,9 +364,12 @@ func (f *keySpanFrags) get(m *memTable) []keyspan.Span {
 // invalidated whenever a span of the cache's kind is added to a memTable, and
 // populated whenever an iterator over the cache's key kind is created.
 type keySpanCache struct {
-	count   uint32
-	frags   unsafe.Pointer
-	newIter func(*memTable) *arenaskl.Iterator
+	count         uint32
+	frags         unsafe.Pointer
+	cmp           Compare
+	formatKey     base.FormatKey
+	valueSplitter func(val []byte) (endKey, value []byte)
+	skl           *arenaskl.Skiplist
 }
 
 // Invalidate the current set of cached key spans, indicating the number of
@@ -368,7 +389,11 @@ func (c *keySpanCache) invalidate(count uint32) {
 			}
 		}
 		if frags == nil {
-			frags = &keySpanFrags{count: newCount, newIter: c.newIter}
+			frags = &keySpanFrags{
+				count:         newCount,
+				valueSplitter: c.valueSplitter,
+				skl:           c.skl,
+			}
 		}
 		if atomic.CompareAndSwapPointer(&c.frags, oldPtr, unsafe.Pointer(frags)) {
 			// We successfully invalidated the cache.
@@ -378,10 +403,10 @@ func (c *keySpanCache) invalidate(count uint32) {
 	}
 }
 
-func (c *keySpanCache) get(m *memTable) []keyspan.Span {
+func (c *keySpanCache) get() []keyspan.Span {
 	frags := (*keySpanFrags)(atomic.LoadPointer(&c.frags))
 	if frags == nil {
 		return nil
 	}
-	return frags.get(m)
+	return frags.get(c.cmp, c.formatKey)
 }

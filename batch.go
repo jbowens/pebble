@@ -213,6 +213,12 @@ type Batch struct {
 	// deletion is added.
 	countRangeDels uint64
 
+	// The count of range keys in the batch. Updated every time a range
+	// key is added.
+	// TODO(jackson): This might not be necessary when the in-memory
+	// prototype of range keys is obsolete.
+	countRangeKeys uint64
+
 	// A deferredOp struct, stored in the Batch so that a pointer can be returned
 	// from the *Deferred() methods rather than a value.
 	deferredOp DeferredBatchOp
@@ -313,14 +319,18 @@ func (b *Batch) refreshMemTableSize() {
 	}
 
 	b.countRangeDels = 0
+	b.countRangeKeys = 0
 	for r := b.Reader(); ; {
 		kind, key, value, ok := r.Next()
 		if !ok {
 			break
 		}
 		b.memTableSize += memTableEntrySize(len(key), len(value))
-		if kind == InternalKeyKindRangeDelete {
+		switch kind {
+		case InternalKeyKindRangeDelete:
 			b.countRangeDels++
+		case InternalKeyKindRangeKey:
+			b.countRangeKeys++
 		}
 	}
 }
@@ -354,8 +364,11 @@ func (b *Batch) Apply(batch *Batch, _ *WriteOptions) error {
 			if !ok {
 				break
 			}
-			if kind == InternalKeyKindRangeDelete {
+			switch kind {
+			case InternalKeyKindRangeDelete:
 				b.countRangeDels++
+			case InternalKeyKindRangeKey:
+				b.countRangeKeys++
 			}
 			if b.index != nil {
 				var err error
@@ -678,6 +691,7 @@ func (b *Batch) ExperimentalRangeKey(start, end, value []byte, _ *WriteOptions) 
 // make this ergonomic before we export it.
 func (b *Batch) rangeKeyDeferred(startLen, combinedValLen int) *DeferredBatchOp {
 	b.prepareDeferredKeyValueRecord(startLen, combinedValLen, InternalKeyKindRangeKey)
+	b.countRangeKeys++
 	if b.index != nil {
 		b.rangeKeys = nil
 		// Range keys are rare, so we lazily allocate the index for them.
@@ -837,6 +851,7 @@ func (b *Batch) init(cap int) {
 func (b *Batch) Reset() {
 	b.count = 0
 	b.countRangeDels = 0
+	b.countRangeKeys = 0
 	b.memTableSize = 0
 	b.deferredOp = DeferredBatchOp{}
 	b.tombstones = nil
