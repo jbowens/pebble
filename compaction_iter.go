@@ -410,6 +410,10 @@ func (i *compactionIter) Next() (*InternalKey, []byte) {
 	return nil, nil
 }
 
+func (i *compactionIter) NextPrefix() (*InternalKey, []byte) {
+	return i.Next()
+}
+
 func (i *compactionIter) closeValueCloser() error {
 	if i.valueCloser == nil {
 		return nil

@@ -319,6 +319,13 @@ func (i *singleLevelIterator) initBounds() {
 	}
 }
 
+var noSkip = skipPrefix{}
+
+type skipPrefix struct {
+	skip        bool
+	cardinality uint64
+}
+
 type loadBlockResult int8
 
 const (
@@ -331,7 +338,7 @@ const (
 // loadBlock loads the block at the current index position and leaves i.data
 // unpositioned. If unsuccessful, it sets i.err to any error encountered, which
 // may be nil if we have simply exhausted the entire table.
-func (i *singleLevelIterator) loadBlock() loadBlockResult {
+func (i *singleLevelIterator) loadBlock(skipState skipPrefix) loadBlockResult {
 	// Ensure the data block iterator is invalidated even if loading of the block
 	// fails.
 	i.data.invalidate()
@@ -353,6 +360,16 @@ func (i *singleLevelIterator) loadBlock() loadBlockResult {
 			return loadBlockFailed
 		}
 		if !intersects {
+			return loadBlockIrrelevant
+		}
+	}
+	if skipState.skip {
+		cardinality, err := extractPrefixCardinality(*i.reader.prefixShortID, bhp.Props)
+		if err != nil {
+			i.err = errCorruptIndexEntry
+			return loadBlockFailed
+		}
+		if cardinality != 0 && cardinality == skipState.cardinality {
 			return loadBlockIrrelevant
 		}
 	}
@@ -531,7 +548,7 @@ func (i *singleLevelIterator) seekGEHelper(
 			i.data.invalidate()
 			return nil, nil
 		}
-		result := i.loadBlock()
+		result := i.loadBlock(noSkip)
 		if result == loadBlockFailed {
 			return nil, nil
 		}
@@ -558,7 +575,7 @@ func (i *singleLevelIterator) seekGEHelper(
 			return ikey, val
 		}
 	}
-	return i.skipForward()
+	return i.skipForward(noSkip)
 }
 
 // SeekPrefixGE implements internalIterator.SeekPrefixGE, as documented in the
@@ -661,7 +678,7 @@ func (i *singleLevelIterator) SeekLT(key []byte) (*InternalKey, []byte) {
 			}
 		}
 		// INVARIANT: ikey != nil.
-		result := i.loadBlock()
+		result := i.loadBlock(noSkip)
 		if result == loadBlockFailed {
 			return nil, nil
 		}
@@ -729,7 +746,7 @@ func (i *singleLevelIterator) firstInternal() (*InternalKey, []byte) {
 		i.data.invalidate()
 		return nil, nil
 	}
-	result := i.loadBlock()
+	result := i.loadBlock(noSkip)
 	if result == loadBlockFailed {
 		return nil, nil
 	}
@@ -756,7 +773,7 @@ func (i *singleLevelIterator) firstInternal() (*InternalKey, []byte) {
 		// Else fall through to skipForward.
 	}
 
-	return i.skipForward()
+	return i.skipForward(noSkip)
 }
 
 // Last implements internalIterator.Last, as documented in the pebble
@@ -786,7 +803,7 @@ func (i *singleLevelIterator) lastInternal() (*InternalKey, []byte) {
 		i.data.invalidate()
 		return nil, nil
 	}
-	result := i.loadBlock()
+	result := i.loadBlock(noSkip)
 	if result == loadBlockFailed {
 		return nil, nil
 	}
@@ -836,7 +853,47 @@ func (i *singleLevelIterator) Next() (*InternalKey, []byte) {
 		}
 		return key, val
 	}
-	return i.skipForward()
+	return i.skipForward(noSkip)
+}
+
+// NextPrefix ...
+func (i *singleLevelIterator) NextPrefix() (*InternalKey, []byte) {
+	if i.exhaustedBounds == +1 {
+		panic("Next called even though exhausted upper bound")
+	}
+	i.exhaustedBounds = 0
+	// Seek optimization only applies until iterator is first positioned after SetBounds.
+	i.boundsCmp = 0
+
+	if i.err != nil {
+		return nil, nil
+	}
+	if key, val := i.data.NextPrefix(); key != nil {
+		if i.blockUpper != nil && i.cmp(key.UserKey, i.blockUpper) >= 0 {
+			i.exhaustedBounds = +1
+			return nil, nil
+		}
+		return key, val
+	}
+
+	// We need to skip forward. We might be able to skip whole blocks with this
+	// prefix if they encode the same prefix cardinality.
+	var skipPrefix skipPrefix
+	if i.reader.prefixShortID != nil {
+		bhp, err := decodeBlockHandleWithProperties(i.index.Value())
+		if err != nil {
+			i.err = errCorruptIndexEntry
+			return nil, nil
+		}
+		skipPrefix.cardinality, err = extractPrefixCardinality(*i.reader.prefixShortID, bhp.Props)
+		if err != nil {
+			i.err = errCorruptIndexEntry
+			return nil, nil
+		}
+		skipPrefix.skip = true
+	}
+
+	return i.skipForward(skipPrefix)
 }
 
 // Prev implements internalIterator.Prev, as documented in the pebble
@@ -862,14 +919,18 @@ func (i *singleLevelIterator) Prev() (*InternalKey, []byte) {
 	return i.skipBackward()
 }
 
-func (i *singleLevelIterator) skipForward() (*InternalKey, []byte) {
+func (i *singleLevelIterator) PrevPrefix() (*InternalKey, []byte) {
+	return i.Prev()
+}
+
+func (i *singleLevelIterator) skipForward(skipState skipPrefix) (*InternalKey, []byte) {
 	for {
 		var key *InternalKey
 		if key, _ = i.index.Next(); key == nil {
 			i.data.invalidate()
 			break
 		}
-		result := i.loadBlock()
+		result := i.loadBlock(skipState)
 		if result != loadBlockOK {
 			if i.err != nil {
 				break
@@ -910,7 +971,7 @@ func (i *singleLevelIterator) skipBackward() (*InternalKey, []byte) {
 			i.data.invalidate()
 			break
 		}
-		result := i.loadBlock()
+		result := i.loadBlock(noSkip)
 		if result != loadBlockOK {
 			if i.err != nil {
 				break
@@ -1083,7 +1144,7 @@ func (i *compactionIterator) skipForward(key *InternalKey, val []byte) (*Interna
 			if key, _ := i.index.Next(); key == nil {
 				break
 			}
-			result := i.loadBlock()
+			result := i.loadBlock(noSkip)
 			if result != loadBlockOK {
 				if i.err != nil {
 					break
@@ -2027,6 +2088,7 @@ type Reader struct {
 	FormatKey         base.FormatKey
 	Split             Split
 	mergerOK          bool
+	prefixShortID     *shortID
 	checksumType      ChecksumType
 	tableFilter       *tableFilterReader
 	Properties        Properties
@@ -2656,6 +2718,15 @@ func NewReader(f ReadableFile, o ReaderOptions, extraOpts ...ReaderOption) (*Rea
 
 	if o.MergerName == r.Properties.MergerName {
 		r.mergerOK = true
+	}
+
+	// Determine whether this sstable was generated with the prefix cardinality
+	// block collector, and if so, the shortID used to encode the block-level
+	// cardinality values.
+	r.prefixShortID, err = findPrefixCardinalityShortID(r.Properties.UserProperties)
+	if err != nil {
+		r.err = err
+		return nil, r.Close()
 	}
 
 	// Apply the extra options again now that the comparer and merger names are

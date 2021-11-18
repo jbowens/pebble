@@ -102,8 +102,8 @@ type BlockPropertyFilter interface {
 // Users must not expect this to preserve differences between empty sets --
 // they will all get turned into the semantically equivalent [0,0).
 type BlockIntervalCollector struct {
-	name    string
-	dbic    DataBlockIntervalCollector
+	name string
+	dbic DataBlockIntervalCollector
 
 	blockInterval interval
 	indexInterval interval
@@ -182,7 +182,7 @@ type interval struct {
 
 func (i interval) encode(buf []byte) []byte {
 	if i.lower < i.upper {
-		var encoded [binary.MaxVarintLen64*2]byte
+		var encoded [binary.MaxVarintLen64 * 2]byte
 		n := binary.PutUvarint(encoded[:], i.lower)
 		n += binary.PutUvarint(encoded[n:], i.upper-i.lower)
 		buf = append(buf, encoded[:n]...)
@@ -246,7 +246,7 @@ func (i interval) intersects(x interval) bool {
 // corresponding collector is a BlockIntervalCollector. That is, the set is of
 // the form [lower, upper).
 type BlockIntervalFilter struct {
-	name string
+	name           string
 	filterInterval interval
 }
 
@@ -255,7 +255,7 @@ type BlockIntervalFilter struct {
 func NewBlockIntervalFilter(
 	name string, lower uint64, upper uint64) *BlockIntervalFilter {
 	return &BlockIntervalFilter{
-		name: name,
+		name:           name,
 		filterInterval: interval{lower: lower, upper: upper},
 	}
 }
@@ -282,7 +282,7 @@ type shortID uint8
 
 type blockPropertiesEncoder struct {
 	propsBuf []byte
-	scratch []byte
+	scratch  []byte
 }
 
 func (e *blockPropertiesEncoder) getScratchForProp() []byte {
@@ -296,24 +296,24 @@ func (e *blockPropertiesEncoder) resetProps() {
 func (e *blockPropertiesEncoder) addProp(id shortID, scratch []byte) {
 	const lenID = 1
 	lenProp := uvarintLen(uint32(len(scratch)))
-	n :=  lenID + lenProp + len(scratch)
-	if cap(e.propsBuf) - len(e.propsBuf) < n {
+	n := lenID + lenProp + len(scratch)
+	if cap(e.propsBuf)-len(e.propsBuf) < n {
 		size := len(e.propsBuf) + 2*n
 		if size < 2*cap(e.propsBuf) {
-			size = 2*cap(e.propsBuf)
+			size = 2 * cap(e.propsBuf)
 		}
 		buf := make([]byte, len(e.propsBuf), size)
 		copy(buf, e.propsBuf)
 		e.propsBuf = buf
 	}
 	pos := len(e.propsBuf)
-	b := e.propsBuf[pos:pos+lenID]
+	b := e.propsBuf[pos : pos+lenID]
 	b[0] = byte(id)
 	pos += lenID
-	b = e.propsBuf[pos:pos+lenProp]
+	b = e.propsBuf[pos : pos+lenProp]
 	n = binary.PutUvarint(b, uint64(len(scratch)))
 	pos += n
-	b = e.propsBuf[pos:pos+len(scratch)]
+	b = e.propsBuf[pos : pos+len(scratch)]
 	pos += len(scratch)
 	copy(b, scratch)
 	e.propsBuf = e.propsBuf[0:pos]
@@ -344,10 +344,10 @@ func (d *blockPropertiesDecoder) next() (id shortID, prop []byte, err error) {
 	id = shortID(d.props[0])
 	propLen, m := binary.Uvarint(d.props[lenID:])
 	n := lenID + m
-	if m <= 0 || propLen == 0 || (n + int(propLen)) > len(d.props) {
+	if m <= 0 || propLen == 0 || (n+int(propLen)) > len(d.props) {
 		return 0, nil, base.CorruptionErrorf("corrupt block property length")
 	}
-	prop = d.props[n:n+int(propLen)]
+	prop = d.props[n : n+int(propLen)]
 	d.props = d.props[n+int(propLen):]
 	return id, prop, nil
 }
@@ -450,7 +450,7 @@ func (f *BlockPropertiesFilterer) intersects(props []byte) (bool, error) {
 			}
 			id = int(shortID)
 		} else {
-			id = math.MaxUint8+1
+			id = math.MaxUint8 + 1
 		}
 		for i < len(f.shortIDToFiltersIndex) && id > i {
 			if f.shortIDToFiltersIndex[i] >= 0 {
@@ -485,4 +485,103 @@ func (f *BlockPropertiesFilterer) intersects(props []byte) (bool, error) {
 		i++
 	}
 	return true, nil
+}
+
+// PrefixSkipIndexing ...
+func PrefixSkipIndexing(cmp base.Compare, split base.Split) func() BlockPropertyCollector {
+	return func() BlockPropertyCollector {
+		return &prefixCardinalityCollector{cmp: cmp, split: split}
+	}
+}
+
+const prefixCardinalityName = `pebble.collectors.prefix-cardinality`
+
+type prefixCardinalityCollector struct {
+	cardinality   uint64
+	currentPrefix []byte
+	cmp           base.Compare
+	split         base.Split
+}
+
+func (c *prefixCardinalityCollector) Name() string { return prefixCardinalityName }
+
+func (c *prefixCardinalityCollector) Add(key InternalKey, value []byte) error {
+	prefixLen := c.split(key.UserKey)
+
+	if c.cardinality > 0 && prefixLen == len(c.currentPrefix) && c.cmp(c.currentPrefix, key.UserKey) == 0 {
+		// Same prefix.
+		return nil
+	}
+
+	// New prefix.
+	c.cardinality++
+	if prefixLen <= cap(c.currentPrefix) {
+		c.currentPrefix = c.currentPrefix[:prefixLen]
+	} else {
+		c.currentPrefix = make([]byte, prefixLen)
+	}
+	copy(c.currentPrefix, key.UserKey[:prefixLen])
+	return nil
+}
+
+func (c *prefixCardinalityCollector) FinishDataBlock(buf []byte) ([]byte, error) {
+	return c.encodeCardinality(buf), nil
+}
+
+func (c *prefixCardinalityCollector) AddPrevDataBlockToIndexBlock() {
+	// noop
+}
+
+func (c *prefixCardinalityCollector) FinishIndexBlock(buf []byte) ([]byte, error) {
+	return c.encodeCardinality(buf), nil
+}
+
+func (c *prefixCardinalityCollector) FinishTable(buf []byte) ([]byte, error) {
+	return c.encodeCardinality(buf), nil
+}
+
+func (c *prefixCardinalityCollector) encodeCardinality(buf []byte) []byte {
+	var encoded [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(encoded[:], c.cardinality)
+	buf = append(buf, encoded[:n]...)
+	return buf
+}
+
+func findPrefixCardinalityShortID(userProperties map[string]string) (*shortID, error) {
+	props, ok := userProperties[prefixCardinalityName]
+	if !ok {
+		// Collector was not used when writing this file.
+		return nil, nil
+	}
+	byteProps := []byte(props)
+	if len(byteProps) < 1 {
+		return nil, base.CorruptionErrorf(
+			"block properties for %s is corrupted", prefixCardinalityName)
+	}
+	id := shortID(byteProps[0])
+	return &id, nil
+}
+
+func extractPrefixCardinality(prefixShortID shortID, props []byte) (uint64, error) {
+	decoder := blockPropertiesDecoder{props: props}
+	var prop []byte
+	for !decoder.done() {
+		var err error
+		var entryShortID shortID
+		entryShortID, prop, err = decoder.next()
+		if err != nil {
+			return 0, err
+		}
+		if entryShortID != prefixShortID {
+			continue
+		}
+	}
+	if len(prop) == 0 {
+		return 0, nil
+	}
+	v, n := binary.Uvarint(prop)
+	if n <= 0 || n > len(prop) {
+		return 0, base.CorruptionErrorf("cannot decode prefix cardinality from prop %x", prop)
+	}
+	return v, nil
 }
