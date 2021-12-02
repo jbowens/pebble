@@ -185,6 +185,10 @@ func runIterCmd(d *datadriven.TestData, iter *Iterator, closeIter bool) string {
 }
 
 func runInternalIterCmd(d *datadriven.TestData, iter internalIterator, opts ...iterCmdOpt) string {
+	return runPositionIterCmd(d, pointIterator(iter), opts...)
+}
+
+func runPositionIterCmd(d *datadriven.TestData, iter positionIterator, opts ...iterCmdOpt) string {
 	var verboseKey bool
 	for _, opt := range opts {
 		if opt == iterCmdVerboseKey {
@@ -207,7 +211,7 @@ func runInternalIterCmd(d *datadriven.TestData, iter internalIterator, opts ...i
 				return "seek-ge <key>\n"
 			}
 			prefix = nil
-			key, value = iter.SeekGE([]byte(strings.TrimSpace(parts[1])))
+			key, value = iter.SeekGE([]byte(strings.TrimSpace(parts[1]))).kv()
 		case "seek-prefix-ge":
 			if len(parts) != 2 && len(parts) != 3 {
 				return "seek-prefix-ge <key> [<try-seek-using-next>]\n"
@@ -221,23 +225,23 @@ func runInternalIterCmd(d *datadriven.TestData, iter internalIterator, opts ...i
 					return err.Error()
 				}
 			}
-			key, value = iter.SeekPrefixGE(prefix, prefix /* key */, trySeekUsingNext)
+			key, value = iter.SeekPrefixGE(prefix, prefix /* key */, trySeekUsingNext).kv()
 		case "seek-lt":
 			if len(parts) != 2 {
 				return "seek-lt <key>\n"
 			}
 			prefix = nil
-			key, value = iter.SeekLT([]byte(strings.TrimSpace(parts[1])))
+			key, value = iter.SeekLT([]byte(strings.TrimSpace(parts[1]))).kv()
 		case "first":
 			prefix = nil
-			key, value = iter.First()
+			key, value = iter.First().kv()
 		case "last":
 			prefix = nil
-			key, value = iter.Last()
+			key, value = iter.Last().kv()
 		case "next":
-			key, value = iter.Next()
+			key, value = iter.Next().kv()
 		case "prev":
-			key, value = iter.Prev()
+			key, value = iter.Prev().kv()
 		case "set-bounds":
 			if len(parts) <= 1 || len(parts) > 3 {
 				return "set-bounds lower=<lower> upper=<upper>\n"

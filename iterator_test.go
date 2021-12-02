@@ -319,7 +319,7 @@ func (i *invalidatingIter) String() string {
 // over those splits should recover the original key/value pairs in order.
 func testIterator(
 	t *testing.T,
-	newFunc func(...internalIterator) internalIterator,
+	newFunc func(...positionIterator) internalIterator,
 	splitFunc func(r *rand.Rand) [][]string,
 ) {
 	// Test pre-determined sub-iterators. The sub-iterators are designed
@@ -327,39 +327,39 @@ func testIterator(
 	// combined iterator is concatenating or merging.
 	testCases := []struct {
 		desc  string
-		iters []internalIterator
+		iters []positionIterator
 		want  string
 	}{
 		{
 			"one sub-iterator",
-			[]internalIterator{
-				newFakeIterator(nil, "e:1", "w:2"),
+			[]positionIterator{
+				pointIterator(newFakeIterator(nil, "e:1", "w:2")),
 			},
 			"<e:1><w:2>.",
 		},
 		{
 			"two sub-iterators",
-			[]internalIterator{
-				newFakeIterator(nil, "a0:0"),
-				newFakeIterator(nil, "b1:1", "b2:2"),
+			[]positionIterator{
+				pointIterator(newFakeIterator(nil, "a0:0")),
+				pointIterator(newFakeIterator(nil, "b1:1", "b2:2")),
 			},
 			"<a0:0><b1:1><b2:2>.",
 		},
 		{
 			"empty sub-iterators",
-			[]internalIterator{
-				newFakeIterator(nil),
-				newFakeIterator(nil),
-				newFakeIterator(nil),
+			[]positionIterator{
+				pointIterator(newFakeIterator(nil)),
+				pointIterator(newFakeIterator(nil)),
+				pointIterator(newFakeIterator(nil)),
 			},
 			".",
 		},
 		{
 			"sub-iterator errors",
-			[]internalIterator{
-				newFakeIterator(nil, "a0:0", "a1:1"),
-				newFakeIterator(errors.New("the sky is falling"), "b2:2", "b3:3", "b4:4"),
-				newFakeIterator(errors.New("run for your lives"), "c5:5", "c6:6"),
+			[]positionIterator{
+				pointIterator(newFakeIterator(nil, "a0:0", "a1:1")),
+				pointIterator(newFakeIterator(errors.New("the sky is falling"), "b2:2", "b3:3", "b4:4")),
+				pointIterator(newFakeIterator(errors.New("run for your lives"), "c5:5", "c6:6")),
 			},
 			"<a0:0><a1:1><b2:2><b3:3><b4:4>err=the sky is falling",
 		},
@@ -386,9 +386,9 @@ func testIterator(
 		bad := false
 
 		splits := splitFunc(r)
-		iters := make([]internalIterator, len(splits))
+		iters := make([]positionIterator, len(splits))
 		for i, split := range splits {
-			iters[i] = newFakeIterator(nil, split...)
+			iters[i] = pointIterator(newFakeIterator(nil, split...))
 		}
 		iter := newInternalIterAdapter(newInvalidatingIter(newFunc(iters...)))
 		iter.First()
@@ -475,12 +475,12 @@ func TestIterator(t *testing.T) {
 		equal := DefaultComparer.Equal
 		split := func(a []byte) int { return len(a) }
 		// NB: Use a mergingIter to filter entries newer than seqNum.
-		iter := newMergingIter(nil /* logger */, cmp, split, &fakeIter{
+		iter := newMergingIter(nil /* logger */, cmp, split, pointIterator(&fakeIter{
 			lower: opts.GetLowerBound(),
 			upper: opts.GetUpperBound(),
 			keys:  keys,
 			vals:  vals,
-		})
+		}))
 		iter.snapshot = seqNum
 		iter.elideRangeTombstones = true
 		// NB: This Iterator cannot be cloned since it is not constructed

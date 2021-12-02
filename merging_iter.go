@@ -16,22 +16,20 @@ import (
 )
 
 type mergingIterLevel struct {
-	iter internalIterator
+	iter positionIterator
 	// rangeDelIter is set to the range-deletion iterator for the level. When
 	// configured with a levelIter, this pointer changes as sstable boundaries
 	// are crossed. See levelIter.initRangeDel and the Range Deletions comment
 	// below.
 	rangeDelIter internalIterator
-	// iterKey and iterValue cache the current key and value iter are pointed at.
-	iterKey   *InternalKey
-	iterValue []byte
+	// iterKey caches the current position (key, value) iter are pointed at.
+	iterKey iterKey
 
 	// smallestUserKey, largestUserKey, isLargestUserKeyRangeDelSentinel are set using the sstable
 	// boundary keys when using levelIter. See levelIter comment and the Range Deletions comment
 	// below.
 	smallestUserKey, largestUserKey  []byte
 	isLargestUserKeyRangeDelSentinel bool
-	isSyntheticIterBoundsKey         bool
 
 	// tombstone caches the tombstone rangeDelIter is currently pointed at. If
 	// tombstone.Empty() is true, there are no further tombstones within the
@@ -242,7 +240,7 @@ var _ base.InternalIterator = (*mergingIter)(nil)
 //
 // None of the iters may be nil.
 func newMergingIter(
-	logger Logger, cmp Compare, split Split, iters ...internalIterator,
+	logger Logger, cmp Compare, split Split, iters ...positionIterator,
 ) *mergingIter {
 	m := &mergingIter{}
 	levels := make([]mergingIterLevel, len(iters))
@@ -276,11 +274,11 @@ func (m *mergingIter) init(
 func (m *mergingIter) initHeap() {
 	m.heap.items = m.heap.items[:0]
 	for i := range m.levels {
-		if l := &m.levels[i]; l.iterKey != nil {
+		if l := &m.levels[i]; l.iterKey.k != nil {
 			m.heap.items = append(m.heap.items, mergingIterItem{
 				index: i,
-				key:   *l.iterKey,
-				value: l.iterValue,
+				key:   *l.iterKey.k,
+				value: l.iterKey.v,
 			})
 		} else {
 			m.err = firstError(m.err, l.iter.Error())
@@ -399,17 +397,17 @@ func (m *mergingIter) switchToMinHeap() {
 		// Next on the L2 iterator, it would return e, violating its lower
 		// bound.  Instead, we seek it to >= f and Next from there.
 
-		if l.iterKey == nil || (m.lower != nil && l.isSyntheticIterBoundsKey &&
-			l.iterKey.Trailer == InternalKeyRangeDeleteSentinel &&
-			m.heap.cmp(l.iterKey.UserKey, m.lower) <= 0) {
+		if l.iterKey.k == nil || (m.lower != nil &&
+			l.iterKey.kind == iterKeyIterBoundsSyntheticBoundary &&
+			m.heap.cmp(l.iterKey.k.UserKey, m.lower) <= 0) {
 			if m.lower != nil {
-				l.iterKey, l.iterValue = l.iter.SeekGE(m.lower)
+				l.iterKey = l.iter.SeekGE(m.lower)
 			} else {
-				l.iterKey, l.iterValue = l.iter.First()
+				l.iterKey = l.iter.First()
 			}
 		}
-		for ; l.iterKey != nil; l.iterKey, l.iterValue = l.iter.Next() {
-			if base.InternalCompare(m.heap.cmp, key, *l.iterKey) < 0 {
+		for ; l.iterKey.k != nil; l.iterKey = l.iter.Next() {
+			if base.InternalCompare(m.heap.cmp, key, *l.iterKey.k) < 0 {
 				// key < iter-key
 				break
 			}
@@ -419,7 +417,7 @@ func (m *mergingIter) switchToMinHeap() {
 
 	// Special handling for the current iterator because we were using its key
 	// above.
-	cur.iterKey, cur.iterValue = cur.iter.Next()
+	cur.iterKey = cur.iter.Next()
 	m.initMinHeap()
 }
 
@@ -474,17 +472,17 @@ func (m *mergingIter) switchToMaxHeap() {
 		// Prev on the L2 iterator, it would return h, violating its upper
 		// bound.  Instead, we seek it to < g, and Prev from there.
 
-		if l.iterKey == nil || (m.upper != nil && l.isSyntheticIterBoundsKey &&
-			l.iterKey.Trailer == InternalKeyRangeDeleteSentinel &&
-			m.heap.cmp(l.iterKey.UserKey, m.upper) >= 0) {
+		if l.iterKey.k == nil || (m.upper != nil &&
+			l.iterKey.kind == iterKeyIterBoundsSyntheticBoundary &&
+			m.heap.cmp(l.iterKey.k.UserKey, m.upper) >= 0) {
 			if m.upper != nil {
-				l.iterKey, l.iterValue = l.iter.SeekLT(m.upper)
+				l.iterKey = l.iter.SeekLT(m.upper)
 			} else {
-				l.iterKey, l.iterValue = l.iter.Last()
+				l.iterKey = l.iter.Last()
 			}
 		}
-		for ; l.iterKey != nil; l.iterKey, l.iterValue = l.iter.Prev() {
-			if base.InternalCompare(m.heap.cmp, key, *l.iterKey) > 0 {
+		for ; l.iterKey.k != nil; l.iterKey = l.iter.Prev() {
+			if base.InternalCompare(m.heap.cmp, key, *l.iterKey.k) > 0 {
 				// key > iter-key
 				break
 			}
@@ -494,7 +492,7 @@ func (m *mergingIter) switchToMaxHeap() {
 
 	// Special handling for the current iterator because we were using its key
 	// above.
-	cur.iterKey, cur.iterValue = cur.iter.Prev()
+	cur.iterKey = cur.iter.Prev()
 	m.initMaxHeap()
 }
 
@@ -503,8 +501,8 @@ func (m *mergingIter) nextEntry(item *mergingIterItem) {
 	l := &m.levels[item.index]
 	oldTopLevel := item.index
 	oldRangeDelIter := l.rangeDelIter
-	if l.iterKey, l.iterValue = l.iter.Next(); l.iterKey != nil {
-		item.key, item.value = *l.iterKey, l.iterValue
+	if l.iterKey = l.iter.Next(); l.iterKey.k != nil {
+		item.key, item.value = *l.iterKey.k, l.iterKey.v
 		if m.heap.len() > 1 {
 			m.heap.fix(0)
 		}
@@ -624,7 +622,7 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterItem) bool {
 func (m *mergingIter) findNextEntry() (*InternalKey, []byte) {
 	for m.heap.len() > 0 && m.err == nil {
 		item := &m.heap.items[0]
-		if m.levels[item.index].isSyntheticIterBoundsKey {
+		if m.levels[item.index].iterKey.kind == iterKeyIterBoundsSyntheticBoundary {
 			break
 		}
 		if m.isNextEntryDeleted(item) {
@@ -657,8 +655,8 @@ func (m *mergingIter) prevEntry(item *mergingIterItem) {
 	l := &m.levels[item.index]
 	oldTopLevel := item.index
 	oldRangeDelIter := l.rangeDelIter
-	if l.iterKey, l.iterValue = l.iter.Prev(); l.iterKey != nil {
-		item.key, item.value = *l.iterKey, l.iterValue
+	if l.iterKey = l.iter.Prev(); l.iterKey.k != nil {
+		item.key, item.value = *l.iterKey.k, l.iterKey.v
 		if m.heap.len() > 1 {
 			m.heap.fix(0)
 		}
@@ -782,7 +780,7 @@ func (m *mergingIter) isPrevEntryDeleted(item *mergingIterItem) bool {
 func (m *mergingIter) findPrevEntry() (*InternalKey, []byte) {
 	for m.heap.len() > 0 && m.err == nil {
 		item := &m.heap.items[0]
-		if m.levels[item.index].isSyntheticIterBoundsKey {
+		if m.levels[item.index].iterKey.kind == iterKeyIterBoundsSyntheticBoundary {
 			break
 		}
 		if m.isPrevEntryDeleted(item) {
@@ -827,9 +825,9 @@ func (m *mergingIter) seekGE(key []byte, level int, trySeekUsingNext bool) {
 
 		l := &m.levels[level]
 		if m.prefix != nil {
-			l.iterKey, l.iterValue = l.iter.SeekPrefixGE(m.prefix, key, trySeekUsingNext)
+			l.iterKey = l.iter.SeekPrefixGE(m.prefix, key, trySeekUsingNext)
 		} else {
-			l.iterKey, l.iterValue = l.iter.SeekGE(key)
+			l.iterKey = l.iter.SeekGE(key)
 		}
 
 		if rangeDelIter := l.rangeDelIter; rangeDelIter != nil {
@@ -911,7 +909,7 @@ func (m *mergingIter) seekLT(key []byte, level int) {
 		}
 
 		l := &m.levels[level]
-		l.iterKey, l.iterValue = l.iter.SeekLT(key)
+		l.iterKey = l.iter.SeekLT(key)
 
 		if rangeDelIter := l.rangeDelIter; rangeDelIter != nil {
 			// The level has a range-del iterator. Find the tombstone containing
@@ -979,7 +977,7 @@ func (m *mergingIter) First() (*InternalKey, []byte) {
 	m.heap.items = m.heap.items[:0]
 	for i := range m.levels {
 		l := &m.levels[i]
-		l.iterKey, l.iterValue = l.iter.First()
+		l.iterKey = l.iter.First()
 	}
 	m.initMinHeap()
 	return m.findNextEntry()
@@ -993,7 +991,7 @@ func (m *mergingIter) Last() (*InternalKey, []byte) {
 	m.prefix = nil
 	for i := range m.levels {
 		l := &m.levels[i]
-		l.iterKey, l.iterValue = l.iter.Last()
+		l.iterKey = l.iter.Last()
 	}
 	m.initMaxHeap()
 	return m.findPrevEntry()

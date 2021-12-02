@@ -23,7 +23,7 @@ type getIter struct {
 	newIters     tableNewIters
 	snapshot     uint64
 	key          []byte
-	iter         internalIterator
+	iter         positionIterator
 	rangeDelIter internalIterator
 	tombstone    keyspan.Span
 	levelIter    levelIter
@@ -32,8 +32,7 @@ type getIter struct {
 	mem          flushableList
 	l0           []manifest.LevelSlice
 	version      *version
-	iterKey      *InternalKey
-	iterValue    []byte
+	iterKey      iterKey
 	err          error
 }
 
@@ -68,7 +67,7 @@ func (g *getIter) Last() (*InternalKey, []byte) {
 
 func (g *getIter) Next() (*InternalKey, []byte) {
 	if g.iter != nil {
-		g.iterKey, g.iterValue = g.iter.Next()
+		g.iterKey = g.iter.Next()
 	}
 
 	for {
@@ -86,8 +85,8 @@ func (g *getIter) Next() (*InternalKey, []byte) {
 				g.rangeDelIter = nil
 			}
 
-			if g.iterKey != nil {
-				key := g.iterKey
+			if g.iterKey.kind != iterKeyNone {
+				key := g.iterKey.k
 				if g.tombstone.Covers(key.SeqNum()) {
 					// We have a range tombstone covering this key. Rather than return a
 					// point or range deletion here, we return false and close our
@@ -99,10 +98,10 @@ func (g *getIter) Next() (*InternalKey, []byte) {
 				}
 				if g.equal(g.key, key.UserKey) {
 					if !key.Visible(g.snapshot) {
-						g.iterKey, g.iterValue = g.iter.Next()
+						g.iterKey = g.iter.Next()
 						continue
 					}
-					return g.iterKey, g.iterValue
+					return g.iterKey.kv()
 				}
 			}
 			// We've advanced the iterator passed the desired key. Move on to the
@@ -116,10 +115,10 @@ func (g *getIter) Next() (*InternalKey, []byte) {
 
 		// Create an iterator from the batch.
 		if g.batch != nil {
-			g.iter = g.batch.newInternalIter(nil)
+			g.iter = pointIterator(g.batch.newInternalIter(nil))
 			g.rangeDelIter = g.batch.newRangeDelIter(nil)
 			g.batch = nil
-			g.iterKey, g.iterValue = g.iter.SeekGE(g.key)
+			g.iterKey = g.iter.SeekGE(g.key)
 			continue
 		}
 
@@ -132,10 +131,10 @@ func (g *getIter) Next() (*InternalKey, []byte) {
 		// Create iterators from memtables from newest to oldest.
 		if n := len(g.mem); n > 0 {
 			m := g.mem[n-1]
-			g.iter = m.newIter(nil)
+			g.iter = pointIterator(m.newIter(nil))
 			g.rangeDelIter = m.newRangeDelIter(nil)
 			g.mem = g.mem[:n-1]
-			g.iterKey, g.iterValue = g.iter.SeekGE(g.key)
+			g.iterKey = g.iter.SeekGE(g.key)
 			continue
 		}
 
@@ -149,7 +148,7 @@ func (g *getIter) Next() (*InternalKey, []byte) {
 					files, manifest.L0Sublevel(n), nil)
 				g.levelIter.initRangeDel(&g.rangeDelIter)
 				g.iter = &g.levelIter
-				g.iterKey, g.iterValue = g.iter.SeekGE(g.key)
+				g.iterKey = g.iter.SeekGE(g.key)
 				continue
 			}
 			g.level++
@@ -169,7 +168,7 @@ func (g *getIter) Next() (*InternalKey, []byte) {
 		g.levelIter.initRangeDel(&g.rangeDelIter)
 		g.level++
 		g.iter = &g.levelIter
-		g.iterKey, g.iterValue = g.iter.SeekGE(g.key)
+		g.iterKey = g.iter.SeekGE(g.key)
 	}
 }
 
@@ -178,15 +177,15 @@ func (g *getIter) Prev() (*InternalKey, []byte) {
 }
 
 func (g *getIter) Key() *InternalKey {
-	return g.iterKey
+	return g.iterKey.k
 }
 
 func (g *getIter) Value() []byte {
-	return g.iterValue
+	return g.iterKey.v
 }
 
 func (g *getIter) Valid() bool {
-	return g.iterKey != nil && g.err == nil
+	return g.iterKey.kind != iterKeyNone && g.err == nil
 }
 
 func (g *getIter) Error() error {

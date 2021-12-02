@@ -276,7 +276,7 @@ func ingestLink(
 }
 
 func ingestMemtableOverlaps(cmp Compare, mem flushable, meta []*fileMetadata) bool {
-	iter := mem.newIter(nil)
+	iter := pointIterator(mem.newIter(nil))
 	rangeDelIter := mem.newRangeDelIter(nil)
 	defer iter.Close()
 
@@ -311,7 +311,7 @@ func ingestUpdateSeqNum(opts *Options, dirname string, seqNum uint64, meta []*fi
 }
 
 func overlapWithIterator(
-	iter internalIterator, rangeDelIter *internalIterator, meta *fileMetadata, cmp Compare,
+	iter positionIterator, rangeDelIter *internalIterator, meta *fileMetadata, cmp Compare,
 ) bool {
 	// Check overlap with point operations.
 	//
@@ -332,9 +332,9 @@ func overlapWithIterator(
 	//    means boundary < L and hence is similar to 1).
 	// 4) boundary == L and L is sentinel,
 	//    we'll always overlap since for any values of i,j ranges [i, k) and [j, k) always overlap.
-	key, _ := iter.SeekGE(meta.Smallest.UserKey)
-	if key != nil {
-		c := sstableKeyCompare(cmp, *key, meta.Largest)
+	ik := iter.SeekGE(meta.Smallest.UserKey)
+	if ik.k != nil {
+		c := sstableKeyCompare(cmp, *ik.k, meta.Largest)
 		if c <= 0 {
 			return true
 		}
@@ -403,7 +403,7 @@ func ingestTargetLevel(
 		if err != nil {
 			return 0, err
 		}
-		overlap := overlapWithIterator(iter, &rangeDelIter, meta, cmp)
+		overlap := overlapWithIterator(pointIterator(iter), &rangeDelIter, meta, cmp)
 		iter.Close()
 		if rangeDelIter != nil {
 			rangeDelIter.Close()

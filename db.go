@@ -853,7 +853,7 @@ func finishInitializingIter(buf *iterAlloc) *Iterator {
 	// Top-level is the batch, if any.
 	if batch != nil {
 		mlevels = append(mlevels, mergingIterLevel{
-			iter:         batch.newInternalIter(&dbi.opts),
+			iter:         pointIterator(batch.newInternalIter(&dbi.opts)),
 			rangeDelIter: batch.newRangeDelIter(&dbi.opts),
 		})
 	}
@@ -867,7 +867,7 @@ func finishInitializingIter(buf *iterAlloc) *Iterator {
 			continue
 		}
 		mlevels = append(mlevels, mergingIterLevel{
-			iter:         mem.newIter(&dbi.opts),
+			iter:         pointIterator(mem.newIter(&dbi.opts)),
 			rangeDelIter: mem.newRangeDelIter(&dbi.opts),
 		})
 	}
@@ -886,7 +886,6 @@ func finishInitializingIter(buf *iterAlloc) *Iterator {
 		li.initSmallestLargestUserKey(&mlevels[mlevelsIndex].smallestUserKey,
 			&mlevels[mlevelsIndex].largestUserKey,
 			&mlevels[mlevelsIndex].isLargestUserKeyRangeDelSentinel)
-		li.initIsSyntheticIterBoundsKey(&mlevels[mlevelsIndex].isSyntheticIterBoundsKey)
 		mlevels[mlevelsIndex].iter = li
 
 		levelsIndex++

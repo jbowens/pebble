@@ -47,12 +47,11 @@ import (
 
 // The per-level structure used by simpleMergingIter.
 type simpleMergingIterLevel struct {
-	iter            internalIterator
+	iter            positionIterator
 	rangeDelIter    internalIterator
 	smallestUserKey []byte
 
-	iterKey   *InternalKey
-	iterValue []byte
+	iterKey   iterKey
 	tombstone keyspan.Span
 }
 
@@ -88,14 +87,14 @@ func (m *simpleMergingIter) init(
 	m.heap.items = make([]mergingIterItem, 0, len(levels))
 	for i := range m.levels {
 		l := &m.levels[i]
-		l.iterKey, l.iterValue = l.iter.First()
-		if l.iterKey != nil {
+		l.iterKey = l.iter.First()
+		if l.iterKey.k != nil {
 			item := mergingIterItem{
 				index: i,
-				value: l.iterValue,
+				value: l.iterKey.v,
 			}
-			item.key.Trailer = l.iterKey.Trailer
-			item.key.UserKey = append(item.key.UserKey[:0], l.iterKey.UserKey...)
+			item.key.Trailer = l.iterKey.k.Trailer
+			item.key.UserKey = append(item.key.UserKey[:0], l.iterKey.k.UserKey...)
 			m.heap.items = append(m.heap.items, item)
 		}
 	}
@@ -223,20 +222,20 @@ func (m *simpleMergingIter) step() bool {
 	lastRecordMsg := l.iter.String()
 
 	// Step to the next point.
-	if l.iterKey, l.iterValue = l.iter.Next(); l.iterKey != nil {
+	if l.iterKey = l.iter.Next(); l.iterKey.kind != iterKeyNone {
 		// Check point keys in an sstable are ordered. Although not required, we check
 		// for memtables as well. A subtle check here is that successive sstables of
 		// L1 and higher levels are ordered. This happens when levelIter moves to the
 		// next sstable in the level, in which case item.key is previous sstable's
 		// last point key.
-		if base.InternalCompare(m.heap.cmp, item.key, *l.iterKey) >= 0 {
+		if base.InternalCompare(m.heap.cmp, item.key, *l.iterKey.k) >= 0 {
 			m.err = errors.Errorf("out of order keys %s >= %s in %s",
-				item.key.Pretty(m.formatKey), l.iterKey.Pretty(m.formatKey), l.iter)
+				item.key.Pretty(m.formatKey), l.iterKey.k.Pretty(m.formatKey), l.iter)
 			return false
 		}
-		item.key.Trailer = l.iterKey.Trailer
-		item.key.UserKey = append(item.key.UserKey[:0], l.iterKey.UserKey...)
-		item.value = l.iterValue
+		item.key.Trailer = l.iterKey.k.Trailer
+		item.key.UserKey = append(item.key.UserKey[:0], l.iterKey.k.UserKey...)
+		item.value = l.iterKey.v
 		if m.heap.len() > 1 {
 			m.heap.fix(0)
 		}
@@ -606,7 +605,7 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 	for i := len(memtables) - 1; i >= 0; i-- {
 		mem := memtables[i]
 		mlevels = append(mlevels, simpleMergingIterLevel{
-			iter:         mem.newIter(nil),
+			iter:         pointIterator(mem.newIter(nil)),
 			rangeDelIter: mem.newRangeDelIter(nil),
 		})
 	}

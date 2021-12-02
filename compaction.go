@@ -981,17 +981,17 @@ func (c *compaction) newInputIter(newIters tableNewIters) (_ internalIterator, r
 			f := c.flushing[0]
 			iter := f.newFlushIter(nil, &c.bytesIterated)
 			if rangeDelIter := f.newRangeDelIter(nil); rangeDelIter != nil {
-				return newMergingIter(c.logger, c.cmp, nil, iter, rangeDelIter), nil
+				return newMergingIter(c.logger, c.cmp, nil, pointIterator(iter), iteratorTODO(rangeDelIter)), nil
 			}
 			return iter, nil
 		}
-		iters := make([]internalIterator, 0, 2*len(c.flushing))
+		iters := make([]positionIterator, 0, 2*len(c.flushing))
 		for i := range c.flushing {
 			f := c.flushing[i]
-			iters = append(iters, f.newFlushIter(nil, &c.bytesIterated))
+			iters = append(iters, pointIterator(f.newFlushIter(nil, &c.bytesIterated)))
 			rangeDelIter := f.newRangeDelIter(nil)
 			if rangeDelIter != nil {
-				iters = append(iters, rangeDelIter)
+				iters = append(iters, iteratorTODO(rangeDelIter))
 			}
 		}
 		return newMergingIter(c.logger, c.cmp, nil, iters...), nil
@@ -1012,7 +1012,7 @@ func (c *compaction) newInputIter(newIters tableNewIters) (_ internalIterator, r
 		return nil, err
 	}
 
-	iters := make([]internalIterator, 0, 2*c.startLevel.files.Len()+1)
+	iters := make([]positionIterator, 0, 2*c.startLevel.files.Len()+1)
 	defer func() {
 		if retErr != nil {
 			for _, iter := range iters {
@@ -1078,7 +1078,7 @@ func (c *compaction) newInputIter(newIters tableNewIters) (_ internalIterator, r
 	}
 
 	iterOpts := IterOptions{logger: c.logger}
-	addItersForLevel := func(iters []internalIterator, level *compactionLevel) ([]internalIterator, error) {
+	addItersForLevel := func(iters []positionIterator, level *compactionLevel) ([]positionIterator, error) {
 		iters = append(iters, newLevelIter(iterOpts, c.cmp, nil /* split */, newIters,
 			level.files.Iter(), manifest.Level(level.level), &c.bytesIterated))
 		// Add the range deletion iterator for each file as an independent level
@@ -1118,7 +1118,7 @@ func (c *compaction) newInputIter(newIters tableNewIters) (_ internalIterator, r
 				return nil, errors.Wrapf(err, "pebble: could not open table %s", errors.Safe(f.FileNum))
 			}
 			if rangeDelIter != emptyIter {
-				iters = append(iters, rangeDelIter)
+				iters = append(iters, iteratorTODO(rangeDelIter))
 			}
 		}
 		return iters, nil
@@ -1136,9 +1136,9 @@ func (c *compaction) newInputIter(newIters tableNewIters) (_ internalIterator, r
 			if err != nil {
 				return nil, errors.Wrapf(err, "pebble: could not open table %s", errors.Safe(f.FileNum))
 			}
-			iters = append(iters, iter)
+			iters = append(iters, pointIterator(iter))
 			if rangeDelIter != nil {
-				iters = append(iters, rangeDelIter)
+				iters = append(iters, iteratorTODO(rangeDelIter))
 			}
 		}
 	}

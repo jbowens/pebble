@@ -22,7 +22,7 @@ import (
 )
 
 func TestMergingIter(t *testing.T) {
-	newFunc := func(iters ...internalIterator) internalIterator {
+	newFunc := func(iters ...positionIterator) internalIterator {
 		return newMergingIter(nil /* logger */, DefaultComparer.Compare,
 			func(a []byte) int { return len(a) }, iters...)
 	}
@@ -48,7 +48,7 @@ func TestMergingIterSeek(t *testing.T) {
 			return ""
 
 		case "iter":
-			var iters []internalIterator
+			var iters []positionIterator
 			for _, line := range strings.Split(def, "\n") {
 				f := &fakeIter{}
 				for _, key := range strings.Fields(line) {
@@ -56,7 +56,7 @@ func TestMergingIterSeek(t *testing.T) {
 					f.keys = append(f.keys, base.ParseInternalKey(key[:j]))
 					f.vals = append(f.vals, []byte(key[j+1:]))
 				}
-				iters = append(iters, f)
+				iters = append(iters, pointIterator(f))
 			}
 
 			iter := newMergingIter(nil /* logger */, DefaultComparer.Compare,
@@ -106,10 +106,10 @@ func TestMergingIterNextPrev(t *testing.T) {
 					return ""
 
 				case "iter":
-					iters := make([]internalIterator, len(c))
+					iters := make([]positionIterator, len(c))
 					for i := range c {
 						f := &fakeIter{}
-						iters[i] = f
+						iters[i] = pointIterator(f)
 						for _, key := range strings.Fields(c[i]) {
 							j := strings.Index(key, ":")
 							f.keys = append(f.keys, base.ParseInternalKey(key[:j]))
@@ -253,7 +253,6 @@ func TestMergingIterCornerCases(t *testing.T) {
 				li.initRangeDel(&levelIters[i].rangeDelIter)
 				li.initSmallestLargestUserKey(
 					&levelIters[i].smallestUserKey, &levelIters[i].largestUserKey, &levelIters[i].isLargestUserKeyRangeDelSentinel)
-				li.initIsSyntheticIterBoundsKey(&levelIters[i].isSyntheticIterBoundsKey)
 			}
 			miter := &mergingIter{}
 			miter.init(nil /* opts */, cmp, func(a []byte) int { return len(a) }, levelIters...)
@@ -345,11 +344,11 @@ func BenchmarkMergingIterSeekGE(b *testing.B) {
 						func(b *testing.B) {
 							readers, keys, cleanup := buildMergingIterTables(b, blockSize, restartInterval, count)
 							defer cleanup()
-							iters := make([]internalIterator, len(readers))
+							iters := make([]positionIterator, len(readers))
 							for i := range readers {
-								var err error
-								iters[i], err = readers[i].NewIter(nil /* lower */, nil /* upper */)
+								iter, err := readers[i].NewIter(nil /* lower */, nil /* upper */)
 								require.NoError(b, err)
+								iters[i] = pointIterator(iter)
 							}
 							m := newMergingIter(nil /* logger */, DefaultComparer.Compare,
 								func(a []byte) int { return len(a) }, iters...)
@@ -377,11 +376,11 @@ func BenchmarkMergingIterNext(b *testing.B) {
 						func(b *testing.B) {
 							readers, _, cleanup := buildMergingIterTables(b, blockSize, restartInterval, count)
 							defer cleanup()
-							iters := make([]internalIterator, len(readers))
+							iters := make([]positionIterator, len(readers))
 							for i := range readers {
-								var err error
-								iters[i], err = readers[i].NewIter(nil /* lower */, nil /* upper */)
+								iter, err := readers[i].NewIter(nil /* lower */, nil /* upper */)
 								require.NoError(b, err)
+								iters[i] = pointIterator(iter)
 							}
 							m := newMergingIter(nil /* logger */, DefaultComparer.Compare,
 								func(a []byte) int { return len(a) }, iters...)
@@ -412,11 +411,11 @@ func BenchmarkMergingIterPrev(b *testing.B) {
 						func(b *testing.B) {
 							readers, _, cleanup := buildMergingIterTables(b, blockSize, restartInterval, count)
 							defer cleanup()
-							iters := make([]internalIterator, len(readers))
+							iters := make([]positionIterator, len(readers))
 							for i := range readers {
-								var err error
-								iters[i], err = readers[i].NewIter(nil /* lower */, nil /* upper */)
+								iter, err := readers[i].NewIter(nil /* lower */, nil /* upper */)
 								require.NoError(b, err)
+								iters[i] = pointIterator(iter)
 							}
 							m := newMergingIter(nil /* logger */, DefaultComparer.Compare,
 								func(a []byte) int { return len(a) }, iters...)
@@ -589,7 +588,6 @@ func buildMergingIter(readers [][]*sstable.Reader, levelSlices []manifest.LevelS
 		l.initSmallestLargestUserKey(
 			&mils[level].smallestUserKey, &mils[level].largestUserKey,
 			&mils[level].isLargestUserKeyRangeDelSentinel)
-		l.initIsSyntheticIterBoundsKey(&mils[level].isSyntheticIterBoundsKey)
 		mils[level].iter = l
 	}
 	m := &mergingIter{}

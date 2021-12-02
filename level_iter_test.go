@@ -87,7 +87,7 @@ func TestLevelIter(t *testing.T) {
 			// Fake up the range deletion initialization.
 			iter.initRangeDel(new(internalIterator))
 			iter.disableInvariants = true
-			return runInternalIterCmd(d, iter, iterCmdVerboseKey)
+			return runPositionIterCmd(d, iter, iterCmdVerboseKey)
 
 		case "load":
 			// The "load" command allows testing the iterator options passed to load
@@ -297,7 +297,7 @@ func TestLevelIterBoundaries(t *testing.T) {
 					iter = nil
 				}()
 			}
-			return runInternalIterCmd(d, iter, iterCmdVerboseKey)
+			return runPositionIterCmd(d, iter, iterCmdVerboseKey)
 
 		case "file-pos":
 			// Returns the FileNum at which the iterator is positioned.
@@ -323,8 +323,8 @@ type levelIterTestIter struct {
 }
 
 func (i *levelIterTestIter) rangeDelSeek(
-	key []byte, ikey *InternalKey, val []byte, dir int,
-) (*InternalKey, []byte) {
+	key []byte, ikey iterKey, dir int,
+) iterKey {
 	var tombstone keyspan.Span
 	if i.rangeDelIter != nil {
 		if dir < 0 {
@@ -333,36 +333,33 @@ func (i *levelIterTestIter) rangeDelSeek(
 			tombstone = keyspan.SeekGE(i.levelIter.cmp, i.rangeDelIter, key, 1000)
 		}
 	}
-	if ikey == nil {
-		return &InternalKey{
+	if ikey.k == nil {
+		return pointKey(&InternalKey{
 			UserKey: []byte(fmt.Sprintf("./%s", tombstone)),
-		}, nil
+		}, nil)
 	}
-	return &InternalKey{
-		UserKey: []byte(fmt.Sprintf("%s/%s", ikey.UserKey, tombstone)),
-		Trailer: ikey.Trailer,
-	}, val
+	return pointKey(&InternalKey{
+		UserKey: []byte(fmt.Sprintf("%s/%s", ikey.k.UserKey, tombstone)),
+		Trailer: ikey.k.Trailer,
+	}, ikey.v)
 }
 
 func (i *levelIterTestIter) String() string {
 	return "level-iter-test"
 }
 
-func (i *levelIterTestIter) SeekGE(key []byte) (*InternalKey, []byte) {
-	ikey, val := i.levelIter.SeekGE(key)
-	return i.rangeDelSeek(key, ikey, val, 1)
+func (i *levelIterTestIter) SeekGE(key []byte) iterKey {
+	return i.rangeDelSeek(key, i.levelIter.SeekGE(key), 1)
 }
 
 func (i *levelIterTestIter) SeekPrefixGE(
 	prefix, key []byte, trySeekUsingNext bool,
-) (*base.InternalKey, []byte) {
-	ikey, val := i.levelIter.SeekPrefixGE(prefix, key, trySeekUsingNext)
-	return i.rangeDelSeek(key, ikey, val, 1)
+) iterKey {
+	return i.rangeDelSeek(key, i.levelIter.SeekPrefixGE(prefix, key, trySeekUsingNext), 1)
 }
 
-func (i *levelIterTestIter) SeekLT(key []byte) (*InternalKey, []byte) {
-	ikey, val := i.levelIter.SeekLT(key)
-	return i.rangeDelSeek(key, ikey, val, -1)
+func (i *levelIterTestIter) SeekLT(key []byte) iterKey {
+	return i.rangeDelSeek(key, i.levelIter.SeekLT(key), -1)
 }
 
 func TestLevelIterSeek(t *testing.T) {
@@ -386,7 +383,7 @@ func TestLevelIterSeek(t *testing.T) {
 			}
 			defer iter.Close()
 			iter.initRangeDel(&iter.rangeDelIter)
-			return runInternalIterCmd(d, iter, iterCmdVerboseKey)
+			return runPositionIterCmd(d, iter, iterCmdVerboseKey)
 
 		default:
 			return fmt.Sprintf("unknown command: %s", d.Cmd)
@@ -535,10 +532,10 @@ func BenchmarkLevelIterSeqSeekGEWithBounds(b *testing.B) {
 								pos := i % (keyCount - 1)
 								l.SetBounds(keys[pos], keys[pos+1])
 								// SeekGE will return keys[pos].
-								k, _ := l.SeekGE(keys[pos])
+								k := l.SeekGE(keys[pos]).k
 								// Next() will get called once and return nil.
 								for k != nil {
-									k, _ = l.Next()
+									k = l.Next().k
 								}
 							}
 							l.Close()
@@ -620,9 +617,9 @@ func BenchmarkLevelIterNext(b *testing.B) {
 
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {
-								key, _ := l.Next()
+								key := l.Next().k
 								if key == nil {
-									key, _ = l.First()
+									key = l.First().k
 								}
 								_ = key
 							}
@@ -654,9 +651,9 @@ func BenchmarkLevelIterPrev(b *testing.B) {
 
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {
-								key, _ := l.Prev()
+								key := l.Prev().k
 								if key == nil {
-									key, _ = l.Last()
+									key = l.Last().k
 								}
 								_ = key
 							}
