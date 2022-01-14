@@ -71,9 +71,10 @@ type levelIter struct {
 	// - err != nil
 	// - some other constraint, like the bounds in opts, caused the file at index to not
 	//   be relevant to the iteration.
-	iter     internalIterator
-	iterFile *fileMetadata
-	newIters tableNewIters
+	iter       internalIterator
+	iterFile   *fileMetadata
+	newIters   tableNewIters
+	filterIter filterIter
 	// When rangeDelIterPtr != nil, the caller requires that *rangeDelIterPtr must
 	// point to a range del iterator corresponding to the current file. When this
 	// iterator returns nil, *rangeDelIterPtr should also be set to nil. Whenever
@@ -340,6 +341,10 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 		l.iter, rangeDelIter, l.err = l.newIters(l.files.Current(), &l.tableOpts, l.bytesIterated)
 		if l.err != nil {
 			return noFileLoaded
+		}
+		if l.tableOpts.KeyFilter != nil {
+			l.filterIter = filterIter{KeyFilter: l.tableOpts.KeyFilter, Iterator: l.iter}
+			l.iter = &l.filterIter
 		}
 		if l.rangeDelIterPtr != nil {
 			*l.rangeDelIterPtr = rangeDelIter

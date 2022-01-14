@@ -99,6 +99,9 @@ type IterOptions struct {
 	// across all filters, i.e., all filters must indicate that the block is
 	// relevant.
 	BlockPropertyFilters []BlockPropertyFilter
+	// KeyFilter specifies a filter to apply to keys returned by the iterator.
+	// Only keys that the filter considers visible are returned by the iterator.
+	KeyFilter KeyFilter
 	// KeyTypes configures which types of keys to iterate over: point keys,
 	// range keys, or both.
 	KeyTypes IterKeyType
