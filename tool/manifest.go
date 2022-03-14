@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/humanize"
 	"github.com/cockroachdb/pebble/internal/manifest"
+	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/record"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/spf13/cobra"
@@ -22,10 +23,11 @@ import (
 // manifestT implements manifest-level tools, including both configuration
 // state and the commands themselves.
 type manifestT struct {
-	Root      *cobra.Command
-	Dump      *cobra.Command
-	Summarize *cobra.Command
-	Check     *cobra.Command
+	Root        *cobra.Command
+	Alphabetize *cobra.Command
+	Dump        *cobra.Command
+	Summarize   *cobra.Command
+	Check       *cobra.Command
 
 	opts      *pebble.Options
 	comparers sstable.Comparers
@@ -47,6 +49,18 @@ func newManifest(opts *pebble.Options, comparers sstable.Comparers) *manifestT {
 		Use:   "manifest",
 		Short: "manifest introspection tools",
 	}
+
+	// Add alphabetize command
+	m.Alphabetize = &cobra.Command{
+		Use:   "alphabetize <manifest-files>",
+		Short: "convert to alphabetic keys",
+		Long: `
+Create a duplicate manifest with keys in consisting of a-z characters, preserving relative order.
+`,
+		Args: cobra.MinimumNArgs(1),
+		Run:  m.runAlphabetize,
+	}
+	m.Root.AddCommand(m.Alphabetize)
 
 	// Add dump command
 	m.Dump = &cobra.Command{
@@ -94,6 +108,104 @@ Check the contents of the MANIFEST files.
 		&m.fmtKey, "key", "key formatter")
 
 	return m
+}
+
+func (m *manifestT) runAlphabetize(cmd *cobra.Command, args []string) {
+	for _, arg := range args {
+		err := func() error {
+			fmt.Fprintf(stdout, "%s\n", arg)
+
+			// Read the entire manifest to discover all the unique user keys.
+			var cmp *Comparer
+			keys := map[string][]byte{}
+			err := m.foreachVersionEdit(arg, func(ve *manifest.VersionEdit) error {
+				if ve.ComparerName != "" {
+					cmp = m.comparers[ve.ComparerName]
+					m.fmtKey.setForComparer(ve.ComparerName, m.comparers)
+				}
+				for _, nf := range ve.NewFiles {
+					if nf.Meta.HasPointKeys {
+						keys[string(nf.Meta.SmallestPointKey.UserKey)] = nf.Meta.SmallestPointKey.UserKey
+						keys[string(nf.Meta.LargestPointKey.UserKey)] = nf.Meta.LargestPointKey.UserKey
+					}
+					if nf.Meta.HasRangeKeys {
+						keys[string(nf.Meta.SmallestRangeKey.UserKey)] = nf.Meta.SmallestRangeKey.UserKey
+						keys[string(nf.Meta.LargestRangeKey.UserKey)] = nf.Meta.LargestRangeKey.UserKey
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+
+			// Sort all the discovered user keys according to the manifest's configured
+			// comparer, and then update the keys map to point each key to a
+			// corresponding key in an alphabet keyspace.
+			keysSorted := make([]string, 0, len(keys))
+			for k := range keys {
+				keysSorted = append(keysSorted, k)
+			}
+			sort.Slice(keysSorted, func(i, j int) bool {
+				return cmp.Compare([]byte(keysSorted[i]), []byte(keysSorted[j])) < 0
+			})
+			keyspace := testkeys.AlphaN(len(keys))
+			keyBuf := make([]byte, 1024)
+			for i, k := range keysSorted {
+				for len(keyBuf) < keyspace.MaxLen() {
+					keyBuf = make([]byte, len(keyBuf)*2)
+				}
+				n := testkeys.WriteKey(keyBuf, keyspace, i)
+				keys[k] = keyBuf[:n:n]
+				keyBuf = keyBuf[n:]
+			}
+
+			// Re-scan the manifest, copying it to a new file as we go. Translate each
+			// user key into its corresponding alphabetic key.
+			dst, err := m.opts.FS.Create(arg + ".alpha")
+			if err != nil {
+				return err
+			}
+			defer dst.Close()
+			r := record.NewWriter(dst)
+			err = m.foreachVersionEdit(arg, func(ve *manifest.VersionEdit) error {
+				if ve.ComparerName != "" {
+					ve.ComparerName = testkeys.Comparer.Name
+				}
+				for i, nf := range ve.NewFiles {
+					if nf.Meta.HasPointKeys {
+						ve.NewFiles[i].Meta.SmallestPointKey.UserKey = keys[string(nf.Meta.SmallestPointKey.UserKey)]
+						ve.NewFiles[i].Meta.LargestPointKey.UserKey = keys[string(nf.Meta.LargestPointKey.UserKey)]
+					}
+					if nf.Meta.HasRangeKeys {
+						ve.NewFiles[i].Meta.SmallestRangeKey.UserKey = keys[string(nf.Meta.SmallestRangeKey.UserKey)]
+						ve.NewFiles[i].Meta.LargestRangeKey.UserKey = keys[string(nf.Meta.LargestRangeKey.UserKey)]
+					}
+					ve.NewFiles[i].Meta.Smallest.UserKey = keys[string(nf.Meta.Smallest.UserKey)]
+					ve.NewFiles[i].Meta.Largest.UserKey = keys[string(nf.Meta.Largest.UserKey)]
+				}
+				w, err := r.Next()
+				if err != nil {
+					return err
+				}
+				return ve.Encode(w)
+			})
+			if err != nil {
+				return err
+			}
+			if err := r.Flush(); err != nil {
+				return err
+			}
+			if err := dst.Sync(); err != nil {
+				return err
+			}
+			return nil
+		}()
+		if err != nil {
+			fmt.Fprintf(stderr, "%s\n", err)
+			return
+		}
+	}
 }
 
 func (m *manifestT) printLevels(v *manifest.Version) {
@@ -520,4 +632,32 @@ func (m *manifestT) runCheck(cmd *cobra.Command, args []string) {
 	if ok {
 		fmt.Fprintf(stdout, "OK\n")
 	}
+}
+
+func (m *manifestT) foreachVersionEdit(filename string, fn func(ve *manifest.VersionEdit) error) error {
+	f, err := m.opts.FS.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	rr := record.NewReader(f, 0 /* logNum */)
+	for i := 0; ; i++ {
+		r, err := rr.Next()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+
+		var ve manifest.VersionEdit
+		err = ve.Decode(r)
+		if err != nil {
+			return err
+		}
+		if err = fn(&ve); err != nil {
+			return err
+		}
+	}
+	return nil
 }

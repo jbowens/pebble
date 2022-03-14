@@ -153,6 +153,20 @@ func Alpha(maxLength int) Keyspace {
 	}
 }
 
+// AlphaN constructs a keyspace consisting of keys containing characters a-z,
+// capable of representing exactly n unique keys.
+func AlphaN(n int) Keyspace {
+	// Compute the necessary maxmum length of a single key that gives us
+	// a sufficiently large keyspace to represent n unique keys.
+	maxLength := alphabetRequiredMaxLength(n, len(alpha))
+
+	ks := Alpha(maxLength)
+
+	// ks.Count() ≥ n
+	// Slice the keyspace to represent exactly n potential keys.
+	return ks.Slice(0, n)
+}
+
 // KeyAt returns the i-th key within the keyspace with a suffix encoding the
 // timestamp t.
 func KeyAt(k Keyspace, i int, t int) []byte {
@@ -248,6 +262,25 @@ func keyCount(n, l int) int {
 	// ...
 	// Σ i=(1...l) n^i = n*(n^l - 1)/(n-1)
 	return (n * (int(math.Pow(float64(n), float64(l))) - 1)) / (n - 1)
+}
+
+// alphabetRequiredMaxLength may be used to calculate the max-length of an
+// alphabetic keyspace consisting of n alphabet characters, such that the
+// keyspace is capable of representing at least k total keys.
+func alphabetRequiredMaxLength(k, n int) int {
+	// l is the max key length.
+	// n is the length of the alphabet.
+	// k is the total number of representable keys in the keyspace.
+	//
+	// We start from the equation from keyCount above and solve for l:
+	//   n*(n^l - 1)/(n-1) = k
+	//   n(n^l-1)          = k(n-1)
+	//   n^l-1             = k(n-1)/n
+	//   n^l               = k(n-1)/n + 1
+	//   log n^l           = log(k(n-1)/n+1)
+	//   l log(n)          = log(k(n-1)/n+1)
+	//   l                 = log(k(n-1)/n+1)/log(n)
+	return int(math.Log(float64(k*(n-1)/n+1))/math.Log(float64(n))) + 1
 }
 
 func (a alphabet) key(buf []byte, idx int) int {

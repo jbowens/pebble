@@ -70,6 +70,14 @@ func TestKeyCount(t *testing.T) {
 	}
 }
 
+func TestAlphaN(t *testing.T) {
+	for i := 1; i < 20_000; i++ {
+		ks := AlphaN(i)
+		count := ks.Count()
+		require.Equal(t, count, i)
+	}
+}
+
 func TestFullKeyspaces(t *testing.T) {
 	testCases := []struct {
 		ks   Keyspace
