@@ -185,13 +185,24 @@ type Iterator struct {
 	stats               IteratorStats
 	closeHook           func()
 
-	// Following fields are only used in Clone and SetOptions.
+	// Following fields used when constructing an iterator stack, eg, in Clone
+	// and SetOptions or when re-fragmenting a batch's range keys/range dels.
 	// Non-nil if this Iterator includes a Batch.
 	batch    *Batch
 	newIters tableNewIters
 	seqNum   uint64
 	// TODO(jackson): Remove when we no longer require the global arena.
-	newRangeKeyIter func(*iteratorRangeKeyState) keyspan.FragmentIterator
+	newRangeKeyIter func(*Iterator) keyspan.FragmentIterator
+	// batchSeqNum is used by Iterators over indexed batches to detect when the
+	// underlying batch has been mutated. The batch beneath an indexed batch may
+	// be mutated while the Iterator is open, but new keys are not surfaced
+	// until the next call to SetOptions.
+	batchSeqNum uint64
+	// batchRefreshPointKeys and batchRefreshRangeKeys are closures that when
+	// invoked refresh the view of the current {point,rangedel} and {rangekey}
+	// batch iterators, respectively. See SetOptions.
+	batchRefreshPointKeys func()
+	batchRefreshRangeKeys func()
 
 	// Keeping the bools here after all the 8 byte aligned fields shrinks the
 	// sizeof this struct by 24 bytes.
@@ -947,10 +958,7 @@ func (i *Iterator) SeekGEWithLimit(key []byte, limit []byte) IterValidityState {
 	}
 	seekInternalIter := true
 	trySeekUsingNext := false
-	// The following noop optimization only applies when i.batch == nil, since
-	// an iterator over a batch is iterating over mutable data, that may have
-	// changed since the last seek.
-	if lastPositioningOp == seekGELastPositioningOp && i.batch == nil {
+	if lastPositioningOp == seekGELastPositioningOp {
 		cmp := i.cmp(i.prefixOrFullSeekKey, key)
 		// If this seek is to the same or later key, and the iterator is
 		// already positioned there, this is a noop. This can be helpful for
@@ -996,7 +1004,7 @@ func (i *Iterator) SeekGEWithLimit(key []byte, limit []byte) IterValidityState {
 	}
 	i.findNextEntry(limit)
 	i.maybeSampleRead()
-	if i.Error() == nil && i.batch == nil {
+	if i.Error() == nil {
 		// Prepare state for a future noop optimization.
 		i.prefixOrFullSeekKey = append(i.prefixOrFullSeekKey[:0], key...)
 		i.lastPositioningOp = seekGELastPositioningOp
@@ -1171,10 +1179,7 @@ func (i *Iterator) SeekLTWithLimit(key []byte, limit []byte) IterValidityState {
 		key = lowerBound
 	}
 	seekInternalIter := true
-	// The following noop optimization only applies when i.batch == nil, since
-	// an iterator over a batch is iterating over mutable data, that may have
-	// changed since the last seek.
-	if lastPositioningOp == seekLTLastPositioningOp && i.batch == nil {
+	if lastPositioningOp == seekLTLastPositioningOp {
 		cmp := i.cmp(key, i.prefixOrFullSeekKey)
 		// If this seek is to the same or earlier key, and the iterator is
 		// already positioned there, this is a noop. This can be helpful for
@@ -1205,7 +1210,7 @@ func (i *Iterator) SeekLTWithLimit(key []byte, limit []byte) IterValidityState {
 	}
 	i.findPrevEntry(limit)
 	i.maybeSampleRead()
-	if i.Error() == nil && i.batch == nil {
+	if i.Error() == nil {
 		// Prepare state for a future noop optimization.
 		i.prefixOrFullSeekKey = append(i.prefixOrFullSeekKey[:0], key...)
 		i.lastPositioningOp = seekLTLastPositioningOp
@@ -1874,6 +1879,9 @@ func (i *Iterator) saveBounds(lower, upper []byte) {
 // are sometimes used to optimize seeking. See the extended commentary on
 // SetBounds.
 //
+// If the iterator was created over an indexed mutable batch, the iterator's
+// view of the mutable batch is refreshed.
+//
 // The iterator will always be invalidated and must be repositioned with a call
 // to SeekGE, SeekPrefixGE, SeekLT, First, or Last.
 //
@@ -1925,6 +1933,22 @@ func (i *Iterator) SetOptions(o *IterOptions) {
 		i.equal(o.RangeKeyMasking.Suffix, i.opts.RangeKeyMasking.Suffix) {
 		// Fast path. The options are identical. This preserves the
 		// Seek-using-Next optimizations.
+
+		// If the iterator is backed by a batch that's been mutated, refresh it
+		// and invalidate the iterator to prevent seek-using-next optimizations.
+		if i.batch != nil {
+			nextBatchSeqNum := (uint64(len(i.batch.data)) | base.InternalKeySeqNumBatch)
+			if nextBatchSeqNum != i.batchSeqNum {
+				if i.batchRefreshPointKeys != nil {
+					i.batchRefreshPointKeys()
+				}
+				if i.batchRefreshRangeKeys != nil {
+					i.batchRefreshRangeKeys()
+				}
+				i.batchSeqNum = nextBatchSeqNum
+				i.invalidate()
+			}
+		}
 		return
 	}
 
@@ -1949,6 +1973,11 @@ func (i *Iterator) SetOptions(o *IterOptions) {
 
 	// Even though this is not a positioning operation, the invalidation of the
 	// iterator stack means we cannot optimize Seeks by using Next.
+	i.invalidate()
+	finishInitializingIter(i.alloc)
+}
+
+func (i *Iterator) invalidate() {
 	i.lastPositioningOp = unknownLastPositionOp
 	i.hasPrefix = false
 	i.iterKey = nil
@@ -1965,7 +1994,6 @@ func (i *Iterator) SetOptions(o *IterOptions) {
 		i.pos = iterPosCurReverse
 	}
 	i.iterValidityState = IterExhausted
-	finishInitializingIter(i.alloc)
 }
 
 // Metrics returns per-iterator metrics.
