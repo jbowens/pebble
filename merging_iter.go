@@ -7,12 +7,14 @@ package pebble
 import (
 	"bytes"
 	"fmt"
+	"runtime"
 	"runtime/debug"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
+	"github.com/cockroachdb/pebble/sstable"
 )
 
 type mergingIterLevel struct {
@@ -211,17 +213,19 @@ type mergingIterLevel struct {
 // scenarios and have each step display the current state (i.e. the current
 // heap and range-del iterator positioning).
 type mergingIter struct {
-	logger   Logger
-	split    Split
-	dir      int
-	snapshot uint64
-	levels   []mergingIterLevel
-	heap     mergingIterHeap
-	err      error
-	prefix   []byte
-	lower    []byte
-	upper    []byte
-	stats    InternalIteratorStats
+	logger     Logger
+	split      Split
+	dir        int
+	snapshot   uint64
+	levels     []mergingIterLevel
+	heap       mergingIterHeap
+	err        error
+	prefix     []byte
+	lower      []byte
+	upper      []byte
+	stats      InternalIteratorStats
+	buf        bytes.Buffer
+	callersBuf [5]uintptr
 
 	// Elide range tombstones from being returned during iteration. Set to true
 	// when mergingIter is a child of Iterator and the mergingIter is processing
@@ -666,6 +670,11 @@ func (m *mergingIter) findNextEntry() (*InternalKey, []byte) {
 			// additionally at least one heap comparison to step to the next
 			// entry.
 			if m.prefix != nil {
+				if _, poisoned := sstable.Poison.Load(&item.key.UserKey[0]); poisoned {
+					panic(fmt.Sprintf("mergingIter %p attempting to read key %p (%q)",
+						m, item.key.UserKey, item.key.UserKey))
+				}
+
 				if n := m.split(item.key.UserKey); !bytes.Equal(m.prefix, item.key.UserKey[:n]) {
 					return nil, nil
 				}
@@ -910,6 +919,41 @@ func (m *mergingIter) seekGE(key []byte, level int, trySeekUsingNext bool) {
 	}
 
 	m.initMinHeap()
+
+	m.heapDebugContext("seekPrefix after init min heap")
+}
+
+func (m *mergingIter) heapDebugContext(label string) {
+	m.buf.Reset()
+	n := runtime.Callers(1, m.callersBuf[:])
+	fmt.Fprintf(&m.buf, "heapDebugContext %s (mergingIter = %p)\n", label, m)
+	if n != 0 {
+		frames := runtime.CallersFrames(m.callersBuf[:n])
+		for {
+			f, more := frames.Next()
+			fmt.Fprintf(&m.buf, "%s:%d\n", f.Function, f.Line)
+			if !more {
+				break
+			}
+		}
+	}
+	var anyPoison bool
+	for i := range m.heap.items {
+		if len(m.heap.items[i].key.UserKey) == 0 {
+			continue
+		}
+		_, poisoned := sstable.Poison.Load(&m.heap.items[i].key.UserKey[0])
+		if poisoned {
+			anyPoison = true
+			fmt.Fprintf(&m.buf, "%d: key = %p (%q) POISONED\n", i, m.heap.items[i].key.UserKey, m.heap.items[i].key.UserKey)
+		} else {
+			fmt.Fprintf(&m.buf, "%d: key = %p (%q)\n", i, m.heap.items[i].key.UserKey, m.heap.items[i].key.UserKey)
+		}
+	}
+	fmt.Println(m.buf.String())
+	if anyPoison {
+		panic("POISON")
+	}
 }
 
 func (m *mergingIter) String() string {
@@ -932,6 +976,7 @@ func (m *mergingIter) SeekGE(key []byte, trySeekUsingNext bool) (*InternalKey, [
 func (m *mergingIter) SeekPrefixGE(
 	prefix, key []byte, trySeekUsingNext bool,
 ) (*base.InternalKey, []byte) {
+	defer m.heapDebugContext("SeekPrefixGE")
 	m.err = nil // clear cached iteration error
 	m.prefix = prefix
 	m.seekGE(key, 0 /* start level */, trySeekUsingNext)

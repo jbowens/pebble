@@ -1039,6 +1039,11 @@ func (i *singleLevelIterator) Close() error {
 		releaseBlockPropertiesFilterer(i.bpfs)
 	}
 	*i = i.resetForReuse()
+	if cap(i.data.fullKey) > 0 {
+		buf := i.data.fullKey[0:1]
+		Poison.Store(&buf[0], i)
+		fmt.Printf("Close returned sstable iterator %p with fullKey buffer %p to the pool.\n", i, i.data.fullKey)
+	}
 	singleLevelIterPool.Put(i)
 	return err
 }
@@ -2156,12 +2161,20 @@ func (r *Reader) NewIterWithBlockPropertyFilters(
 	}
 
 	i := singleLevelIterPool.Get().(*singleLevelIterator)
+
+	if cap(i.data.fullKey) > 0 {
+		buf := i.data.fullKey[0:1]
+		Poison.Delete(&buf[0])
+		fmt.Printf("NewIter acquired sstable iterator %p with fullKey buffer %p\n", i, i.data.fullKey)
+	}
 	err := i.init(r, lower, upper, filterer, useFilterBlock)
 	if err != nil {
 		return nil, err
 	}
 	return i, nil
 }
+
+var Poison sync.Map
 
 // NewIter returns an iterator for the contents of the table. If an error
 // occurs, NewIter cleans up after itself and returns a nil iterator.
@@ -2186,6 +2199,12 @@ func (r *Reader) NewCompactionIter(bytesIterated *uint64) (Iterator, error) {
 		}, nil
 	}
 	i := singleLevelIterPool.Get().(*singleLevelIterator)
+
+	if cap(i.data.fullKey) > 0 {
+		buf := i.data.fullKey[0:1]
+		Poison.Delete(&buf[0])
+		fmt.Printf("NewCompactionIter acquired sstable iterator %p with fullKey buffer %p\n", i, i.data.fullKey)
+	}
 	err := i.init(r, nil /* lower */, nil /* upper */, nil, false /* useFilter */)
 	if err != nil {
 		return nil, err
