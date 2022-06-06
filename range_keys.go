@@ -99,13 +99,16 @@ func (d *DB) maybeInitializeRangeKeys() {
 }
 
 func (d *DB) newRangeKeyIter(
-	it *Iterator, seqNum, batchSeqNum uint64, batch *Batch, readState *readState,
+	it *Iterator,
+	seqNum, batchSeqNum uint64,
+	batch *Batch,
+	readState *readState,
+	matchingMemtables flushableList,
 ) keyspan.FragmentIterator {
 	d.maybeInitializeRangeKeys()
 
-	// TODO(jackson): Preallocate iters, mergingIter, rangeKeyIter in a
-	// structure analogous to iterAlloc.
-	var iters []keyspan.FragmentIterator
+	// Use the Iterator's pre-allocated FragmentIterator slice.
+	iters := it.rangeKey.alloc.levels[:0]
 
 	// If there's an indexed batch with range keys, include it.
 	if batch != nil {
@@ -117,15 +120,12 @@ func (d *DB) newRangeKeyIter(
 		}
 	}
 
-	// Next are the flushables: memtables and large batches.
-	for i := len(readState.memtables) - 1; i >= 0; i-- {
-		mem := readState.memtables[i]
-		// We only need to read from memtables which contain sequence numbers older
-		// than seqNum.
-		if logSeqNum := mem.logSeqNum; logSeqNum >= seqNum {
-			continue
-		}
-		if rki := mem.newRangeKeyIter(&it.opts); rki != nil {
+	// Next are the flushables: memtables and large batches. The
+	// matchingMemtables slice already contains the subset of
+	// readState.memtables that are relevant to the iterator reading at the
+	// sequence number `seqNum`, so there's no need to compare seqnums.
+	for i := len(matchingMemtables) - 1; i >= 0; i-- {
+		if rki := matchingMemtables[i].newRangeKeyIter(&it.opts); rki != nil {
 			iters = append(iters, rki)
 		}
 	}
@@ -136,6 +136,6 @@ func (d *DB) newRangeKeyIter(
 	if len(frags) > 0 {
 		iters = append(iters, keyspan.NewIter(d.cmp, frags))
 	}
-	it.rangeKey.rangeKeyIter = it.rangeKey.alloc.Init(d.cmp, seqNum, iters...)
+	it.rangeKey.rangeKeyIter = it.rangeKey.alloc.userIterConfig.Init(d.cmp, seqNum, iters...)
 	return it.rangeKey.rangeKeyIter
 }

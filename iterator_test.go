@@ -2071,17 +2071,20 @@ func BenchmarkIteratorScan(b *testing.B) {
 					b.Fatalf("expected %d keys, found %d", keyCount, keys.Count())
 				}
 
-				// Portion the keys into `readAmp` overlapping key sets.
-				for _, ks := range testkeys.Divvy(keys, readAmp) {
+				// Portion the keys into `readAmp+1` overlapping key sets.
+				for i, ks := range testkeys.Divvy(keys, readAmp+1) {
+					if i > 0 {
+						require.NoError(b, d.Flush())
+					}
 					batch := d.NewBatch()
 					for i := 0; i < ks.Count(); i++ {
 						n := testkeys.WriteKeyAt(keyBuf[:], ks, i, int(rng.Uint64n(100)))
 						batch.Set(keyBuf[:n], keyBuf[:n], nil)
 					}
 					require.NoError(b, batch.Commit(nil))
-					require.NoError(b, d.Flush())
 				}
-				// Each level is a sublevel.
+				// Each level is a sublevel, except the last which is a
+				// memtable (and is not included in m.ReadAmp()).
 				m := d.Metrics()
 				require.Equal(b, readAmp, m.ReadAmp())
 

@@ -269,7 +269,10 @@ type iteratorRangeKeyState struct {
 	// iterator stack, but do not need to be directly accessed during
 	// iteration. These fields are bundled within the
 	// iteratorRangeKeyState struct to reduce allocations.
-	alloc rangekey.UserIteratorConfig
+	alloc struct {
+		levels         [3 + numLevels]keyspan.FragmentIterator
+		userIterConfig rangekey.UserIteratorConfig
+	}
 }
 
 var iterRangeKeyStateAllocPool = sync.Pool{
