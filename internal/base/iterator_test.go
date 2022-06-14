@@ -5,6 +5,7 @@
 package base
 
 import (
+	"fmt"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -33,4 +34,64 @@ func TestInternalIteratorStatsMerge(t *testing.T) {
 	}
 	to.Merge(from)
 	require.Equal(t, expected, to)
+}
+
+func TestFlags(t *testing.T) {
+	t.Run("SeekGEFlags", func(t *testing.T) {
+		f := SeekGEFlagsNone
+		type flag struct {
+			label string
+			pred  func() bool
+			set   func() SeekGEFlags
+			unset func() SeekGEFlags
+		}
+		flags := []flag{
+			{
+				"TrySeekUsingNext",
+				func() bool { return f.TrySeekUsingNext() },
+				func() SeekGEFlags { return f.EnableTrySeekUsingNext() },
+				func() SeekGEFlags { return f.DisableTrySeekUsingNext() },
+			},
+			{
+				"RelativeSeek",
+				func() bool { return f.RelativeSeek() },
+				func() SeekGEFlags { return f.EnableRelativeSeek() },
+				func() SeekGEFlags { return f.DisableRelativeSeek() },
+			},
+		}
+
+		ref := make([]bool, len(flags))
+		var checkCombination func(t *testing.T, i int)
+		checkCombination = func(t *testing.T, i int) {
+			if i >= len(ref) {
+				// Verify that ref matches the flag predicates.
+				for j := 0; j < i; j++ {
+					if got := flags[j].pred(); ref[j] != got {
+						t.Errorf("%s() = %t, want %t : flag binary = %08b", flags[j].label, got, ref[j], f)
+					}
+				}
+				return
+			}
+
+			// flag i remains unset.
+			t.Run(fmt.Sprintf("%s begin unset", flags[i].label), func(t *testing.T) {
+				checkCombination(t, i+1)
+			})
+
+			// set flag i
+			ref[i] = true
+			f = flags[i].set()
+			t.Run(fmt.Sprintf("%s set", flags[i].label), func(t *testing.T) {
+				checkCombination(t, i+1)
+			})
+
+			// unset flag i
+			ref[i] = false
+			f = flags[i].unset()
+			t.Run(fmt.Sprintf("%s unset", flags[i].label), func(t *testing.T) {
+				checkCombination(t, i+1)
+			})
+		}
+		checkCombination(t, 0)
+	})
 }

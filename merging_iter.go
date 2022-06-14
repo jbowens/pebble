@@ -223,6 +223,8 @@ type mergingIter struct {
 	upper    []byte
 	stats    InternalIteratorStats
 
+	combinedIterState *combinedIterState
+
 	// Elide range tombstones from being returned during iteration. Set to true
 	// when mergingIter is a child of Iterator and the mergingIter is processing
 	// range tombstones.
@@ -625,8 +627,14 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterItem) bool {
 				}
 				// This seek is not directly due to a SeekGE call, so we don't
 				// know enough about the underlying iterator positions, and so
-				// we keep seek optiomizations disabled.
-				m.seekGE(seekKey, item.index, base.SeekGEFlagsNone)
+				// we keep the try-seek-using-next optimization disabled.
+				//
+				// Additionally, we set the relative-seek flag. This is
+				// important when iterating with lazy combined iteration. If
+				// there's a range key between this level's current file and the
+				// file the seek will land on, we need to detect it in order to
+				// trigger construction of the combined iterator.
+				m.seekGE(seekKey, item.index, base.SeekGEFlagsNone.EnableRelativeSeek())
 				return true
 			}
 			if l.tombstone.CoversAt(m.snapshot, item.key.SeqNum()) {
@@ -795,7 +803,12 @@ func (m *mergingIter) isPrevEntryDeleted(item *mergingIterItem) bool {
 				if l.smallestUserKey != nil && m.heap.cmp(l.smallestUserKey, seekKey) > 0 {
 					seekKey = l.smallestUserKey
 				}
-				m.seekLT(seekKey, item.index, base.SeekLTFlagsNone)
+				// We set the relative-seek flag. This is important when
+				// iterating with lazy combined iteration. If there's a range
+				// key between this level's current file and the file the seek
+				// will land on, we need to detect it in order to trigger
+				// construction of the combined iterator.
+				m.seekLT(seekKey, item.index, base.SeekLTFlagsNone.EnableRelativeSeek())
 				return true
 			}
 			if l.tombstone.CoversAt(m.snapshot, item.key.SeqNum()) {
@@ -879,24 +892,26 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) {
 			// so we can have a sstable with bounds [c#8, i#InternalRangeDelSentinel], and the
 			// tombstone is [b, k)#8 and the seek key is i: levelIter.SeekGE(i) will move past
 			// this sstable since it realizes the largest key is a InternalRangeDelSentinel.
-			l.tombstone = keyspan.SeekGE(m.heap.cmp, rangeDelIter, key)
-			if l.tombstone != nil && l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) &&
-				(l.smallestUserKey == nil || m.heap.cmp(l.smallestUserKey, key) <= 0) {
-				// NB: Based on the comment above l.largestUserKey >= key, and based on the
-				// containment condition tombstone.End > key, so the assignment to key results
-				// in a monotonically non-decreasing key across iterations of this loop.
-				//
-				// The adjustment of key here can only move it to a larger key. Since
-				// the caller of seekGE guaranteed that the original key was greater
-				// than or equal to m.lower, the new key will continue to be greater
-				// than or equal to m.lower.
-				if l.largestUserKey != nil &&
-					m.heap.cmp(l.largestUserKey, l.tombstone.End) < 0 {
-					// Truncate the tombstone for seeking purposes. Note that this can over-truncate
-					// but that is harmless for this seek optimization.
-					key = l.largestUserKey
-				} else {
-					key = l.tombstone.End
+			if m.combinedIterState == nil || m.combinedIterState.initialized {
+				l.tombstone = keyspan.SeekGE(m.heap.cmp, rangeDelIter, key)
+				if l.tombstone != nil && l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) &&
+					(l.smallestUserKey == nil || m.heap.cmp(l.smallestUserKey, key) <= 0) {
+					// NB: Based on the comment above l.largestUserKey >= key, and based on the
+					// containment condition tombstone.End > key, so the assignment to key results
+					// in a monotonically non-decreasing key across iterations of this loop.
+					//
+					// The adjustment of key here can only move it to a larger key. Since
+					// the caller of seekGE guaranteed that the original key was greater
+					// than or equal to m.lower, the new key will continue to be greater
+					// than or equal to m.lower.
+					if l.largestUserKey != nil &&
+						m.heap.cmp(l.largestUserKey, l.tombstone.End) < 0 {
+						// Truncate the tombstone for seeking purposes. Note that this can over-truncate
+						// but that is harmless for this seek optimization.
+						key = l.largestUserKey
+					} else {
+						key = l.tombstone.End
+					}
 				}
 			}
 		}
@@ -965,25 +980,27 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) {
 				withinLargestSSTableBound = cmpResult > 0 || (cmpResult == 0 && !l.isLargestUserKeyRangeDelSentinel)
 			}
 
-			l.tombstone = keyspan.SeekLE(m.heap.cmp, rangeDelIter, key)
-			if l.tombstone != nil && l.tombstone.VisibleAt(m.snapshot) &&
-				l.tombstone.Contains(m.heap.cmp, key) && withinLargestSSTableBound {
-				// NB: Based on the comment above l.smallestUserKey <= key, and based
-				// on the containment condition tombstone.Start.UserKey <= key, so the
-				// assignment to key results in a monotonically non-increasing key
-				// across iterations of this loop.
-				//
-				// The adjustment of key here can only move it to a smaller key. Since
-				// the caller of seekLT guaranteed that the original key was less than
-				// or equal to m.upper, the new key will continue to be less than or
-				// equal to m.upper.
-				if l.smallestUserKey != nil &&
-					m.heap.cmp(l.smallestUserKey, l.tombstone.Start) >= 0 {
-					// Truncate the tombstone for seeking purposes. Note that this can over-truncate
-					// but that is harmless for this seek optimization.
-					key = l.smallestUserKey
-				} else {
-					key = l.tombstone.Start
+			if m.combinedIterState == nil || m.combinedIterState.initialized {
+				l.tombstone = keyspan.SeekLE(m.heap.cmp, rangeDelIter, key)
+				if l.tombstone != nil && l.tombstone.VisibleAt(m.snapshot) &&
+					l.tombstone.Contains(m.heap.cmp, key) && withinLargestSSTableBound {
+					// NB: Based on the comment above l.smallestUserKey <= key, and based
+					// on the containment condition tombstone.Start.UserKey <= key, so the
+					// assignment to key results in a monotonically non-increasing key
+					// across iterations of this loop.
+					//
+					// The adjustment of key here can only move it to a smaller key. Since
+					// the caller of seekLT guaranteed that the original key was less than
+					// or equal to m.upper, the new key will continue to be less than or
+					// equal to m.upper.
+					if l.smallestUserKey != nil &&
+						m.heap.cmp(l.smallestUserKey, l.tombstone.Start) >= 0 {
+						// Truncate the tombstone for seeking purposes. Note that this can over-truncate
+						// but that is harmless for this seek optimization.
+						key = l.smallestUserKey
+					} else {
+						key = l.tombstone.Start
+					}
 				}
 			}
 		}
