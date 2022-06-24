@@ -978,8 +978,8 @@ func finishInitializingIter(buf *iterAlloc) *Iterator {
 	if dbi.opts.rangeKeys() {
 		if dbi.rangeKey == nil {
 			dbi.rangeKey = iterRangeKeyStateAllocPool.Get().(*iteratorRangeKeyState)
-			dbi.rangeKey.init(dbi.cmp, dbi.split, &dbi.opts)
-			dbi.rangeKey.rangeKeyIter = dbi.db.newRangeKeyIter(dbi, dbi.seqNum, dbi.batchSeqNum, dbi.batch, dbi.readState)
+			//dbi.rangeKey.init(dbi.cmp, dbi.split, &dbi.opts)
+			//dbi.rangeKey.rangeKeyIter = dbi.db.newRangeKeyIter(dbi, dbi.seqNum, dbi.batchSeqNum, dbi.batch, dbi.readState)
 		}
 
 		// Wrap the point iterator (currently dbi.iter) with an interleaving
@@ -989,7 +989,7 @@ func finishInitializingIter(buf *iterAlloc) *Iterator {
 		// NB: The interleaving iterator is always reinitialized, even if
 		// dbi already had an initialized range key iterator, in case the point
 		// iterator changed or the range key masking suffix changed.
-		dbi.rangeKey.iter.Init(dbi.cmp, dbi.iter, dbi.rangeKey.rangeKeyIter, dbi.rangeKey,
+		dbi.rangeKey.iter.Init(dbi.cmp, dbi.iter, emptyKeyspanIter, nil,
 			dbi.opts.LowerBound, dbi.opts.UpperBound)
 		dbi.iter = &dbi.rangeKey.iter
 	}
