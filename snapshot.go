@@ -15,6 +15,10 @@ type Snapshot struct {
 	db     *DB
 	seqNum uint64
 
+	// closed records whether the snapshot has already been closed. Once closed,
+	// the only method that may be called is Close.
+	closed bool
+
 	// The list the snapshot is linked into.
 	list *snapshotList
 
@@ -32,7 +36,7 @@ var _ Reader = (*Snapshot)(nil)
 // slice will remain valid until the returned Closer is closed. On success, the
 // caller MUST call closer.Close() or a memory leak will occur.
 func (s *Snapshot) Get(key []byte) ([]byte, io.Closer, error) {
-	if s.db == nil {
+	if s.closed {
 		panic(ErrClosed)
 	}
 	return s.db.getInternal(key, nil /* batch */, s)
@@ -42,7 +46,7 @@ func (s *Snapshot) Get(key []byte) ([]byte, io.Closer, error) {
 // return false). The iterator can be positioned via a call to SeekGE,
 // SeekLT, First or Last.
 func (s *Snapshot) NewIter(o *IterOptions) *Iterator {
-	if s.db == nil {
+	if s.closed {
 		panic(ErrClosed)
 	}
 	return s.db.newIterInternal(nil /* batch */, s, o)
@@ -51,12 +55,13 @@ func (s *Snapshot) NewIter(o *IterOptions) *Iterator {
 // Close closes the snapshot, releasing its resources. Close must be called.
 // Failure to do so will result in a tiny memory leak and a large leak of
 // resources on disk due to the entries the snapshot is preventing from being
-// deleted.
+// deleted. Close is idempotent.
 func (s *Snapshot) Close() error {
-	if s.db == nil {
-		panic(ErrClosed)
+	if s.closed {
+		return nil
 	}
 	s.db.mu.Lock()
+	s.closed = true
 	s.db.mu.snapshots.remove(s)
 
 	// If s was the previous earliest snapshot, we might be able to reclaim
@@ -65,7 +70,6 @@ func (s *Snapshot) Close() error {
 		s.db.maybeScheduleCompactionPicker(pickElisionOnly)
 	}
 	s.db.mu.Unlock()
-	s.db = nil
 	return nil
 }
 

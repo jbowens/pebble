@@ -201,7 +201,7 @@ func TestSnapshotClosed(t *testing.T) {
 
 	snap := d.NewSnapshot()
 	require.NoError(t, snap.Close())
-	require.True(t, errors.Is(catch(func() { _ = snap.Close() }), ErrClosed))
+	require.NoError(t, snap.Close()) // idempotent
 	require.True(t, errors.Is(catch(func() { _, _, _ = snap.Get(nil) }), ErrClosed))
 	require.True(t, errors.Is(catch(func() { snap.NewIter(nil) }), ErrClosed))
 
