@@ -252,7 +252,13 @@ type iteratorRangeKeyState struct {
 	// no point key, only a range key start boundary.
 	rangeKeyOnly bool
 	hasRangeKey  bool
-	keys         bySuffix
+	// stale is true when the range key state recorded here (eg, in keys, start,
+	// end) is not in sync with the current range key at the interleaving
+	// iterator's current position. The parent iterator may not be positioned
+	// over the interleaving iterator's current position, so {keys,start,end}
+	// are only updated during a call to saveRangeKey.
+	stale bool
+	keys  bySuffix
 	// start and end are the [start, end) boundaries of the current range keys.
 	start []byte
 	end   []byte
@@ -430,7 +436,7 @@ func (i *Iterator) findNextEntry(limit []byte) {
 			i.key = i.keyBuf
 			i.value = i.iterValue
 			i.iterValidityState = IterValid
-			i.setRangeKey()
+			i.saveRangeKey()
 			return
 
 		case InternalKeyKindMerge:
@@ -1477,64 +1483,17 @@ func (i *Iterator) rangeKeyWithinLimit(limit []byte) bool {
 		return false
 	}
 	s := i.rangeKey.iiter.Span()
-	if s == nil {
-		// If there are no covering range keys, it is safe to to pause
-		// immediately.
-		return false
-	}
 	// If the range key ends beyond the limit, then the range key does not cover
 	// any portion of the keyspace within the limit and it is safe to pause.
-	if i.cmp(s.End, limit) <= 0 {
-		return false
-	}
-	return true
+	return s != nil && i.cmp(s.End, limit) > 0
 }
 
-// setRangeKey sets the current range key to the underlying iterator's current
-// range key state. It does not make copies of any of the key, value or suffix
-// buffers, so it must only be used if the underlying iterator's position
-// matches the top-level iterator (eg, i.pos = iterPosCur*).
-func (i *Iterator) setRangeKey() {
-	if i.rangeKey == nil || !i.opts.rangeKeys() {
-		return
-	}
-	s := i.rangeKey.iiter.Span()
-	if s == nil {
-		i.rangeKey.hasRangeKey = false
-		if i.rangeKey.start != nil {
-			// Clear out existing pointers, so that we don't unintentionally retain
-			// any old range key blocks.
-			i.rangeKey.start = nil
-			i.rangeKey.end = nil
-			for j := 0; j < i.rangeKey.keys.Len(); j++ {
-				i.rangeKey.keys.data[j].Suffix = nil
-				i.rangeKey.keys.data[j].Value = nil
-			}
-			i.rangeKey.keys.data = i.rangeKey.keys.data[:0]
-		}
-		return
-	}
-	i.rangeKey.hasRangeKey = true
-	i.rangeKey.start, i.rangeKey.end = s.Start, s.End
-	i.rangeKey.keys.data = i.rangeKey.keys.data[:0]
-	for j := 0; j < len(s.Keys); j++ {
-		if s.Keys[j].Kind() == base.InternalKeyKindRangeKeySet {
-			i.rangeKey.keys.data = append(i.rangeKey.keys.data, RangeKeyData{
-				Suffix: s.Keys[j].Suffix,
-				Value:  s.Keys[j].Value,
-			})
-		}
-	}
-	sort.Sort(&i.rangeKey.keys)
-}
-
-// saveRangeKey sets the current range key to the underlying iterator's current
-// range key state, copying all of the key, value and suffixes into
-// Iterator-managed buffers. Callers should prefer setRangeKey if under no
-// circumstances the underlying iterator will be advanced to the next user key
-// before returning to the user.
+// saveRangeKey saves the current range key to the underlying iterator's current
+// range key state. If the range key has not changed, saveRangeKey is a no-op.
+// If there is a new range key, saveRangeKey copies all of the key, value and
+// suffixes into Iterator-managed buffers.
 func (i *Iterator) saveRangeKey() {
-	if i.rangeKey == nil || !i.opts.rangeKeys() {
+	if i.rangeKey == nil || i.opts.KeyTypes == IterKeyTypePointsOnly {
 		return
 	}
 	s := i.rangeKey.iiter.Span()
@@ -1542,16 +1501,17 @@ func (i *Iterator) saveRangeKey() {
 		i.rangeKey.hasRangeKey = false
 		return
 	}
-	i.rangeKey.hasRangeKey = true
-	// TODO(jackson): Rather than naively copying all the range key state every
-	// time, we could copy only if it actually changed from the currently saved
-	// state, with some help from the InterleavingIter.
+	if !i.rangeKey.stale {
+		// The range key `s` is identical to the one currently saved. No-op.
+		return
+	}
 
+	i.rangeKey.stale = false
+	i.rangeKey.hasRangeKey = true
 	i.rangeKey.buf = append(i.rangeKey.buf[:0], s.Start...)
 	i.rangeKey.start = i.rangeKey.buf
 	i.rangeKey.buf = append(i.rangeKey.buf, s.End...)
 	i.rangeKey.end = i.rangeKey.buf[len(i.rangeKey.buf)-len(s.End):]
-
 	i.rangeKey.keys.data = i.rangeKey.keys.data[:0]
 	for j := 0; j < len(s.Keys); j++ {
 		if s.Keys[j].Kind() == base.InternalKeyKindRangeKeySet {
@@ -1625,11 +1585,10 @@ func (i *Iterator) Valid() bool {
 
 // Error returns any accumulated error.
 func (i *Iterator) Error() error {
-	err := firstError(i.err, i.rangeKeyMasking.err)
 	if i.iter != nil {
-		err = firstError(i.err, i.iter.Error())
+		return firstError(i.err, i.iter.Error())
 	}
-	return err
+	return i.err
 }
 
 // Close closes the iterator and returns any accumulated error. Exhausting
@@ -1637,7 +1596,6 @@ func (i *Iterator) Error() error {
 // It is not valid to call any method, including Close, after the iterator
 // has been closed.
 func (i *Iterator) Close() error {
-	i.err = firstError(i.err, i.rangeKeyMasking.err)
 	// Close the child iterator before releasing the readState because when the
 	// readState is released sstables referenced by the readState may be deleted
 	// which will fail on Windows if the sstables are still open by the child

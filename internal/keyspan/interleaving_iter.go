@@ -126,6 +126,10 @@ type InterleavingIter struct {
 	// spanCoversKey indicates whether the current span covers the last-returned
 	// key.
 	spanCoversKey bool
+	// spanChanged indicates whether the current span has changed since the last
+	// iterator position that returned a span. It's used to implement the
+	// SpanChanged hook.
+	spanChanged bool
 	// pointKeyInterleaved indicates whether the current point key has been
 	// interleaved in the current direction.
 	pointKeyInterleaved bool
@@ -876,6 +880,7 @@ func (i *InterleavingIter) verify(k *base.InternalKey, v []byte) (*base.Internal
 }
 
 func (i *InterleavingIter) savedKeyspan() {
+	i.spanChanged = true
 	i.keyspanInterleaved = false
 	i.spanMarkerTruncated = false
 	i.maskSpanChangedCalled = false
