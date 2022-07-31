@@ -258,7 +258,11 @@ type iteratorRangeKeyState struct {
 	// over the interleaving iterator's current position, so {keys,start,end}
 	// are only updated during a call to saveRangeKey.
 	stale bool
-	keys  bySuffix
+	// updated is set to true during an Iterator positioning operation that
+	// changes the state of the current range key. The next Iterator positioning
+	// operation sets it back to false before executing.
+	updated bool
+	keys    bySuffix
 	// start and end are the [start, end) boundaries of the current range keys.
 	start []byte
 	end   []byte
@@ -1498,15 +1502,19 @@ func (i *Iterator) saveRangeKey() {
 	}
 	s := i.rangeKey.iiter.Span()
 	if s == nil {
+		if !i.rangeKey.hasRangeKey {
+			return
+		}
 		i.rangeKey.hasRangeKey = false
+		i.rangeKey.updated = true
 		return
-	}
-	if !i.rangeKey.stale {
+	} else if !i.rangeKey.stale {
 		// The range key `s` is identical to the one currently saved. No-op.
 		return
 	}
 
 	i.rangeKey.stale = false
+	i.rangeKey.updated = true
 	i.rangeKey.hasRangeKey = true
 	i.rangeKey.buf = append(i.rangeKey.buf[:0], s.Start...)
 	i.rangeKey.start = i.rangeKey.buf
@@ -1527,6 +1535,9 @@ func (i *Iterator) saveRangeKey() {
 	}
 	sort.Sort(&i.rangeKey.keys)
 }
+
+// RangeKeyChanged indicates whether the most recent iterator positioning
+// operation resulted in the iterator stepping into or out of a new range key.
 
 // HasPointAndRange indicates whether there exists a point key, a range key or
 // both at the current iterator position.
