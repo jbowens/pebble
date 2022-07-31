@@ -548,7 +548,8 @@ func (i *Iterator) nextUserKey() {
 	if i.iterKey == nil {
 		return
 	}
-	done := i.iterKey.SeqNum() == 0
+	trailer := i.iterKey.Trailer
+	done := i.iterKey.Trailer <= base.InternalKeyZeroSeqnumMaxTrailer
 	if i.iterValidityState != IterValid {
 		i.keyBuf = append(i.keyBuf[:0], i.iterKey.UserKey...)
 		i.key = i.keyBuf
@@ -556,13 +557,14 @@ func (i *Iterator) nextUserKey() {
 	for {
 		i.iterKey, i.iterValue = i.iter.Next()
 		i.stats.ForwardStepCount[InternalIterCall]++
-		if done || i.iterKey == nil {
+		if done || i.iterKey == nil || i.iterKey.Trailer >= trailer {
 			break
 		}
 		if !i.equal(i.key, i.iterKey.UserKey) {
 			break
 		}
-		done = i.iterKey.SeqNum() == 0
+		done = i.iterKey.Trailer <= base.InternalKeyZeroSeqnumMaxTrailer
+		trailer = i.iterKey.Trailer
 	}
 }
 
@@ -873,9 +875,11 @@ func (i *Iterator) prevUserKey() {
 		i.key = i.keyBuf
 	}
 	for {
+		trailer := i.iterKey.Trailer
 		i.iterKey, i.iterValue = i.iter.Prev()
 		i.stats.ReverseStepCount[InternalIterCall]++
-		if i.iterKey == nil {
+		if i.iterKey == nil || i.iterKey.Trailer <= base.InternalKeyZeroSeqnumMaxTrailer ||
+			i.iterKey.Trailer <= trailer {
 			break
 		}
 		if !i.equal(i.key, i.iterKey.UserKey) {
