@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/dbg"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
@@ -612,6 +613,7 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 // In race builds we verify that the keys returned by levelIter lie within
 // [lower,upper).
 func (l *levelIter) verify(key *InternalKey, val []byte) (*InternalKey, []byte) {
+	dbg.Logf("    levelIter %s returning (%q, %q)", l.iterFile, key, val)
 	// Note that invariants.Enabled is a compile time constant, which means the
 	// block of code will be compiled out of normal builds making this method
 	// eligible for inlining. Do not change this to use a variable.
@@ -794,6 +796,7 @@ func (l *levelIter) Next() (*InternalKey, []byte) {
 			return nil, nil
 		}
 		// We're stepping past the boundary key, so now we can load the next file.
+		dbg.Logf("    levelIter %s finished; stepping to next file", l.iterFile)
 		if l.loadFile(l.files.Next(), +1) != noFileLoaded {
 			if key, val := l.iter.First(); key != nil {
 				return l.verify(key, val)
@@ -806,9 +809,11 @@ func (l *levelIter) Next() (*InternalKey, []byte) {
 		// Reset the smallest boundary since we're moving away from it.
 		l.smallestBoundary = nil
 		if key, val := l.iter.Next(); key != nil {
+			dbg.Logf("    levelIter %s nexted to %q, %q", l.iterFile, key, val)
 			return l.verify(key, val)
 		}
 	}
+	dbg.Logf("    levelIter %s finished; stepping to next file", l.iterFile)
 	return l.verify(l.skipEmptyFileForward())
 }
 

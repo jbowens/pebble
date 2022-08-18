@@ -11,6 +11,7 @@ import (
 	"math"
 
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/dbg"
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/sstable"
 )
@@ -55,6 +56,7 @@ type MaskingFilter struct {
 
 // SetSuffix implements pebble.BlockPropertyFilterMask.
 func (f MaskingFilter) SetSuffix(suffix []byte) error {
+	dbg.Logf("            MaskingFilter.SetSuffix(%q); BlockIntervalFilter = %p", suffix, f.BlockIntervalFilter)
 	ts, err := testkeys.ParseSuffix(suffix)
 	if err != nil {
 		return err

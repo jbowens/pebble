@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/dbg"
 )
 
 type splice struct {
@@ -157,6 +158,7 @@ func (it *Iterator) First() (*base.InternalKey, []byte) {
 		it.nd = it.list.tail
 		return nil, nil
 	}
+	dbg.Logf("arenaskl.Iterator.First() = %q", &it.key)
 	return &it.key, it.value()
 }
 
@@ -191,6 +193,7 @@ func (it *Iterator) Next() (*base.InternalKey, []byte) {
 		it.nd = it.list.tail
 		return nil, nil
 	}
+	dbg.Logf("arenaskl.Iterator.Next() = %q", &it.key)
 	return &it.key, it.value()
 }
 

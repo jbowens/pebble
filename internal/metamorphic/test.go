@@ -200,7 +200,7 @@ func (t *test) maybeSaveData() {
 }
 
 func (t *test) step(h *history) bool {
-	if t.idx >= len(t.ops) {
+	if t.idx >= len(t.ops) || t.idx >= 4068 {
 		return false
 	}
 	t.ops[t.idx].run(t, h)

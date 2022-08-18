@@ -19,6 +19,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/cache"
 	"github.com/cockroachdb/pebble/internal/crc"
+	"github.com/cockroachdb/pebble/internal/dbg"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/private"
@@ -411,9 +412,11 @@ func (i *singleLevelIterator) loadBlock(dir int8) loadBlockResult {
 			return loadBlockFailed
 		}
 		if intersects == blockMaybeExcluded {
+			dbg.Logf("        singleLevelIterator; blockMaybeExcluded")
 			intersects = i.resolveMaybeExcluded(dir)
 		}
 		if intersects == blockExcluded {
+			dbg.Logf("        singleLevelIterator; blockExcluded")
 			i.maybeFilteredKeysSingleLevel = true
 			return loadBlockIrrelevant
 		}
@@ -1028,12 +1031,17 @@ func (i *singleLevelIterator) Next() (*InternalKey, []byte) {
 	if i.err != nil {
 		return nil, nil
 	}
+	dbg.Logf("        singleLevelIterator; before nexting i.data.Key() = %q", i.data.Key())
+
 	if key, val := i.data.Next(); key != nil {
+		dbg.Logf("        singleLevelIterator; after nexting key = %q", key)
 		if i.blockUpper != nil && i.cmp(key.UserKey, i.blockUpper) >= 0 {
 			i.exhaustedBounds = +1
 			return nil, nil
 		}
 		return key, val
+	} else {
+		dbg.Logf("        singleLevelIterator; after nexting key = nil")
 	}
 	return i.skipForward()
 }
@@ -1069,6 +1077,7 @@ func (i *singleLevelIterator) skipForward() (*InternalKey, []byte) {
 			i.data.invalidate()
 			break
 		}
+		dbg.Logf("        singleLevelIterator; skipForward to index.Key() = %q", key)
 		result := i.loadBlock(+1)
 		if result != loadBlockOK {
 			if i.err != nil {
@@ -1090,6 +1099,7 @@ func (i *singleLevelIterator) skipForward() (*InternalKey, []byte) {
 				i.exhaustedBounds = +1
 				return nil, nil
 			}
+			dbg.Logf("        singleLevelIterator; skipForward load block irrelevant")
 			continue
 		}
 		if key, val := i.data.First(); key != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/dbg"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 )
@@ -541,6 +542,7 @@ func (m *mergingIter) nextEntry(item *mergingIterItem) {
 	l := &m.levels[item.index]
 	oldTopLevel := item.index
 	oldRangeDelIter := l.rangeDelIter
+	dbg.Logf("advancing iterator heap index %d, iter type %T", item.index, l.iter)
 	if l.iterKey, l.iterValue = l.iter.Next(); l.iterKey != nil {
 		item.key, item.value = *l.iterKey, l.iterValue
 		if m.heap.len() > 1 {
@@ -670,6 +672,7 @@ func (m *mergingIter) findNextEntry() (*InternalKey, []byte) {
 	var reseeked bool
 	for m.heap.len() > 0 && m.err == nil {
 		item := &m.heap.items[0]
+		dbg.Logf("  findNextEntry level %d (%T) at the top of the heap with %q", item.index, m.levels[item.index].iter, item.key)
 		if m.levels[item.index].isSyntheticIterBoundsKey {
 			break
 		}
@@ -701,8 +704,12 @@ func (m *mergingIter) findNextEntry() (*InternalKey, []byte) {
 		if item.key.Visible(m.snapshot) &&
 			(!m.levels[item.index].isIgnorableBoundaryKey) &&
 			(item.key.Kind() != InternalKeyKindRangeDelete || !m.elideRangeTombstones) {
+			dbg.Logf("mergingIter returning key value pair %q, %q", item.key, item.value)
 			return &item.key, item.value
+		} else {
+			dbg.Logf("mergingIter skipping key %q; reading at snapshot %d", item.key, m.snapshot)
 		}
+		dbg.Logf("  findNextEntry level %d (%T) at the top of the heap with %q", item.index, m.levels[item.index].iter, item.key)
 		m.nextEntry(item)
 	}
 	return nil, nil
@@ -896,6 +903,7 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) {
 		} else {
 			l.iterKey, l.iterValue = l.iter.SeekGE(key, flags)
 		}
+		dbg.Logf("Seeked level %d by key %q to (%q,%q)", level, key, l.iterKey, l.iterValue)
 
 		// If this level contains overlapping range tombstones, alter the seek
 		// key accordingly. Caveat: If we're performing lazy-combined iteration,
@@ -1092,8 +1100,13 @@ func (m *mergingIter) Next() (*InternalKey, []byte) {
 	if m.heap.len() == 0 {
 		return nil, nil
 	}
-
+	dbg.Logf("mergingIter: top of the heap: %q", m.heap.items[0].key)
 	m.nextEntry(&m.heap.items[0])
+	if m.heap.len() > 0 {
+		dbg.Logf("mergingIter: new top of the heap: %q", m.heap.items[0].key)
+	} else {
+		dbg.Logf("mergingIter: heap now empty")
+	}
 	return m.findNextEntry()
 }
 

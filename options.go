@@ -240,7 +240,7 @@ type RangeKeyMasking struct {
 	// the maxmimum suffix contained within a block. The caller then must write
 	// and provide a BlockPropertyFilterMask implementation on that same
 	// property. See the BlockPropertyFilterMask type for more information.
-	Filter BlockPropertyFilterMask
+	Filter func() BlockPropertyFilterMask
 }
 
 // BlockPropertyFilterMask extends the BlockPropertyFilter interface for use
