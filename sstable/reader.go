@@ -2367,30 +2367,31 @@ func init() {
 
 // Reader is a table reader.
 type Reader struct {
-	file              ReadableFile
-	fs                vfs.FS
-	filename          string
-	cacheID           uint64
-	fileNum           base.FileNum
-	rawTombstones     bool
-	err               error
-	indexBH           BlockHandle
-	filterBH          BlockHandle
-	rangeDelBH        BlockHandle
-	rangeKeyBH        BlockHandle
-	rangeDelTransform blockTransform
-	propertiesBH      BlockHandle
-	metaIndexBH       BlockHandle
-	footerBH          BlockHandle
-	opts              ReaderOptions
-	Compare           Compare
-	FormatKey         base.FormatKey
-	Split             Split
-	mergerOK          bool
-	checksumType      ChecksumType
-	tableFilter       *tableFilterReader
-	tableFormat       TableFormat
-	Properties        Properties
+	file               ReadableFile
+	fs                 vfs.FS
+	filename           string
+	cacheID            uint64
+	fileNum            base.FileNum
+	rawTombstones      bool
+	err                error
+	indexBH            BlockHandle
+	filterBH           BlockHandle
+	rangeDelBH         BlockHandle
+	rangeKeyBH         BlockHandle
+	rangeDelTransform  blockTransform
+	propertiesBH       BlockHandle
+	metaIndexBH        BlockHandle
+	footerBH           BlockHandle
+	opts               ReaderOptions
+	Compare            Compare
+	FormatKey          base.FormatKey
+	Split              Split
+	mergerOK           bool
+	checksumType       ChecksumType
+	tableFilter        *tableFilterReader
+	tableFormat        TableFormat
+	Properties         Properties
+	repairInstructions *[]RepairInstruction
 }
 
 // Close implements DB.Close, as documented in the pebble package.
@@ -2629,8 +2630,17 @@ func (r *Reader) readBlock(
 	}
 
 	if err := checkChecksum(r.checksumType, b, bh, r.fileNum); err != nil {
-		r.opts.Cache.Free(v)
-		return cache.Handle{}, false, err
+		var repaired bool
+		if r.repairInstructions != nil {
+			if inst, ok := repairBlockChecksum(r.checksumType, b, bh); ok {
+				*r.repairInstructions = append(*r.repairInstructions, inst...)
+				repaired = true
+			}
+		}
+		if !repaired {
+			r.opts.Cache.Free(v)
+			return cache.Handle{}, false, err
+		}
 	}
 
 	typ := blockType(b[bh.Length])

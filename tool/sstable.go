@@ -38,6 +38,8 @@ type sstableT struct {
 	comparers sstable.Comparers
 	mergers   sstable.Mergers
 
+	repairInstructions []sstable.RepairInstruction
+
 	// Flags.
 	fmtKey   keyFormatter
 	fmtValue valueFormatter
@@ -46,6 +48,7 @@ type sstableT struct {
 	filter   key
 	count    int64
 	verbose  bool
+	repair   string
 }
 
 func newSSTable(
@@ -117,6 +120,8 @@ inclusive-inclusive range specified by --start and --end.
 
 	s.Check.Flags().Var(
 		&s.fmtKey, "key", "key formatter")
+	s.Check.Flags().StringVar(
+		&s.repair, "repair", "", "destination for repaired sstable")
 	s.Layout.Flags().Var(
 		&s.fmtKey, "key", "key formatter")
 	s.Layout.Flags().Var(
@@ -140,14 +145,27 @@ inclusive-inclusive range specified by --start and --end.
 }
 
 func (s *sstableT) newReader(f vfs.File) (*sstable.Reader, error) {
+	if s.repairInstructions != nil {
+		s.repairInstructions = nil
+	}
+
 	o := sstable.ReaderOptions{
 		Cache:    pebble.NewCache(128 << 20 /* 128 MB */),
 		Comparer: s.opts.Comparer,
 		Filters:  s.opts.Filters,
 	}
+
+	opts := []sstable.ReaderOption{
+		s.comparers,
+		s.mergers,
+		private.SSTableRawTombstonesOpt.(sstable.ReaderOption),
+	}
+	if s.repair != "" {
+		opts = append(opts, sstable.Repair(&s.repairInstructions))
+	}
+
 	defer o.Cache.Unref()
-	return sstable.NewReader(f, o, s.comparers, s.mergers,
-		private.SSTableRawTombstonesOpt.(sstable.ReaderOption))
+	return sstable.NewReader(f, o, opts...)
 }
 
 func (s *sstableT) runCheck(cmd *cobra.Command, args []string) {
@@ -167,6 +185,14 @@ func (s *sstableT) runCheck(cmd *cobra.Command, args []string) {
 			return
 		}
 		defer r.Close()
+		if s.repair != "" {
+			defer func() {
+				for _, inst := range s.repairInstructions {
+					fmt.Fprintf(stdout, "  applied repair: %s\n", inst.Desc)
+				}
+				s.repairInstructions = nil
+			}()
+		}
 
 		// Update the internal formatter if this comparator has one specified.
 		s.fmtKey.setForComparer(r.Properties.ComparerName, s.comparers)
