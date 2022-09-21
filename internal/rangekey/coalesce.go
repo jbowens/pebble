@@ -41,15 +41,21 @@ func (ui *UserIteratorConfig) Init(
 	lower, upper []byte,
 	hasPrefix *bool,
 	prefix *[]byte,
+	defragment bool,
 	iters ...keyspan.FragmentIterator,
 ) keyspan.FragmentIterator {
+	// tktk: Exclude DefragmentingIter
+
+	ui.litersUsed = 0
 	ui.snapshot = snapshot
 	ui.comparer = comparer
 	ui.miter.Init(comparer.Compare, ui, iters...)
 	ui.biter.Init(comparer.Compare, comparer.Split, &ui.miter, lower, upper, hasPrefix, prefix)
-	ui.diter.Init(comparer, &ui.biter, ui, keyspan.StaticDefragmentReducer)
-	ui.litersUsed = 0
-	return &ui.diter
+	if defragment {
+		ui.diter.Init(comparer, &ui.biter, ui, keyspan.StaticDefragmentReducer)
+		return &ui.diter
+	}
+	return &ui.biter
 }
 
 // AddLevel adds a new level to the bottom of the iterator stack. AddLevel

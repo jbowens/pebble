@@ -291,6 +291,7 @@ func finishInitializingExternal(it *Iterator) {
 					base.InternalKeySeqNumMax,
 					it.opts.LowerBound, it.opts.UpperBound,
 					&it.hasPrefix, &it.prefixOrFullSeekKey,
+					it.opts.KeyTypes != IterKeyTypePointsWithRanges, /* defragment */
 				)
 				for i := range rangeKeyIters {
 					it.rangeKey.iterConfig.AddLevel(rangeKeyIters[i])

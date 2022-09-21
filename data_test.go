@@ -227,7 +227,7 @@ func runIterCmd(d *datadriven.TestData, iter *Iterator, closeIter bool) string {
 			}
 			iter = clonedIter
 		case "is-using-combined":
-			if iter.opts.KeyTypes != IterKeyTypePointsAndRanges {
+			if iter.opts.KeyTypes != IterKeyTypePointsAndRanges && iter.opts.KeyTypes != IterKeyTypePointsWithRanges {
 				fmt.Fprintln(&b, "not configured for combined iteration")
 			} else if iter.lazyCombinedIter.combinedIterState.initialized {
 				fmt.Fprintln(&b, "using combined (non-lazy) iterator")
@@ -288,6 +288,8 @@ func parseIterOptions(
 				opts.KeyTypes = IterKeyTypeRangesOnly
 			case "both":
 				opts.KeyTypes = IterKeyTypePointsAndRanges
+			case "points-with":
+				opts.KeyTypes = IterKeyTypePointsWithRanges
 			default:
 				return false, errors.Newf("unknown key-type %q:\n%s", arg[1], usageString)
 			}

@@ -1883,12 +1883,14 @@ func (i *Iterator) HasPointAndRange() (hasPoint, hasRange bool) {
 // RangeBounds returns the start (inclusive) and end (exclusive) bounds of the
 // range key covering the current iterator position. RangeBounds returns nil
 // bounds if there is no range key covering the current iterator position, or
-// the iterator is not configured to surface range keys.
+// the iterator is not configured to surface range keys. Additionally, if an
+// iterator is configured with the IterKeyTypePointsWithRanges, RangeBounds
+// returns nil bounds.
 //
 // If valid, the returned start bound is less than or equal to Key() and the
 // returned end bound is greater than Key().
 func (i *Iterator) RangeBounds() (start, end []byte) {
-	if i.rangeKey == nil || !i.opts.rangeKeys() || !i.rangeKey.hasRangeKey {
+	if i.rangeKey == nil || !i.opts.rangeKeys() || !i.rangeKey.hasRangeKey || i.opts.KeyTypes == IterKeyTypePointsWithRanges {
 		return nil, nil
 	}
 	return i.rangeKey.start, i.rangeKey.end
@@ -2198,7 +2200,8 @@ func (i *Iterator) SetOptions(o *IterOptions) {
 		i.pointIter = nil
 	}
 	if i.rangeKey != nil {
-		if closeBoth || len(o.RangeKeyFilters) > 0 || len(i.opts.RangeKeyFilters) > 0 {
+		if closeBoth || len(o.RangeKeyFilters) > 0 || len(i.opts.RangeKeyFilters) > 0 ||
+			(o.KeyTypes != i.opts.KeyTypes && o.KeyTypes == IterKeyTypePointsWithRanges || i.opts.KeyTypes == IterKeyTypePointsWithRanges) {
 			i.err = firstError(i.err, i.rangeKey.rangeKeyIter.Close())
 			i.rangeKey = nil
 		} else {
@@ -2291,7 +2294,7 @@ func (i *Iterator) SetOptions(o *IterOptions) {
 
 	if boundsEqual && o.KeyTypes == i.opts.KeyTypes &&
 		(i.pointIter != nil || !i.opts.pointKeys()) &&
-		(i.rangeKey != nil || !i.opts.rangeKeys() || i.opts.KeyTypes == IterKeyTypePointsAndRanges) &&
+		(i.rangeKey != nil || !i.opts.rangeKeys() || i.opts.KeyTypes == IterKeyTypePointsAndRanges || i.opts.KeyTypes == IterKeyTypePointsWithRanges) &&
 		i.equal(o.RangeKeyMasking.Suffix, i.opts.RangeKeyMasking.Suffix) &&
 		o.UseL6Filters == i.opts.UseL6Filters {
 		// The options are identical, so we can likely use the fast path. In

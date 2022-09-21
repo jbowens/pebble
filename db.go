@@ -905,8 +905,8 @@ func (d *DB) newIterInternal(batch *Batch, s *Snapshot, o *IterOptions) *Iterato
 			))
 		}
 	}
-	if o != nil && o.RangeKeyMasking.Suffix != nil && o.KeyTypes != IterKeyTypePointsAndRanges {
-		panic("pebble: range key masking requires IterKeyTypePointsAndRanges")
+	if o != nil && o.RangeKeyMasking.Suffix != nil && o.KeyTypes != IterKeyTypePointsAndRanges && o.KeyTypes != IterKeyTypePointsWithRanges {
+		panic("pebble: range key masking requires IterKeyTypePointsAndRanges or IterKeyTypePointsWithRanges")
 	}
 	if (batch != nil || s != nil) && (o != nil && o.OnlyReadGuaranteedDurable) {
 		// We could add support for OnlyReadGuaranteedDurable on snapshots if
@@ -1004,7 +1004,7 @@ func finishInitializingIter(buf *iterAlloc) *Iterator {
 		// Lazy combined iteration is not possible if a batch or a memtable
 		// contains any range keys.
 		useLazyCombinedIteration := dbi.rangeKey == nil &&
-			dbi.opts.KeyTypes == IterKeyTypePointsAndRanges &&
+			(dbi.opts.KeyTypes == IterKeyTypePointsAndRanges || dbi.opts.KeyTypes == IterKeyTypePointsWithRanges) &&
 			(dbi.batch == nil || dbi.batch.countRangeKeys == 0) &&
 			!dbi.opts.disableLazyCombinedIteration
 		if useLazyCombinedIteration {

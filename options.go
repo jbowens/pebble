@@ -78,8 +78,17 @@ const (
 	// only.
 	IterKeyTypeRangesOnly
 	// IterKeyTypePointsAndRanges configures an iterator iterate over both point
-	// keys and range keys simultaneously.
+	// keys and range keys simultaneously, pausing at both point keys and range
+	// key start boundaries. While configured with this key type, range key
+	// bounds are surfaced.
 	IterKeyTypePointsAndRanges
+	// IterKeyTypePointsWithRanges configures an iterator iterate over both point
+	// keys, pausing at point keys only, but surfacing any covering range keys
+	// through RangeKeys(). While configured with this key type, range key
+	// bounds are never surfaced and RangeBounds always returns (nil, nil). This
+	// option has a performance advantage over IterKeyTypePointsAndRanges,
+	// especially in the presence of range keys with broad bounds.
+	IterKeyTypePointsWithRanges
 )
 
 // String implements fmt.Stringer.
@@ -91,6 +100,8 @@ func (t IterKeyType) String() string {
 		return "ranges-only"
 	case IterKeyTypePointsAndRanges:
 		return "points-and-ranges"
+	case IterKeyTypePointsWithRanges:
+		return "points-with-ranges"
 	default:
 		panic(fmt.Sprintf("unknown key type %d", t))
 	}
@@ -204,14 +215,14 @@ func (o *IterOptions) pointKeys() bool {
 	if o == nil {
 		return true
 	}
-	return o.KeyTypes == IterKeyTypePointsOnly || o.KeyTypes == IterKeyTypePointsAndRanges
+	return o.KeyTypes != IterKeyTypeRangesOnly
 }
 
 func (o *IterOptions) rangeKeys() bool {
 	if o == nil {
 		return false
 	}
-	return o.KeyTypes == IterKeyTypeRangesOnly || o.KeyTypes == IterKeyTypePointsAndRanges
+	return o.KeyTypes != IterKeyTypePointsOnly
 }
 
 func (o *IterOptions) getLogger() Logger {

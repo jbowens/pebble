@@ -557,8 +557,14 @@ func (g *generator) randKeyTypesAndMask() (keyTypes uint32, maskSuffix []byte) {
 	switch {
 	case p < 0.2: // 20% probability
 		keyTypes = uint32(pebble.IterKeyTypePointsOnly)
-	case p < 0.8: // 60% probability
+	case p < 0.6: // 40% probability
 		keyTypes = uint32(pebble.IterKeyTypePointsAndRanges)
+		// With 50% probability, enable masking.
+		if g.rng.Intn(2) == 1 {
+			maskSuffix = g.randSuffixToRead()
+		}
+	case p < 0.8: // 20% probability
+		keyTypes = uint32(pebble.IterKeyTypePointsWithRanges)
 		// With 50% probability, enable masking.
 		if g.rng.Intn(2) == 1 {
 			maskSuffix = g.randSuffixToRead()

@@ -1668,6 +1668,8 @@ func TestIteratorBoundsLifetimes(t *testing.T) {
 						opts.KeyTypes = IterKeyTypeRangesOnly
 					case "both":
 						opts.KeyTypes = IterKeyTypePointsAndRanges
+					case "points-with":
+						opts.KeyTypes = IterKeyTypePointsWithRanges
 					default:
 						panic(fmt.Sprintf("unrecognized key type %q", arg.Vals[0]))
 					}
@@ -1773,7 +1775,8 @@ func testSetOptionsEquivalence(t *testing.T, seed uint64) {
 			}
 		}
 		o.RangeKeyMasking.Suffix = nil
-		if o.KeyTypes == IterKeyTypePointsAndRanges && rng.Intn(2) == 1 {
+		if (o.KeyTypes == IterKeyTypePointsAndRanges || o.KeyTypes == IterKeyTypePointsWithRanges) &&
+			rng.Intn(2) == 1 {
 			o.RangeKeyMasking.Suffix = testkeys.Suffix(rng.Intn(ks.Count()))
 		}
 	}
@@ -2728,7 +2731,7 @@ func BenchmarkIteratorScan(b *testing.B) {
 				m := d.Metrics()
 				require.Equal(b, readAmp, m.ReadAmp())
 
-				for _, keyTypes := range []IterKeyType{IterKeyTypePointsOnly, IterKeyTypePointsAndRanges} {
+				for _, keyTypes := range []IterKeyType{IterKeyTypePointsOnly, IterKeyTypePointsAndRanges, IterKeyTypePointsWithRanges} {
 					iterOpts := IterOptions{KeyTypes: keyTypes}
 					b.Run(fmt.Sprintf("keys=%d,r-amp=%d,key-types=%s", keyCount, readAmp, keyTypes), func(b *testing.B) {
 						for i := 0; i < b.N; i++ {
