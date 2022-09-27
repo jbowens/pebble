@@ -1109,6 +1109,9 @@ func (i *Iterator) constructPointIter(memtables flushableList, buf *iterAlloc) {
 	// Next are the memtables.
 	for j := len(memtables) - 1; j >= 0; j-- {
 		mem := memtables[j]
+		if mem.logSeqNum >= i.seqNum {
+			continue
+		}
 		mlevels = append(mlevels, mergingIterLevel{
 			iter:         mem.newIter(&i.opts),
 			rangeDelIter: mem.newRangeDelIter(&i.opts),
