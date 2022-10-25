@@ -634,9 +634,28 @@ func (l *levelIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, []
 		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
-	// NB: the top-level Iterator has already adjusted key based on
-	// IterOptions.LowerBound.
-	loadFileIndicator := l.loadFile(l.findFileGE(key, flags.RelativeSeek()), +1)
+	loadFileIndicator := l.loadFile(l.findFileGE(
+		// NB: the top-level Iterator has already adjusted key based on
+		// IterOptions.LowerBound.
+		key,
+		// We set relativeSeek in two conditions:
+		//   a) flags.RelativeSeek(): The merging iterator decided to re-seek this
+		//      level according to a range tombstone. The merging iterator sets this
+		//      flag to inform us that we're moving forward relative to the existing
+		//      position and that we must examine each intermediate sstable's
+		//      metadata for lazy-combined iteration.
+		//   b) flags.TrySeekUsingNext(): The top-level Iterator knows we're seeking
+		//      to a key later than the current iterator position. We don't know how
+		//      much later the seek key is, so it's possible there are many sstables
+		//      between the current position and the seek key. However in most real-
+		//      world use cases, the seek key is likely to be nearby. Rather than
+		//      performing a log(N) seek through the file metadata, we perform a
+		//      linear scan from our existing location. This has a worse worst case,
+		//      but provides a large benefit to many practical access patterns. If
+		//      the worst case proves to be a problem, we can fallback to a seek
+		//      after some fixed number of Nexts
+		flags.RelativeSeek() || flags.TrySeekUsingNext()),
+		+1)
 	if loadFileIndicator == noFileLoaded {
 		return nil, nil
 	}
@@ -660,9 +679,29 @@ func (l *levelIter) SeekPrefixGE(
 		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
-	// NB: the top-level Iterator has already adjusted key based on
-	// IterOptions.LowerBound.
-	loadFileIndicator := l.loadFile(l.findFileGE(key, flags.RelativeSeek()), +1)
+	loadFileIndicator := l.loadFile(l.findFileGE(
+		// NB: the top-level Iterator has already adjusted key based on
+		// IterOptions.LowerBound.
+		key,
+		// We set relativeSeek in two conditions:
+		//   a) flags.RelativeSeek(): The merging iterator decided to re-seek this
+		//      level according to a range tombstone. The merging iterator sets this
+		//      flag to inform us that we're moving forward relative to the existing
+		//      position and that we must examine each intermediate sstable's
+		//      metadata for lazy-combined iteration.
+		//   b) flags.TrySeekUsingNext(): The top-level Iterator knows we're seeking
+		//      to a key later than the current iterator position. We don't know how
+		//      much later the seek key is, so it's possible there are many sstables
+		//      between the current position and the seek key. However in most real-
+		//      world use cases, the seek key is likely to be nearby. Rather than
+		//      performing a log(N) seek through the file metadata, we perform a
+		//      linear scan from our existing location. This has a worse worst case,
+		//      but provides a large benefit to many practical access patterns. If
+		//      the worst case proves to be a problem, we can fallback to a seek
+		//      after some fixed number of Nexts.
+		flags.RelativeSeek() || flags.TrySeekUsingNext()),
+		+1,
+	)
 	if loadFileIndicator == noFileLoaded {
 		return nil, nil
 	}
