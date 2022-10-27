@@ -309,22 +309,22 @@ func (l *levelIter) maybeTriggerCombinedIteration(file *fileMetadata, dir int) {
 	}
 }
 
-func (l *levelIter) findFileGE(key []byte, isRelativeSeek bool) *fileMetadata {
-	// Find the earliest file whose largest key is >= ikey.
-
-	// Ordinarily we seek the LevelIterator using SeekGE.
-	//
-	// When lazy combined iteration is enabled, there's a complication. The
-	// level iterator is responsible for watching for files containing range
-	// keys and triggering the switch to combined iteration when such a file is
-	// observed. If a range deletion was observed in a higher level causing the
-	// merging iterator to seek the level to the range deletion's end key, we
-	// need to check whether all of the files between the old position and the
-	// new position contain any range keys.
-	//
-	// In this scenario, we don't seek the LevelIterator and instead we Next it,
-	// one file at a time, checking each for range keys.
-	nextInsteadOfSeek := isRelativeSeek && l.combinedIterState != nil && !l.combinedIterState.initialized
+// findFileGE seeks within the level metadata searching for the earliest file
+// whose largest key is >= key.
+//
+// If nextsUntilSeek is positive, findFileGE will next <nextsUntilSeek> times,
+// hoping to find a file with a largest key >= key within the allotted nexts. If
+// it exhausts the allotted nexts, it performs a log(n) seek.
+//
+// If nextsUntilSeek is negative, findFileGE will next indefinitely until it
+// finds a file with a largest key >= key. This behavior is necessary for
+// lazy-combined iteration which must observe range keys in intermediary files
+// when re-seeking according to a range tombstone.
+//
+// If nextsUntilSeek is zero, findFileGE will seek the iterator.
+func (l *levelIter) findFileGE(key []byte, nextsUntilSeek int) *fileMetadata {
+	// Find the earliest file whose largest key is >= key.
+	nextInsteadOfSeek := nextsUntilSeek != 0
 
 	var m *fileMetadata
 	if nextInsteadOfSeek {
@@ -364,6 +364,17 @@ func (l *levelIter) findFileGE(key []byte, isRelativeSeek bool) *fileMetadata {
 		// If the file does not contain point keys ≥ `key`, next to continue
 		// looking for a file that does.
 		if (m.HasRangeKeys || nextInsteadOfSeek) && l.cmp(m.LargestPointKey.UserKey, key) < 0 {
+			// If nextInsteadOfSeek is set and nextsUntilSeek is non-negative,
+			// we've been nexting hoping to discover the relevant file that way.
+			// If we've exhausted the allotted nextsUntilSeek, seek the iterator
+			// to the sought key, and set nextInsteadOfSeek=false.
+			if nextInsteadOfSeek && nextsUntilSeek == 0 {
+				//nextInsteadOfSeek = false
+				//m = l.files.SeekGE(l.cmp, key)
+				//continue
+			} else if nextsUntilSeek > 0 {
+				//nextsUntilSeek--
+			}
 			m = l.files.Next()
 			continue
 		}
@@ -634,28 +645,48 @@ func (l *levelIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, []
 		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
-	loadFileIndicator := l.loadFile(l.findFileGE(
-		// NB: the top-level Iterator has already adjusted key based on
-		// IterOptions.LowerBound.
-		key,
-		// We set relativeSeek in two conditions:
-		//   a) flags.RelativeSeek(): The merging iterator decided to re-seek this
-		//      level according to a range tombstone. The merging iterator sets this
-		//      flag to inform us that we're moving forward relative to the existing
-		//      position and that we must examine each intermediate sstable's
-		//      metadata for lazy-combined iteration.
-		//   b) flags.TrySeekUsingNext(): The top-level Iterator knows we're seeking
-		//      to a key later than the current iterator position. We don't know how
-		//      much later the seek key is, so it's possible there are many sstables
-		//      between the current position and the seek key. However in most real-
-		//      world use cases, the seek key is likely to be nearby. Rather than
-		//      performing a log(N) seek through the file metadata, we perform a
-		//      linear scan from our existing location. This has a worse worst case,
-		//      but provides a large benefit to many practical access patterns. If
-		//      the worst case proves to be a problem, we can fallback to a seek
-		//      after some fixed number of Nexts
-		flags.RelativeSeek() || flags.TrySeekUsingNext()),
-		+1)
+	var levelMetadataNextsUntilSeek int
+	// Ordinarily we seek the LevelIterator using SeekGE. In some instances, we
+	// Next instead. In other instances, we try Next-ing first, falling back to
+	// seek:
+	//   a) flags.TrySeekUsingNext(): The top-level Iterator knows we're seeking
+	//      to a key later than the current iterator position. We don't know how
+	//      much later the seek key is, so it's possible there are many sstables
+	//      between the current position and the seek key. However in most real-
+	//      world use cases, the seek key is likely to be nearby. Rather than
+	//      performing a log(N) seek through the file metadata, we perform a
+	//      linear scan from our existing location. This has a worse worst case,
+	//      but provides a large benefit to many practical access patterns. If
+	//      the worst case proves to be a problem, we can fallback to a seek
+	//      after some fixed number of Nexts.
+	//
+	if flags.TrySeekUsingNext() {
+		levelMetadataNextsUntilSeek = 4 // TODO: arbitrary
+	}
+	//   b) flags.RelativeSeek(): The merging iterator decided to re-seek this
+	//      level according to a range tombstone. When lazy combined iteration
+	//      is enabled, the level iterator is responsible for watching for
+	//      files containing range keys and triggering the switch to combined
+	//      iteration when such a file is observed. If a range deletion was
+	//      observed in a higher level causing the merging iterator to seek the
+	//      level to the range deletion's end key, we need to check whether all
+	//      of the files between the old position and the new position contain
+	//      any range keys.
+	//
+	//      In this scenario, we don't seek the LevelIterator and instead we
+	//      Next it, one file at a time, checking each for range keys. The
+	//      merging iterator sets this flag to inform us that we're moving
+	//      forward relative to the existing position and that we must examine
+	//      each intermediate sstable's metadata for lazy-combined iteration.
+	//      In this case, we only Next and never Seek. We set
+	//      levelMetadataNextsUntilSeek = -1 to signal this intention.
+	if flags.RelativeSeek() && l.combinedIterState != nil && !l.combinedIterState.initialized {
+		levelMetadataNextsUntilSeek = -1
+	}
+
+	// NB: the top-level Iterator has already adjusted key based on
+	// IterOptions.LowerBound.
+	loadFileIndicator := l.loadFile(l.findFileGE(key, levelMetadataNextsUntilSeek), +1)
 	if loadFileIndicator == noFileLoaded {
 		return nil, nil
 	}
@@ -679,29 +710,46 @@ func (l *levelIter) SeekPrefixGE(
 		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
-	loadFileIndicator := l.loadFile(l.findFileGE(
-		// NB: the top-level Iterator has already adjusted key based on
-		// IterOptions.LowerBound.
-		key,
-		// We set relativeSeek in two conditions:
-		//   a) flags.RelativeSeek(): The merging iterator decided to re-seek this
-		//      level according to a range tombstone. The merging iterator sets this
-		//      flag to inform us that we're moving forward relative to the existing
-		//      position and that we must examine each intermediate sstable's
-		//      metadata for lazy-combined iteration.
-		//   b) flags.TrySeekUsingNext(): The top-level Iterator knows we're seeking
-		//      to a key later than the current iterator position. We don't know how
-		//      much later the seek key is, so it's possible there are many sstables
-		//      between the current position and the seek key. However in most real-
-		//      world use cases, the seek key is likely to be nearby. Rather than
-		//      performing a log(N) seek through the file metadata, we perform a
-		//      linear scan from our existing location. This has a worse worst case,
-		//      but provides a large benefit to many practical access patterns. If
-		//      the worst case proves to be a problem, we can fallback to a seek
-		//      after some fixed number of Nexts.
-		flags.RelativeSeek() || flags.TrySeekUsingNext()),
-		+1,
-	)
+	var levelMetadataNextsUntilSeek int
+	// Ordinarily we seek the LevelIterator using SeekGE. In some instances, we
+	// Next instead. In other instances, we try Next-ing first, falling back to
+	// seek:
+	//   a) flags.TrySeekUsingNext(): The top-level Iterator knows we're seeking
+	//      to a key later than the current iterator position. We don't know how
+	//      much later the seek key is, so it's possible there are many sstables
+	//      between the current position and the seek key. However in most real-
+	//      world use cases, the seek key is likely to be nearby. Rather than
+	//      performing a log(N) seek through the file metadata, we perform a
+	//      linear scan from our existing location. This has a worse worst case,
+	//      but provides a large benefit to many practical access patterns. If
+	//      the worst case proves to be a problem, we can fallback to a seek
+	//      after some fixed number of Nexts.
+	if flags.TrySeekUsingNext() {
+		levelMetadataNextsUntilSeek = 4 // arbitrary
+	}
+	//   b) flags.RelativeSeek(): The merging iterator decided to re-seek this
+	//      level according to a range tombstone. When lazy combined iteration
+	//      is enabled, the level iterator is responsible for watching for
+	//      files containing range keys and triggering the switch to combined
+	//      iteration when such a file is observed. If a range deletion was
+	//      observed in a higher level causing the merging iterator to seek the
+	//      level to the range deletion's end key, we need to check whether all
+	//      of the files between the old position and the new position contain
+	//      any range keys.
+	//
+	//      In this scenario, we don't seek the LevelIterator and instead we
+	//      Next it, one file at a time, checking each for range keys. The
+	//      merging iterator sets this flag to inform us that we're moving
+	//      forward relative to the existing position and that we must examine
+	//      each intermediate sstable's metadata for lazy-combined iteration.
+	//      In this case, we only Next and never Seek. We set
+	//      levelMetadataNextsUntilSeek = -1 to signal this intention.
+	if flags.RelativeSeek() && l.combinedIterState != nil && !l.combinedIterState.initialized {
+		levelMetadataNextsUntilSeek = -1
+	}
+	// NB: the top-level Iterator has already adjusted key based on
+	// IterOptions.LowerBound.
+	loadFileIndicator := l.loadFile(l.findFileGE(key, levelMetadataNextsUntilSeek), +1)
 	if loadFileIndicator == noFileLoaded {
 		return nil, nil
 	}
