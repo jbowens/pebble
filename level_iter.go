@@ -351,6 +351,16 @@ func (l *levelIter) findFileGE(key []byte, flags base.SeekGEFlags) *fileMetadata
 		nextInsteadOfSeek = true
 		nextsUntilSeek = -1
 	}
+	// If we're not nexting insteaad of seeking, but we're currently positioned
+	// over a file with a lower bound strictly less than our seek key and an
+	// upper bound ≥ our seek key, there's no need to re-seek. This optimization
+	// helps in the case that the TrySeekUsingNext optimization can't be
+	// applied, but the iterator is still positioned over the correct file.
+	if m := l.iterFile; m != nil && !nextInsteadOfSeek && l.cmp(m.SmallestPointKey.UserKey, key) < 0 {
+		if v := l.cmp(m.LargestPointKey.UserKey, key); v > 0 || (v == 0 && !m.LargestPointKey.IsExclusiveSentinel()) {
+			return m
+		}
+	}
 
 	var m *fileMetadata
 	if nextInsteadOfSeek {
