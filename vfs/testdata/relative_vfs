@@ -1,0 +1,113 @@
+define
+link a b
+create a
+link a b
+link a b
+link c d
+remove b
+link-or-copy a b
+remove b
+----
+link: rel/a -> rel/b [file does not exist]
+create: rel/a [<nil>]
+close: a [<nil>]
+link: rel/a -> rel/b [<nil>]
+link: rel/a -> rel/b [file already exists]
+link: rel/c -> rel/d [file does not exist]
+remove: rel/b [<nil>]
+link: rel/a -> rel/b [<nil>]
+remove: rel/b [<nil>]
+
+define linkErr=ErrExist
+create a
+link a b
+link-or-copy a b
+----
+create: rel/a [<nil>]
+close: a [<nil>]
+link: rel/a -> rel/b [file already exists]
+link: rel/a -> rel/b [file already exists]
+
+define linkErr=ErrNotExist
+create a
+link a b
+link-or-copy a b
+----
+create: rel/a [<nil>]
+close: a [<nil>]
+link: rel/a -> rel/b [file does not exist]
+link: rel/a -> rel/b [file does not exist]
+
+define linkErr=ErrPermission
+create a
+link a b
+link-or-copy a b
+----
+create: rel/a [<nil>]
+close: a [<nil>]
+link: rel/a -> rel/b [permission denied]
+link: rel/a -> rel/b [permission denied]
+
+define
+mkdir d
+create d/a
+mkdir  d/b
+create d/b/c
+----
+mkdir: rel/d [<nil>]
+create: rel/d/a [<nil>]
+close: a [<nil>]
+mkdir: rel/d/b [<nil>]
+create: rel/d/b/c [<nil>]
+close: c [<nil>]
+
+define
+clone d e
+----
+open: rel/d [<nil>]
+close: rel/d [<nil>]
+mkdir: rel/e [<nil>]
+open: rel/d/a [<nil>]
+close: rel/d/a [<nil>]
+create: rel/e/a [<nil>]
+close: a [<nil>]
+open: rel/d/b [<nil>]
+close: rel/d/b [<nil>]
+mkdir: rel/e/b [<nil>]
+open: rel/d/b/c [<nil>]
+close: rel/d/b/c [<nil>]
+create: rel/e/b/c [<nil>]
+close: c [<nil>]
+
+define
+list e
+----
+a
+b
+
+define
+list e/b
+----
+c
+
+define
+list /
+remove e
+remove-all e
+remove-all e
+remove-all e/a/b/c
+list /
+----
+rel
+remove: rel/e [file already exists]
+remove-all: rel/e [<nil>]
+remove-all: rel/e [<nil>]
+remove-all: rel/e/a/b/c [<nil>]
+rel
+
+define
+reuseForWrite a b
+reuseForWrite x y
+----
+reuseForWrite: rel/a -> rel/b [<nil>]
+reuseForWrite: rel/x -> rel/y [file does not exist]

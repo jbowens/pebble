@@ -39,64 +39,64 @@ func normalizeError(err error) error {
 type loggingFS struct {
 	FS
 	base    string
-	w       io.Writer
+	buf     bytes.Buffer
 	linkErr error
 }
 
-func (fs loggingFS) stripBase(path string) string {
+func (fs *loggingFS) stripBase(path string) string {
 	if strings.HasPrefix(path, fs.base+"/") {
 		return path[len(fs.base)+1:]
 	}
 	return path
 }
 
-func (fs loggingFS) Create(name string) (File, error) {
+func (fs *loggingFS) Create(name string) (File, error) {
 	f, err := fs.FS.Create(name)
-	fmt.Fprintf(fs.w, "create: %s [%v]\n", fs.stripBase(name), normalizeError(err))
-	return loggingFile{f, fs.PathBase(name), fs.w}, err
+	fmt.Fprintf(&fs.buf, "create: %s [%v]\n", fs.stripBase(name), normalizeError(err))
+	return loggingFile{f, fs.PathBase(name), &fs.buf}, err
 }
 
-func (fs loggingFS) Link(oldname, newname string) error {
+func (fs *loggingFS) Link(oldname, newname string) error {
 	err := fs.linkErr
 	if err == nil {
 		err = fs.FS.Link(oldname, newname)
 	}
-	fmt.Fprintf(fs.w, "link: %s -> %s [%v]\n",
+	fmt.Fprintf(&fs.buf, "link: %s -> %s [%v]\n",
 		fs.stripBase(oldname), fs.stripBase(newname), normalizeError(err))
 	return err
 }
 
-func (fs loggingFS) ReuseForWrite(oldname, newname string) (File, error) {
+func (fs *loggingFS) ReuseForWrite(oldname, newname string) (File, error) {
 	f, err := fs.FS.ReuseForWrite(oldname, newname)
 	if err == nil {
-		f = loggingFile{f, fs.PathBase(newname), fs.w}
+		f = loggingFile{f, fs.PathBase(newname), &fs.buf}
 	}
-	fmt.Fprintf(fs.w, "reuseForWrite: %s -> %s [%v]\n",
+	fmt.Fprintf(&fs.buf, "reuseForWrite: %s -> %s [%v]\n",
 		fs.stripBase(oldname), fs.stripBase(newname), normalizeError(err))
 	return f, err
 }
 
-func (fs loggingFS) MkdirAll(dir string, perm os.FileMode) error {
+func (fs *loggingFS) MkdirAll(dir string, perm os.FileMode) error {
 	err := fs.FS.MkdirAll(dir, perm)
-	fmt.Fprintf(fs.w, "mkdir: %s [%v]\n", fs.stripBase(dir), normalizeError(err))
+	fmt.Fprintf(&fs.buf, "mkdir: %s [%v]\n", fs.stripBase(dir), normalizeError(err))
 	return err
 }
 
-func (fs loggingFS) Open(name string, opts ...OpenOption) (File, error) {
+func (fs *loggingFS) Open(name string, opts ...OpenOption) (File, error) {
 	f, err := fs.FS.Open(name, opts...)
-	fmt.Fprintf(fs.w, "open: %s [%v]\n", fs.stripBase(name), normalizeError(err))
-	return loggingFile{f, fs.stripBase(name), fs.w}, err
+	fmt.Fprintf(&fs.buf, "open: %s [%v]\n", fs.stripBase(name), normalizeError(err))
+	return loggingFile{f, fs.stripBase(name), &fs.buf}, err
 }
 
-func (fs loggingFS) Remove(name string) error {
+func (fs *loggingFS) Remove(name string) error {
 	err := fs.FS.Remove(name)
-	fmt.Fprintf(fs.w, "remove: %s [%v]\n", fs.stripBase(name), normalizeError(err))
+	fmt.Fprintf(&fs.buf, "remove: %s [%v]\n", fs.stripBase(name), normalizeError(err))
 	return err
 }
 
-func (fs loggingFS) RemoveAll(name string) error {
+func (fs *loggingFS) RemoveAll(name string) error {
 	err := fs.FS.RemoveAll(name)
-	fmt.Fprintf(fs.w, "remove-all: %s [%v]\n", fs.stripBase(name), normalizeError(err))
+	fmt.Fprintf(&fs.buf, "remove-all: %s [%v]\n", fs.stripBase(name), normalizeError(err))
 	return err
 }
 
@@ -118,14 +118,11 @@ func (f loggingFile) Sync() error {
 	return err
 }
 
-func runTestVFS(t *testing.T, baseFS FS, dir string) {
-	var buf bytes.Buffer
-	fs := loggingFS{FS: baseFS, base: dir, w: &buf}
-
-	datadriven.RunTest(t, "testdata/vfs", func(td *datadriven.TestData) string {
+func runTestVFS(t *testing.T, fs FS, loggingFS *loggingFS, dir string, testFile string) {
+	datadriven.RunTest(t, testFile, func(td *datadriven.TestData) string {
 		switch td.Cmd {
 		case "define":
-			buf.Reset()
+			loggingFS.buf.Reset()
 
 			for _, arg := range td.CmdArgs {
 				switch arg.Key {
@@ -135,13 +132,13 @@ func runTestVFS(t *testing.T, baseFS FS, dir string) {
 					}
 					switch arg.Vals[0] {
 					case "ErrExist":
-						fs.linkErr = oserror.ErrExist
+						loggingFS.linkErr = oserror.ErrExist
 					case "ErrNotExist":
-						fs.linkErr = oserror.ErrNotExist
+						loggingFS.linkErr = oserror.ErrNotExist
 					case "ErrPermission":
-						fs.linkErr = oserror.ErrPermission
+						loggingFS.linkErr = oserror.ErrPermission
 					default:
-						fs.linkErr = errors.New(arg.Vals[0])
+						loggingFS.linkErr = errors.New(arg.Vals[0])
 					}
 				default:
 					return fmt.Sprintf("%s: unknown arg: %s", td.Cmd, arg.Key)
@@ -193,7 +190,7 @@ func runTestVFS(t *testing.T, baseFS FS, dir string) {
 					paths, _ := fs.List(fs.PathJoin(dir, parts[1]))
 					sort.Strings(paths)
 					for _, p := range paths {
-						fmt.Fprintln(&buf, p)
+						fmt.Fprintln(&loggingFS.buf, p)
 					}
 
 				case "mkdir":
@@ -216,7 +213,7 @@ func runTestVFS(t *testing.T, baseFS FS, dir string) {
 				}
 			}
 
-			return buf.String()
+			return loggingFS.buf.String()
 
 		default:
 			return fmt.Sprintf("unknown command: %s", td.Cmd)
@@ -226,7 +223,8 @@ func runTestVFS(t *testing.T, baseFS FS, dir string) {
 
 func TestVFS(t *testing.T) {
 	t.Run("mem", func(t *testing.T) {
-		runTestVFS(t, NewMem(), "")
+		loggingFS := &loggingFS{FS: NewMem(), base: ""}
+		runTestVFS(t, loggingFS, loggingFS, "", "testdata/vfs")
 	})
 	if runtime.GOOS != "windows" {
 		t.Run("disk", func(t *testing.T) {
@@ -235,9 +233,19 @@ func TestVFS(t *testing.T) {
 			defer func() {
 				_ = os.RemoveAll(dir)
 			}()
-			runTestVFS(t, Default, dir)
+			loggingFS := &loggingFS{FS: Default, base: dir}
+			runTestVFS(t, loggingFS, loggingFS, dir, "testdata/vfs")
 		})
 	}
+}
+
+func TestRelativeVFS(t *testing.T) {
+	mem := NewMem()
+	require.NoError(t, mem.MkdirAll("rel", os.ModePerm))
+	loggingFS := &loggingFS{FS: mem, base: ""}
+	// NB: The loggingFS is wrapped by RelativeFS, so the logged paths should be
+	// prefixed by 'rel'.
+	runTestVFS(t, RelativeFS(loggingFS, "rel"), loggingFS, "", "testdata/relative_vfs")
 }
 
 func TestVFSGetDiskUsage(t *testing.T) {
