@@ -484,7 +484,7 @@ func (i *InterleavingIter) NextPrefix(succKey []byte) (*base.InternalKey, base.L
 	if i.dir == -1 {
 		// Next to reorient ourselves in the forward direction. If this Next
 		// arrives at key ≥ succKey, then we're done.
-		if k, v := i.Next(); i.cmp(k.UserKey, succKey) >= 0 {
+		if k, v := i.Next(); k == nil || i.cmp(k.UserKey, succKey) >= 0 {
 			return k, v
 		}
 		// We're now oriented in the forward direction and can proceed.
@@ -492,7 +492,7 @@ func (i *InterleavingIter) NextPrefix(succKey []byte) (*base.InternalKey, base.L
 
 	// Refresh the point key if the current point key has already been
 	// interleaved.
-	if i.pointKeyInterleaved {
+	if i.pointKeyInterleaved || (i.pointKey != nil && i.cmp(i.pointKey.UserKey, succKey) < 0) {
 		i.pointKey, i.pointVal = i.pointIter.NextPrefix(succKey)
 		i.pointKeyInterleaved = false
 	}

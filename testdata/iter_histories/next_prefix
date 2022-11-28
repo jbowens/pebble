@@ -178,6 +178,13 @@ committed 1 keys
 combined-iter
 seek-ge p@210
 next-prefix
+----
+p@210: (., [p-r) @1=foo UPDATED)
+q@100: (q@100, [p-r) @1=foo)
+
+combined-iter
+seek-ge p@210
+next-prefix
 seek-ge p@210
 next
 next-prefix
@@ -194,4 +201,24 @@ q@100: (q@100, [p-r) @1=foo)
 p@210: (., [p-r) @1=foo)
 p@100: (p@100, [p-r) @1=foo)
 p@10: (p@10, [p-r) @1=foo)
+q@100: (q@100, [p-r) @1=foo)
+
+# Test an iterator that is positioned on a range key start of a prefix, and the
+# next key is a point key with that same prefix. The interleaving iterator must
+# correctly handle this case and advance the point key iterator.
+combined-iter
+seek-ge p
+next-prefix
+----
+p: (., [p-r) @1=foo UPDATED)
+q@100: (q@100, [p-r) @1=foo)
+
+# Test the above condition, but when switching directions.
+combined-iter
+seek-ge p@100
+prev
+next-prefix
+----
+p@100: (p@100, [p-r) @1=foo UPDATED)
+p: (., [p-r) @1=foo)
 q@100: (q@100, [p-r) @1=foo)
