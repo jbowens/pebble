@@ -1265,7 +1265,18 @@ func TestManualCompaction(t *testing.T) {
 		return FormatMajorVersion(int(min) + rng.Intn(int(max)-int(min)+1))
 	}
 
+	var compactionLog bytes.Buffer
+	compactionLogEventListener := &EventListener{
+		CompactionEnd: func(info CompactionInfo) {
+			// Ensure determinism.
+			info.JobID = 1
+			info.Duration = time.Second
+			info.TotalDuration = time.Second
+			fmt.Fprintln(&compactionLog, info.String())
+		},
+	}
 	reset := func(minVersion, maxVersion FormatMajorVersion) {
+		compactionLog.Reset()
 		if d != nil {
 			require.NoError(t, closeAllSnapshots(d))
 			require.NoError(t, d.Close())
@@ -1277,6 +1288,7 @@ func TestManualCompaction(t *testing.T) {
 			FS:                 mem,
 			DebugCheck:         DebugCheckLevels,
 			FormatMajorVersion: randVersion(minVersion, maxVersion),
+			EventListener:      compactionLogEventListener,
 		}
 		opts.DisableAutomaticCompactions = true
 
@@ -1376,6 +1388,7 @@ func TestManualCompaction(t *testing.T) {
 					DebugCheck:                  DebugCheckLevels,
 					FormatMajorVersion:          randVersion(minVersion, maxVersion),
 					DisableAutomaticCompactions: true,
+					EventListener:               compactionLogEventListener,
 				}
 
 				var err error
@@ -1388,6 +1401,9 @@ func TestManualCompaction(t *testing.T) {
 					s = d.mu.versions.currentVersion().DebugString(base.DefaultFormatter)
 				}
 				return s
+
+			case "file-sizes":
+				return runTableFileSizesCmd(td, d)
 
 			case "flush":
 				if err := d.Flush(); err != nil {
@@ -1528,6 +1544,10 @@ func TestManualCompaction(t *testing.T) {
 					}
 				}
 				return ""
+
+			case "compaction-log":
+				defer compactionLog.Reset()
+				return compactionLog.String()
 			default:
 				return fmt.Sprintf("unknown command: %s", td.Cmd)
 			}
@@ -1565,6 +1585,11 @@ func TestManualCompaction(t *testing.T) {
 			minVersion: FormatRangeKeys,
 			maxVersion: FormatNewest,
 			verbose:    true,
+		},
+		{
+			testData:   "testdata/manual_compaction_file_boundaries",
+			minVersion: FormatMostCompatible,
+			maxVersion: FormatNewest,
 		},
 	}
 
