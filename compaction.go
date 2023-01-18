@@ -122,28 +122,115 @@ type compactionOutputSplitter interface {
 	onNewOutput(key *InternalKey) []byte
 }
 
-// fileSizeSplitter is a compactionOutputSplitter that makes a determination
-// to split outputs based on the estimated file size of the current output.
-// Note that, unlike most other splitters, this splitter does not guarantee
-// that it will advise splits only at user key change boundaries.
+// fileSizeSplitter is a compactionOutputSplitter that enforces target file
+// sizes. This splitter splits to a new output file when the estimated file size
+// is ±50% the target file size. If there are overlapping grandparent files, the
+// this splitter will attempt to split at a grandparent boundary.
+//
+// Note that, unlike most other splitters, this splitter does not guarantee that
+// it will advise splits only at user key change boundaries.
 type fileSizeSplitter struct {
-	maxFileSize uint64
+	targetFileSize     uint64
+	cmp                base.Compare
+	grandparent        *fileMetadata
+	grandparents       manifest.LevelIterator
+	nextBoundary       []byte
+	boundariesObserved uint64
+	unsafePrevUserKey  func() []byte
 }
 
 func (f *fileSizeSplitter) shouldSplitBefore(
 	key *InternalKey, tw *sstable.Writer,
 ) compactionSplitSuggestion {
-	// The Kind != RangeDelete part exists because EstimatedSize doesn't grow
-	// rightaway when a range tombstone is added to the fragmenter. It's always
-	// better to make a sequence of range tombstones visible to the fragmenter.
-	if key.Kind() != InternalKeyKindRangeDelete && tw != nil &&
-		tw.EstimatedSize() >= f.maxFileSize {
-		return splitNow
+	// If the key is a range tombstone, the EstimatedSize won't grow rightaway
+	// when a range tombstone is added to the fragmenter. It's better to make a
+	// sequence of range tombstones visible to the fragmenter.
+	if key.Kind() == InternalKeyKindRangeDelete || tw == nil {
+		return noSplit
 	}
-	return noSplit
+	estSize := tw.EstimatedSize()
+	switch {
+	case estSize < f.targetFileSize/2:
+		// The estimated file size is less than half the target file size. We'll
+		// never split it, even if we're aligned with a grandparent file.
+		return noSplit
+	case estSize >= (3*f.targetFileSize)/2:
+		// The estimated file size is half or more above the target file size.
+		// Split it even if we haven't aligned with a grandparent file boundary
+		// yet.
+		return splitNow
+	case f.grandparent == nil:
+		// If there are no more overlapping grandparents, split when we hit the
+		// target file size.
+		if estSize >= f.targetFileSize {
+			return splitNow
+		} else {
+			return noSplit
+		}
+	default:
+		// The estimated file size is within ±50% of the target file size. If
+		// the next key would cause the iterator to overlap a new grandparent,
+		// split now.
+
+		// If f.nextBoundary is nil, this is the first time we've hit this
+		// branch for this output file. We need to move the grandparent iterator
+		// forward to identify the next grandparent file whose Smallest key
+		// should serve as a split point. The previous key we added to the file
+		// may overlap some grandparent file. We want to split before the
+		// smallest key of the next grandparent to avoid overlap with the next
+		// grandparent.
+		//
+		// Consider the following example. The previous key added to [tw] is
+		// `b`. The current output file will overlap the grandparent file
+		// 000006, but we can prevent it from also overlapping file 000007. To
+		// accomplish this, we split set [nextBoundary] to `f.Smallest` ensuring
+		// we'll split before any key ≥ `f.Smallest`.
+		//
+		//                  prevUserKey
+		//                       |
+		//                       |
+		//                  +----|---------------+   +----------+
+		//   grandparents:  |    |  000006       |   |  000007  |
+		//                  +----|---------------+   +----------+
+		//                  a    b               e   f          i
+		//
+		if f.nextBoundary == nil || f.cmp(key.UserKey, f.nextBoundary) >= 0 {
+			prevUserKey := f.unsafePrevUserKey()
+			if prevUserKey == nil {
+				// NB: This case shouldn't be possible for any reasonable target
+				// file size, since it must hold some key to have reached 50% of
+				// the target file size.
+				return noSplit
+			}
+			for f.grandparent != nil && f.cmp(prevUserKey, f.grandparent.Smallest.UserKey) >= 0 {
+				f.grandparent = f.grandparents.Next()
+				f.boundariesObserved++
+			}
+			if f.grandparent == nil {
+				// There are no more overlapping grandparents. Return no split,
+				// and subsequent keys will fall into the earlier case that
+				// splits immediately after the target file size is surpassed.
+				return noSplit
+			}
+			f.nextBoundary = f.grandparent.Smallest.UserKey
+			if estSize > ((5*min(f.boundariesObserved, 8)+50)*f.targetFileSize)/100 {
+				return splitNow
+			}
+		}
+		return noSplit
+	}
+}
+
+func min(a, b uint64) uint64 {
+	if b < a {
+		a = b
+	}
+	return a
 }
 
 func (f *fileSizeSplitter) onNewOutput(key *InternalKey) []byte {
+	f.nextBoundary = nil
+	f.boundariesObserved = 0
 	return nil
 }
 
@@ -2668,30 +2755,39 @@ func (d *DB) runCompaction(
 		return nil
 	}
 
-	// compactionOutputSplitters contain all logic to determine whether the
-	// compaction loop should stop writing to one output sstable and switch to
-	// a new one. Some splitters can wrap other splitters, and
-	// the splitterGroup can be composed of multiple splitters. In this case,
-	// we start off with splitters for file sizes, grandparent limits, and (for
-	// L0 splits) L0 limits, before wrapping them in an splitterGroup.
+	// Build a compactionOutputSplitter that contains all logic to determine
+	// whether the compaction loop should stop writing to one output sstable and
+	// switch to a new one. Some splitters can wrap other splitters, and the
+	// splitterGroup can be composed of multiple splitters. In this case, we
+	// start off with splitters for file sizes, grandparent limits, and (for L0
+	// splits) L0 limits, before wrapping them in an splitterGroup.
+	grandparents := c.grandparents.Iter()
+	firstGrandparent := grandparents.First()
+	unsafePrevUserKey := func() []byte {
+		// Return the largest point key written to tw or the start of
+		// the current range deletion in the fragmenter, whichever is
+		// greater.
+		prevPoint := prevPointKey.UnsafeKey()
+		if c.cmp(prevPoint.UserKey, c.rangeDelFrag.Start()) > 0 {
+			return prevPoint.UserKey
+		}
+		return c.rangeDelFrag.Start()
+	}
 	outputSplitters := []compactionOutputSplitter{
 		// We do not split the same user key across different sstables within
 		// one flush or compaction. The fileSizeSplitter may request a split in
 		// the middle of a user key, so the userKeyChangeSplitter ensures we are
 		// at a user key change boundary when doing a split.
 		&userKeyChangeSplitter{
-			cmp:      c.cmp,
-			splitter: &fileSizeSplitter{maxFileSize: c.maxOutputFileSize},
-			unsafePrevUserKey: func() []byte {
-				// Return the largest point key written to tw or the start of
-				// the current range deletion in the fragmenter, whichever is
-				// greater.
-				prevPoint := prevPointKey.UnsafeKey()
-				if c.cmp(prevPoint.UserKey, c.rangeDelFrag.Start()) > 0 {
-					return prevPoint.UserKey
-				}
-				return c.rangeDelFrag.Start()
+			cmp: c.cmp,
+			splitter: &fileSizeSplitter{
+				cmp:               c.cmp,
+				targetFileSize:    c.maxOutputFileSize,
+				grandparent:       firstGrandparent,
+				grandparents:      grandparents,
+				unsafePrevUserKey: unsafePrevUserKey,
 			},
+			unsafePrevUserKey: unsafePrevUserKey,
 		},
 		&limitFuncSplitter{c: c, limitFunc: c.findGrandparentLimit},
 	}

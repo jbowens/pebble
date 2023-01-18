@@ -1,0 +1,111 @@
+# Test that a compaction splits output at as little as 50% of the target file
+# size if there's alignment with a grandparent file.
+
+define target-file-sizes=(6000, 6000, 6000, 6000)
+L1
+  aa.SET.201:<rand-bytes=1000>
+  ab.SET.202:<rand-bytes=1000>
+  ac.SET.203:<rand-bytes=1000>
+  ad.SET.204:<rand-bytes=1000>
+  ae.SET.205:<rand-bytes=1000>
+  af.SET.206:<rand-bytes=1000>
+  ag.SET.207:<rand-bytes=1000>
+  ah.SET.208:<rand-bytes=1000>
+  ai.SET.209:<rand-bytes=1000>
+  aj.SET.210:<rand-bytes=1000>
+  ba.SET.211:<rand-bytes=1000>
+  bb.SET.212:<rand-bytes=1000>
+  bc.SET.213:<rand-bytes=1000>
+  bd.SET.214:<rand-bytes=1000>
+  be.SET.215:<rand-bytes=1000>
+  bf.SET.216:<rand-bytes=1000>
+  bg.SET.217:<rand-bytes=1000>
+  bh.SET.218:<rand-bytes=1000>
+  bi.SET.219:<rand-bytes=1000>
+  bj.SET.220:<rand-bytes=1000>
+L1
+  ca.SET.221:<rand-bytes=1000>
+  cb.SET.222:<rand-bytes=1000>
+  cc.SET.223:<rand-bytes=1000>
+  cd.SET.224:<rand-bytes=1000>
+  ce.SET.225:<rand-bytes=1000>
+  cf.SET.226:<rand-bytes=1000>
+  cg.SET.227:<rand-bytes=1000>
+  ch.SET.228:<rand-bytes=1000>
+  ci.SET.229:<rand-bytes=1000>
+  cj.SET.230:<rand-bytes=1000>
+  da.SET.231:<rand-bytes=1000>
+  db.SET.232:<rand-bytes=1000>
+  dc.SET.233:<rand-bytes=1000>
+  dd.SET.234:<rand-bytes=1000>
+  de.SET.235:<rand-bytes=1000>
+  df.SET.236:<rand-bytes=1000>
+  dg.SET.237:<rand-bytes=1000>
+  dh.SET.238:<rand-bytes=1000>
+  di.SET.239:<rand-bytes=1000>
+  dj.SET.230:<rand-bytes=1000>
+L2
+  a.SET.101:<rand-bytes=1000>
+  d.SET.102:<rand-bytes=1000>
+L3
+  a.SET.001:<rand-bytes=10000>
+L3
+  b.SET.002:<rand-bytes=10000>
+L3
+  c.SET.003:<rand-bytes=10000>
+L3
+  d.SET.004:<rand-bytes=10000>
+----
+1:
+  000004:[aa#201,SET-bj#220,SET]
+  000005:[ca#221,SET-dj#230,SET]
+2:
+  000006:[a#101,SET-d#102,SET]
+3:
+  000007:[a#1,SET-a#1,SET]
+  000008:[b#2,SET-b#2,SET]
+  000009:[c#3,SET-c#3,SET]
+  000010:[d#4,SET-d#4,SET]
+
+file-sizes
+----
+L1:
+  000004:[aa#201,1-bj#220,1]: 21151 bytes (21 K)
+  000005:[ca#221,1-dj#230,1]: 21152 bytes (21 K)
+L2:
+  000006:[a#101,1-d#102,1]: 2788 bytes (2.7 K)
+L3:
+  000007:[a#1,1-a#1,1]: 10775 bytes (10 K)
+  000008:[b#2,1-b#2,1]: 10775 bytes (10 K)
+  000009:[c#3,1-c#3,1]: 10775 bytes (10 K)
+  000010:[d#4,1-d#4,1]: 10775 bytes (10 K)
+
+compact a-d L1
+----
+2:
+  000011:[a#101,SET-ah#208,SET]
+  000012:[ai#209,SET-bg#217,SET]
+  000013:[bh#218,SET-bj#220,SET]
+  000014:[ca#221,SET-ci#229,SET]
+  000015:[cj#230,SET-dd#234,SET]
+  000016:[de#235,SET-dj#230,SET]
+3:
+  000007:[a#1,SET-a#1,SET]
+  000008:[b#2,SET-b#2,SET]
+  000009:[c#3,SET-c#3,SET]
+  000010:[d#4,SET-d#4,SET]
+
+file-sizes
+----
+L2:
+  000011:[a#101,1-ah#208,1]: 9949 bytes (9.7 K)
+  000012:[ai#209,1-bg#217,1]: 9951 bytes (9.7 K)
+  000013:[bh#218,1-bj#220,1]: 3802 bytes (3.7 K)
+  000014:[ca#221,1-ci#229,1]: 9950 bytes (9.7 K)
+  000015:[cj#230,1-dd#234,1]: 6876 bytes (6.7 K)
+  000016:[de#235,1-dj#230,1]: 6876 bytes (6.7 K)
+L3:
+  000007:[a#1,1-a#1,1]: 10775 bytes (10 K)
+  000008:[b#2,1-b#2,1]: 10775 bytes (10 K)
+  000009:[c#3,1-c#3,1]: 10775 bytes (10 K)
+  000010:[d#4,1-d#4,1]: 10775 bytes (10 K)
