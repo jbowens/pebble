@@ -39,13 +39,14 @@ func cmpKey(a, b InternalKey) int {
 
 // Verify asserts that the tree's structural invariants all hold.
 func (t *btree) Verify(tt *testing.T) {
-	if t.length == 0 {
+	if t.length() == 0 {
 		require.Nil(tt, t.root)
 		return
 	}
 	t.verifyLeafSameDepth(tt)
 	t.verifyCountAllowed(tt)
 	t.isSorted(tt)
+	t.root.verifyInvariants()
 }
 
 func (t *btree) verifyLeafSameDepth(tt *testing.T) {
@@ -167,6 +168,7 @@ func checkIter(t *testing.T, it iterator, start, end int, keyMemo map[int]Intern
 		if cmpKey(expected, item.Smallest) != 0 {
 			t.Fatalf("expected %s, but found %s", expected, item.Smallest)
 		}
+		require.Equal(t, i-start, it.countLeft())
 		i++
 	}
 	if i != end {
@@ -180,6 +182,7 @@ func checkIter(t *testing.T, it iterator, start, end int, keyMemo map[int]Intern
 		if cmpKey(expected, item.Smallest) != 0 {
 			t.Fatalf("expected %s, but found %s", expected, item.Smallest)
 		}
+		require.Equal(t, i-start, it.countLeft())
 	}
 	if i != start {
 		t.Fatalf("expected %d, but at %d: %+v", start, i, it)
@@ -202,8 +205,8 @@ func TestBTree(t *testing.T) {
 	for i := 0; i < count; i++ {
 		require.NoError(t, tr.insert(items[i]))
 		tr.Verify(t)
-		if e := i + 1; e != tr.length {
-			t.Fatalf("expected length %d, but found %d", e, tr.length)
+		if e := i + 1; e != tr.length() {
+			t.Fatalf("expected length %d, but found %d", e, tr.length())
 		}
 		checkIter(t, tr.iter(), 0, i+1, keyMemo)
 	}
@@ -215,8 +218,8 @@ func TestBTree(t *testing.T) {
 			t.Fatalf("expected item %d to be obsolete", i)
 		}
 		tr.Verify(t)
-		if e := count - (i + 1); e != tr.length {
-			t.Fatalf("expected length %d, but found %d", e, tr.length)
+		if e := count - (i + 1); e != tr.length() {
+			t.Fatalf("expected length %d, but found %d", e, tr.length())
 		}
 		checkIter(t, tr.iter(), i+1, count, keyMemo)
 	}
@@ -225,8 +228,8 @@ func TestBTree(t *testing.T) {
 	for i := 1; i <= count; i++ {
 		require.NoError(t, tr.insert(items[count-i]))
 		tr.Verify(t)
-		if i != tr.length {
-			t.Fatalf("expected length %d, but found %d", i, tr.length)
+		if i != tr.length() {
+			t.Fatalf("expected length %d, but found %d", i, tr.length())
 		}
 		checkIter(t, tr.iter(), count-i, count, keyMemo)
 	}
@@ -238,8 +241,8 @@ func TestBTree(t *testing.T) {
 			t.Fatalf("expected item %d to be obsolete", i)
 		}
 		tr.Verify(t)
-		if e := count - i; e != tr.length {
-			t.Fatalf("expected length %d, but found %d", e, tr.length)
+		if e := count - i; e != tr.length() {
+			t.Fatalf("expected length %d, but found %d", e, tr.length())
 		}
 		checkIter(t, tr.iter(), 0, count-i, keyMemo)
 	}
@@ -654,7 +657,7 @@ func BenchmarkBTreeDelete(b *testing.B) {
 					return
 				}
 			}
-			if tr.length > 0 {
+			if tr.length() > 0 {
 				b.Fatalf("tree not empty: %s", &tr)
 			}
 		}

@@ -731,11 +731,27 @@ func overlaps(iter LevelIterator, cmp Compare, start, end []byte, exclusiveEnd b
 	}
 
 	iter = startIter.Clone()
-	return LevelSlice{
+	s := LevelSlice{
 		iter:  iter.iter,
 		start: &startIter.iter,
 		end:   &endIter.iter,
 	}
+	if iter.iter.valid() {
+		// NB: The +1 is a consequence of the start and end bounds being
+		// inclusive.
+		s.length = endIter.iter.countLeft() - startIter.iter.countLeft() + 1
+	}
+	if invariants.Enabled {
+		i := s.Iter()
+		var length int
+		for f := i.First(); f != nil; f = i.Next() {
+			length++
+		}
+		if s.length != length {
+			panic(fmt.Sprintf("LevelSlice %s has length %d value; actual length is %d", s, s.length, length))
+		}
+	}
+	return s
 }
 
 // NumLevels is the number of levels a Version contains.
@@ -1065,7 +1081,7 @@ func (v *Version) Overlaps(
 						}
 					}
 				}
-				slice = LevelSlice{iter: tr.iter(), length: tr.length}
+				slice = LevelSlice{iter: tr.iter(), length: tr.length()}
 				// TODO(jackson): Avoid the oddity of constructing and
 				// immediately releasing a B-Tree. Make LevelSlice an
 				// interface?

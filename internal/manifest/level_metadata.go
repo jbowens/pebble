@@ -49,17 +49,17 @@ func makeBTree(cmp btreeCmp, files []*FileMetadata) (btree, LevelSlice) {
 	for _, f := range files {
 		t.insert(f)
 	}
-	return t, LevelSlice{iter: t.iter(), length: t.length}
+	return t, LevelSlice{iter: t.iter(), length: t.length()}
 }
 
 // Empty indicates whether there are any files in the level.
 func (lm *LevelMetadata) Empty() bool {
-	return lm.tree.length == 0
+	return lm.tree.length() == 0
 }
 
 // Len returns the number of files within the level.
 func (lm *LevelMetadata) Len() int {
-	return lm.tree.length
+	return lm.tree.length()
 }
 
 // Iter constructs a LevelIterator over the entire level.
@@ -69,7 +69,7 @@ func (lm *LevelMetadata) Iter() LevelIterator {
 
 // Slice constructs a slice containing the entire level.
 func (lm *LevelMetadata) Slice() LevelSlice {
-	return LevelSlice{iter: lm.tree.iter(), length: lm.tree.length}
+	return LevelSlice{iter: lm.tree.iter(), length: lm.tree.length()}
 }
 
 // Find finds the provided file in the level if it exists.
@@ -182,6 +182,7 @@ func (ls LevelSlice) Each(fn func(*FileMetadata)) {
 // String implements fmt.Stringer.
 func (ls LevelSlice) String() string {
 	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%d files: ", ls.length)
 	ls.Each(func(f *FileMetadata) {
 		if buf.Len() > 0 {
 			fmt.Fprintf(&buf, " ")
@@ -254,9 +255,10 @@ func (ls LevelSlice) Reslice(resliceFunc func(start, end *LevelIterator)) LevelS
 		end:   &end.iter,
 	}
 	// Calculate the new slice's length.
-	iter := s.Iter()
-	for f := iter.First(); f != nil; f = iter.Next() {
-		s.length++
+	if s.iter.valid() {
+		// NB: The +1 is a consequence of the start and end bounds being
+		// inclusive.
+		s.length = end.iter.countLeft() - start.iter.countLeft() + 1
 	}
 	return s
 }
