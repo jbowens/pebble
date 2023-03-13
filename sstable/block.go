@@ -1524,8 +1524,8 @@ func (i *fragmentBlockIter) gatherForward(k *InternalKey, lazyValue base.LazyVal
 		// exactly equal the original end key from the first internal key.
 		// Overlapping fragments are required to have exactly equal start and
 		// end bounds.
-		if i.blockIter.cmp(prevEnd, i.span.End) != 0 {
-			i.err = base.CorruptionErrorf("pebble: corrupt keyspan fragmentation")
+		if invariants.Enabled && i.blockIter.cmp(prevEnd, i.span.End) != 0 {
+			i.err = errors.AssertionFailedf("pebble: corrupt keyspan fragmentation")
 			i.span = keyspan.Span{}
 			return nil
 		}
@@ -1577,8 +1577,8 @@ func (i *fragmentBlockIter) gatherBackward(k *InternalKey, lazyValue base.LazyVa
 		// exactly equal the original end key from the first internal key.
 		// Overlapping fragments are required to have exactly equal start and
 		// end bounds.
-		if i.blockIter.cmp(prevEnd, i.span.End) != 0 {
-			i.err = base.CorruptionErrorf("pebble: corrupt keyspan fragmentation")
+		if invariants.Enabled && i.blockIter.cmp(prevEnd, i.span.End) != 0 {
+			i.err = errors.AssertionFailedf("pebble: corrupt keyspan fragmentation")
 			i.span = keyspan.Span{}
 			return nil
 		}
