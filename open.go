@@ -802,8 +802,13 @@ func (d *DB) replayWAL(
 					panic("pebble: couldn't load all files in WAL entry.")
 				}
 
+				// NB: We pass the zero value of the ingestDataOverlapHint
+				// struct for all the files. This is okay, because a zero struct
+				// has a zero logSeqNum field, indicating that the flush must
+				// check for overlap of all sequence numbers ≥ 0.
+				precomputedOverlap := make([]ingestDataOverlapHint, len(meta))
 				entry, err = d.newIngestedFlushableEntry(
-					meta, seqNum, logNum,
+					meta, precomputedOverlap, seqNum, logNum,
 				)
 				if err != nil {
 					return nil, 0, err

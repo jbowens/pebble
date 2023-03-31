@@ -651,6 +651,18 @@ type compaction struct {
 	metrics map[int]*LevelMetrics
 }
 
+func (c *compaction) largestInputSeqNum() (seq uint64) {
+	for _, level := range c.inputs {
+		iter := level.files.Iter()
+		for f := iter.First(); f != nil; f = iter.Next() {
+			if seq < f.LargestSeqNum {
+				seq = f.LargestSeqNum
+			}
+		}
+	}
+	return seq
+}
+
 func (c *compaction) makeInfo(jobID int) CompactionInfo {
 	info := CompactionInfo{
 		JobID:  jobID,
@@ -1841,10 +1853,12 @@ func (d *DB) runIngestFlush(c *compaction) (*manifest.VersionEdit, error) {
 	ve := &versionEdit{}
 	var level int
 	var err error
-	for _, file := range c.flushing[0].flushable.(*ingestedFlushable).files {
+	ingest := c.flushing[0].flushable.(*ingestedFlushable)
+	for i, file := range ingest.files {
 		level, err = ingestTargetLevel(
 			d.newIters, d.tableNewRangeKeyIter, iterOpts, d.cmp,
 			c.version, baseLevel, d.mu.compact.inProgress, file.FileMetadata,
+			ingest.precomputedOverlap[i],
 		)
 		if err != nil {
 			return nil, err
@@ -2406,6 +2420,34 @@ func (d *DB) maybeUpdateDeleteCompactionHints(c *compaction) {
 	d.mu.compact.deletionHints = updatedHints
 }
 
+func (d *DB) maybeUpdateIngestFlushableOverlapHints(c *compaction) {
+	// Compactions that zero sequence numbers can interfere with the data
+	// overlap hints for flushable ingests. Data overlap hints describe overlap
+	// less than some sequence number N. If a key more recent than N has its
+	// sequence number zeroed in a compaction, a flushable ingest may mistake it
+	// as not containing overlap.
+	//
+	// To avoid this scenario, compactions that zero sequence numbers zero
+	// any conflicting ingest flushable data overlap hints. An ingest flushable
+	// hint is considered conflicting if any of its input keys are as recent as
+	// the data overlap hint's logSeqNum.
+	if !c.allowedZeroSeqNum {
+		return
+	}
+
+	for i := range d.mu.mem.queue {
+		f, ok := d.mu.mem.queue[i].flushable.(*ingestedFlushable)
+		if !ok {
+			continue
+		}
+		for j := range f.precomputedOverlap {
+			if c.largestInputSeqNum() >= f.precomputedOverlap[j].logSeqNum {
+				f.precomputedOverlap[j] = ingestDataOverlapHint{}
+			}
+		}
+	}
+}
+
 func checkDeleteCompactionHints(
 	cmp Compare, v *version, hints []deleteCompactionHint, snapshots []uint64,
 ) ([]compactionLevel, []deleteCompactionHint) {
@@ -2562,6 +2604,7 @@ func (d *DB) compact1(c *compaction, errChannel chan error) (err error) {
 	d.mu.snapshots.cumulativePinnedSize += stats.cumulativePinnedSize
 
 	d.maybeUpdateDeleteCompactionHints(c)
+	d.maybeUpdateIngestFlushableOverlapHints(c)
 	d.removeInProgressCompaction(c, err != nil)
 	d.mu.versions.incrementCompactions(c.kind, c.extraLevels)
 	d.mu.versions.incrementCompactionBytes(-c.bytesWritten)

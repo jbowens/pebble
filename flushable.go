@@ -116,11 +116,12 @@ type flushableList []*flushableEntry
 // ingestedFlushable is the implementation of the flushable interface for the
 // ingesting sstables which are added to the flushable list.
 type ingestedFlushable struct {
-	files            []physicalMeta
-	cmp              Compare
-	split            Split
-	newIters         tableNewIters
-	newRangeKeyIters keyspan.TableNewSpanIter
+	files              []physicalMeta
+	precomputedOverlap []ingestDataOverlapHint
+	cmp                Compare
+	split              Split
+	newIters           tableNewIters
+	newRangeKeyIters   keyspan.TableNewSpanIter
 
 	// Since the level slice is immutable, we construct and set it once. It
 	// should be safe to read from slice in future reads.
@@ -131,6 +132,7 @@ type ingestedFlushable struct {
 
 func newIngestedFlushable(
 	files []*fileMetadata,
+	precomputedOverlap []ingestDataOverlapHint,
 	cmp Compare,
 	split Split,
 	newIters tableNewIters,
@@ -146,11 +148,12 @@ func newIngestedFlushable(
 	}
 
 	ret := &ingestedFlushable{
-		files:            physicalFiles,
-		cmp:              cmp,
-		split:            split,
-		newIters:         newIters,
-		newRangeKeyIters: newRangeKeyIters,
+		files:              physicalFiles,
+		precomputedOverlap: precomputedOverlap,
+		cmp:                cmp,
+		split:              split,
+		newIters:           newIters,
+		newRangeKeyIters:   newRangeKeyIters,
 		// slice is immutable and can be set once and used many times.
 		slice:        manifest.NewLevelSliceKeySorted(cmp, files),
 		hasRangeKeys: hasRangeKeys,

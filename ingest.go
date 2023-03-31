@@ -392,6 +392,10 @@ func overlapWithIterator(
 			return true
 		}
 	}
+	// Assume overlap if iterator errored out.
+	if iter.Error() != nil {
+		return true
+	}
 
 	computeOverlapWithSpans := func(rIter keyspan.FragmentIterator) bool {
 		// NB: The spans surfaced by the fragment iterator are non-overlapping.
@@ -417,6 +421,10 @@ func overlapWithIterator(
 				return true
 			}
 		}
+		// Assume overlap if iterator errored out.
+		if rIter.Error() != nil {
+			return true
+		}
 		return false
 	}
 
@@ -435,6 +443,112 @@ func overlapWithIterator(
 	return computeOverlapWithSpans(*rangeDelIter)
 }
 
+// ingestDataOverlapHint describes a single ingested sstable's overlap with data
+// already committed to the LSM. During ingestion, data overlap is computed once
+// before commit, yielding this struct. During commit application, only overlap
+// with more recent data needs to be checked.
+//
+// NB: A zeroed ingestDataOverlapHint struct has a zero logSeqNum, representing an
+// ingestDataOverlapHint that provides no constraints on the overlap. An ingest
+// application with a zeroed ingestDataOverlapHint struct will compute data overlap
+// across the entire LSM.
+type ingestDataOverlapHint struct {
+	// logSeqNum holds the oldest flushable's logSeqNum at the time this data
+	// overlap was computed. At the time of ingest commit application, only
+	// tables containing sequence numbers higher than logSeqNum may possibly
+	// contain an even more recent data overlap.
+	logSeqNum uint64
+	// flushableOverlap is true if the ingest sstable was found to overlap any
+	// of the flushables in the flushable queue.
+	flushableOverlap bool
+	// sstableOverlap is true if any data overlap was found.
+	sstableOverlap bool
+	// if sstableOverlap is true, sstableLevel holds the highest (numerically
+	// lowest) level that was found to overlap.
+	sstableLevel int
+}
+
+func computeSSTableDataOverlap(
+	newIters tableNewIters,
+	newRangeKeyIter keyspan.TableNewSpanIter,
+	iterOps IterOptions,
+	cmp Compare,
+	v *version,
+	baseLevel int,
+	meta *fileMetadata,
+) (hasOverlap bool, level int, err error) {
+	// Do we overlap with keys in L0?
+	// TODO(bananabrick): Use sublevels to compute overlap.
+	iter := v.Levels[0].Iter()
+	for meta0 := iter.Last(); meta0 != nil; meta0 = iter.Prev() {
+		c1 := sstableKeyCompare(cmp, meta.Smallest, meta0.Largest)
+		c2 := sstableKeyCompare(cmp, meta.Largest, meta0.Smallest)
+		if c1 > 0 || c2 < 0 {
+			continue
+		}
+
+		// TODO(sumeer): ingest is a user-facing operation, so we should accept a
+		// context and plumb it through, for tracing.
+		iter, rangeDelIter, err := newIters(context.Background(), meta0, nil, internalIterOpts{})
+		if err != nil {
+			return false, 0, err
+		}
+		rkeyIter, err := newRangeKeyIter(meta0, nil)
+		if err != nil {
+			return false, 0, err
+		}
+		hasDataOverlap := overlapWithIterator(iter, &rangeDelIter, rkeyIter, meta, cmp)
+		err = firstError(err, iter.Close())
+		if rangeDelIter != nil {
+			err = firstError(err, rangeDelIter.Close())
+		}
+		if rkeyIter != nil {
+			err = firstError(err, rkeyIter.Close())
+		}
+		if err != nil {
+			return false, 0, err
+		}
+		if hasDataOverlap {
+			return true, 0, nil
+		}
+	}
+
+	for level = baseLevel; level < numLevels; level++ {
+		// Find the set of files that have boundary overlap. Only these files
+		// may possibly contain data overlap.
+		overlappingFiles := v.Overlaps(level, cmp, meta.Smallest.UserKey,
+			meta.Largest.UserKey, meta.Largest.IsExclusiveSentinel())
+		if overlappingFiles.Empty() {
+			continue
+		}
+		overlappingFilesIter := overlappingFiles.Iter()
+		levelIter := newLevelIter(iterOps, cmp, nil /* split */, newIters,
+			overlappingFilesIter, manifest.Level(level), nil)
+		var rangeDelIter keyspan.FragmentIterator
+		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
+		// sets it up for the target file.
+		levelIter.initRangeDel(&rangeDelIter)
+
+		rkeyLevelIter := &keyspan.LevelIter{}
+		rkeyLevelIter.Init(
+			keyspan.SpanIterOptions{}, cmp, newRangeKeyIter,
+			v.Levels[level].Iter(), manifest.Level(level), manifest.KeyTypeRange,
+		)
+
+		hasDataOverlap := overlapWithIterator(levelIter, &rangeDelIter, rkeyLevelIter, meta, cmp)
+		err := levelIter.Close() // Closes range del iter as well.
+		err = firstError(err, rkeyLevelIter.Close())
+		if err != nil {
+			return false, 0, err
+		}
+		if hasDataOverlap {
+			return true, level, nil
+		}
+	}
+	// No data overlap.
+	return false, 0, nil
+}
+
 func ingestTargetLevel(
 	newIters tableNewIters,
 	newRangeKeyIter keyspan.TableNewSpanIter,
@@ -444,6 +558,7 @@ func ingestTargetLevel(
 	baseLevel int,
 	compactions map[*compaction]struct{},
 	meta *fileMetadata,
+	optimisticDataOverlap ingestDataOverlapHint,
 ) (int, error) {
 	// Find the lowest level which does not have any files which overlap meta. We
 	// search from L0 to L6 looking for whether there are any files in the level
@@ -502,72 +617,28 @@ func ingestTargetLevel(
 	// tables) and such a check is prohibitively expensive. Thus Pebble treats any
 	// existing point that falls within the ingested table bounds as being "data
 	// overlap".
-
-	targetLevel := 0
-
-	// Do we overlap with keys in L0?
-	// TODO(bananabrick): Use sublevels to compute overlap.
-	iter := v.Levels[0].Iter()
-	for meta0 := iter.First(); meta0 != nil; meta0 = iter.Next() {
-		c1 := sstableKeyCompare(cmp, meta.Smallest, meta0.Largest)
-		c2 := sstableKeyCompare(cmp, meta.Largest, meta0.Smallest)
-		if c1 > 0 || c2 < 0 {
-			continue
-		}
-
-		// TODO(sumeer): ingest is a user-facing operation, so we should accept a
-		// context and plumb it through, for tracing.
-		iter, rangeDelIter, err := newIters(context.Background(), meta0, nil, internalIterOpts{})
-		if err != nil {
-			return 0, err
-		}
-		rkeyIter, err := newRangeKeyIter(meta0, nil)
-		if err != nil {
-			return 0, err
-		}
-		overlap := overlapWithIterator(iter, &rangeDelIter, rkeyIter, meta, cmp)
-		err = firstError(err, iter.Close())
-		if rangeDelIter != nil {
-			err = firstError(err, rangeDelIter.Close())
-		}
-		if rkeyIter != nil {
-			err = firstError(err, rkeyIter.Close())
-		}
-		if err != nil {
-			return 0, err
-		}
-		if overlap {
-			return targetLevel, nil
-		}
+	hasOverlap, overlapLevel, err := computeSSTableDataOverlap(
+		newIters, newRangeKeyIter, iterOps, cmp, v, baseLevel, meta)
+	if err != nil {
+		return 0, err
 	}
 
-	level := baseLevel
-	for ; level < numLevels; level++ {
-		levelIter := newLevelIter(iterOps, cmp, nil /* split */, newIters,
-			v.Levels[level].Iter(), manifest.Level(level), nil)
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		levelIter.initRangeDel(&rangeDelIter)
-
-		rkeyLevelIter := &keyspan.LevelIter{}
-		rkeyLevelIter.Init(
-			keyspan.SpanIterOptions{}, cmp, newRangeKeyIter,
-			v.Levels[level].Iter(), manifest.Level(level), manifest.KeyTypeRange,
-		)
-
-		overlap := overlapWithIterator(levelIter, &rangeDelIter, rkeyLevelIter, meta, cmp)
-		err := levelIter.Close() // Closes range del iter as well.
-		err = firstError(err, rkeyLevelIter.Close())
-		if err != nil {
-			return 0, err
+	// With the data overlap established, we slot the ingested file into the
+	// lowest level between [0, dataOverlap.level-1] that doesn't have boundary
+	// overlap. If there was no data overlap at all, we can begin looking for a
+	// level without boundary overlap from L6.
+	targetLevel := numLevels - 1
+	if hasOverlap {
+		// If data overlap exists in LBase, L1 or L0, then the ingested sstable
+		// will need to go into L0. Return early.
+		if overlapLevel <= baseLevel || overlapLevel <= 1 {
+			return 0, nil
 		}
-		if overlap {
-			return targetLevel, nil
-		}
-
+		targetLevel = overlapLevel - 1
+	}
+	for ; targetLevel > 0; targetLevel-- {
 		// Check boundary overlap.
-		boundaryOverlaps := v.Overlaps(level, cmp, meta.Smallest.UserKey,
+		boundaryOverlaps := v.Overlaps(targetLevel, cmp, meta.Smallest.UserKey,
 			meta.Largest.UserKey, meta.Largest.IsExclusiveSentinel())
 		if !boundaryOverlaps.Empty() {
 			continue
@@ -575,14 +646,12 @@ func ingestTargetLevel(
 
 		// Check boundary overlap with any ongoing compactions.
 		//
-		// We cannot check for data overlap with the new SSTs compaction will
-		// produce since compaction hasn't been done yet. However, there's no need
-		// to check since all keys in them will either be from c.startLevel or
-		// c.outputLevel, both levels having their data overlap already tested
-		// negative (else we'd have returned earlier).
+		// Note the new SSTs produced by in-progress compactions cannot contain
+		// data overlap, because we've already looked for data overlap in all
+		// files higher than targetLevel.
 		overlaps := false
 		for c := range compactions {
-			if c.outputLevel == nil || level != c.outputLevel.level {
+			if c.outputLevel == nil || targetLevel != c.outputLevel.level {
 				continue
 			}
 			if cmp(meta.Smallest.UserKey, c.largest.UserKey) <= 0 &&
@@ -592,7 +661,7 @@ func ingestTargetLevel(
 			}
 		}
 		if !overlaps {
-			targetLevel = level
+			return targetLevel, nil
 		}
 	}
 	return targetLevel, nil
@@ -678,7 +747,7 @@ func (d *DB) IngestWithStats(paths []string) (IngestOperationStats, error) {
 
 // Both DB.mu and commitPipeline.mu must be held while this is called.
 func (d *DB) newIngestedFlushableEntry(
-	meta []*fileMetadata, seqNum uint64, logNum FileNum,
+	meta []*fileMetadata, precomputedOverlap []ingestDataOverlapHint, seqNum uint64, logNum FileNum,
 ) (*flushableEntry, error) {
 	// Update the sequence number for all of the sstables in the
 	// metadata. Writing the metadata to the manifest when the
@@ -694,7 +763,7 @@ func (d *DB) newIngestedFlushableEntry(
 		return nil, err
 	}
 
-	f := newIngestedFlushable(meta, d.cmp, d.split, d.newIters, d.tableNewRangeKeyIter)
+	f := newIngestedFlushable(meta, precomputedOverlap, d.cmp, d.split, d.newIters, d.tableNewRangeKeyIter)
 
 	// NB: The logNum/seqNum are the WAL number which we're writing this entry
 	// to and the sequence number within the WAL which we'll write this entry
@@ -724,7 +793,9 @@ func (d *DB) newIngestedFlushableEntry(
 // we're holding both locks, the order in which we rotate the memtable or
 // recycle the WAL in this function is irrelevant as long as the correct log
 // numbers are assigned to the appropriate flushable.
-func (d *DB) handleIngestAsFlushable(meta []*fileMetadata, seqNum uint64) error {
+func (d *DB) handleIngestAsFlushable(
+	meta []*fileMetadata, precomputedOverlap []ingestDataOverlapHint, seqNum uint64,
+) error {
 	b := d.NewBatch()
 	for _, m := range meta {
 		b.ingestSST(m.FileNum)
@@ -750,7 +821,7 @@ func (d *DB) handleIngestAsFlushable(meta []*fileMetadata, seqNum uint64) error 
 		d.mu.Lock()
 	}
 
-	entry, err := d.newIngestedFlushableEntry(meta, seqNum, logNum)
+	entry, err := d.newIngestedFlushableEntry(meta, precomputedOverlap, seqNum, logNum)
 	if err != nil {
 		return err
 	}
@@ -785,7 +856,7 @@ func (d *DB) handleIngestAsFlushable(meta []*fileMetadata, seqNum uint64) error 
 
 func (d *DB) ingest(
 	paths []string, targetLevelFunc ingestTargetLevelFunc,
-) (IngestOperationStats, error) {
+) (stats IngestOperationStats, err error) {
 	// Allocate file numbers for all of the files being ingested and mark them as
 	// pending in order to prevent them from being deleted. Note that this causes
 	// the file number ordering to be out of alignment with sequence number
@@ -830,6 +901,33 @@ func (d *DB) ingest(
 	if err := d.objProvider.Sync(); err != nil {
 		return IngestOperationStats{}, err
 	}
+	// Look for data overlap with existing sstables. We optimistically compute
+	// data overlap on the current version of the LSM, performing I/O without
+	// holding any mutexes. At ingest application time, a new version of the LSM
+	// may have already been applied. At that point we read any tables
+	// containing keys that had not been flushed at the version we
+	// optimistically checked. We save the oldest flushable's logSeqNum to
+	// facilitate that check.
+	d.mu.Lock()
+	v := d.mu.versions.currentVersion()
+	baseLevel := d.mu.versions.picker.getBaseLevel()
+	optimisticLogSeqNum := d.mu.mem.queue[0].logSeqNum
+	d.mu.Unlock()
+	precomputedOverlap := make([]ingestDataOverlapHint, len(meta))
+	iterOps := IterOptions{logger: d.opts.Logger}
+	for i := 0; i < len(meta); i++ {
+		sstableOverlap, sstableLevel, err := computeSSTableDataOverlap(d.newIters, d.tableNewRangeKeyIter,
+			iterOps, d.cmp, v, baseLevel, meta[i])
+		if err != nil {
+			return IngestOperationStats{}, err
+		}
+		precomputedOverlap[i] = ingestDataOverlapHint{
+			logSeqNum:        optimisticLogSeqNum,
+			flushableOverlap: false, // computed below in prepare()
+			sstableOverlap:   sstableOverlap,
+			sstableLevel:     sstableLevel,
+		}
+	}
 
 	var mem *flushableEntry
 	// asFlushable indicates whether the sstable was ingested as a flushable.
@@ -843,30 +941,63 @@ func (d *DB) ingest(
 		// Check to see if any files overlap with any of the memtables. The queue
 		// is ordered from oldest to newest with the mutable memtable being the
 		// last element in the slice. We want to wait for the newest table that
-		// overlaps.
+		// overlaps. We don't stop at the first overlap, because we need to know
+		// all the ingested tables with memtable overlap for the purpose of
+		// computing an approximate sum of bytes ingested into L0.
+
 		for i := len(d.mu.mem.queue) - 1; i >= 0; i-- {
 			m := d.mu.mem.queue[i]
-			if ingestMemtableOverlaps(d.cmp, m, meta) {
-				if (len(d.mu.mem.queue) > d.opts.MemTableStopWritesThreshold-1) ||
-					d.mu.formatVers.vers < FormatFlushableIngest ||
-					d.opts.Experimental.DisableIngestAsFlushable() {
-					mem = m
-					if mem.flushable == d.mu.mem.mutable {
-						err = d.makeRoomForWrite(nil)
-					}
-					mem.flushForced = true
-					d.maybeScheduleFlush()
-					return
+			iter := m.newIter(nil)
+			rangeDelIter := m.newRangeDelIter(nil)
+			rkeyIter := m.newRangeKeyIter(nil)
+			for i := range meta {
+				if precomputedOverlap[i].flushableOverlap {
+					// This table already overlapped a more recent flushable.
+					continue
 				}
-
-				// The ingestion overlaps with the memtable. Since there aren't
-				// too many memtables already queued up, we can slide the
-				// ingested sstables on top of the existing memtables.
-				err = d.handleIngestAsFlushable(meta, seqNum)
-				asFlushable = true
-				return
+				if overlapWithIterator(iter, &rangeDelIter, rkeyIter, meta[i], d.cmp) {
+					// If this is the first table to overlap a flushable, save
+					// the flushable. This ingest must be ingested or flushed
+					// after it.
+					if mem == nil {
+						mem = m
+					}
+					precomputedOverlap[i].flushableOverlap = true
+				}
+			}
+			err := iter.Close()
+			if rangeDelIter != nil {
+				err = firstError(err, rangeDelIter.Close())
+			}
+			if rkeyIter != nil {
+				err = firstError(err, rkeyIter.Close())
+			}
+			if err != nil {
+				d.opts.Logger.Infof("ingest error reading flushable for log %s: %s", m.logNum, err)
 			}
 		}
+		if mem == nil {
+			// No overlap with any of the queued flushables.
+			return
+		}
+
+		// The ingestion overlaps with some entry in the flushable queue.
+		if d.mu.formatVers.vers < FormatFlushableIngest ||
+			d.opts.Experimental.DisableIngestAsFlushable() ||
+			(len(d.mu.mem.queue) > d.opts.MemTableStopWritesThreshold-1) {
+			// We're not able to ingest as a flushable,
+			// so we must synchronously flush.
+			if mem.flushable == d.mu.mem.mutable {
+				err = d.makeRoomForWrite(nil)
+			}
+			mem.flushForced = true
+			d.maybeScheduleFlush()
+			return
+		}
+		// Since there aren't too many memtables already queued up, we can
+		// slide the ingested sstables on top of the existing memtables.
+		asFlushable = true
+		err = d.handleIngestAsFlushable(meta, precomputedOverlap, seqNum)
 	}
 
 	var ve *versionEdit
@@ -894,7 +1025,7 @@ func (d *DB) ingest(
 
 		// Assign the sstables to the correct level in the LSM and apply the
 		// version edit.
-		ve, err = d.ingestApply(jobID, meta, targetLevelFunc)
+		ve, err = d.ingestApply(jobID, meta, targetLevelFunc, precomputedOverlap)
 	}
 
 	d.commit.AllocateSeqNum(len(meta), prepare, apply)
@@ -919,7 +1050,6 @@ func (d *DB) ingest(
 		Err:          err,
 		flushable:    asFlushable,
 	}
-	var stats IngestOperationStats
 	if ve != nil {
 		info.Tables = make([]struct {
 			TableInfo
@@ -942,6 +1072,15 @@ func (d *DB) ingest(
 		for i, f := range meta {
 			info.Tables[i].Level = -1
 			info.Tables[i].TableInfo = f.TableInfo()
+			stats.Bytes += f.Size
+			// We don't have exact stats on which files were ingested into L0,
+			// because actual ingestion into the LSM has been deferred until
+			// flush time. Instead, we infer based on memtable overlap and the
+			// optimistically computed data overlap.
+			if precomputedOverlap[i].flushableOverlap ||
+				(precomputedOverlap[i].sstableOverlap && precomputedOverlap[i].sstableLevel <= baseLevel) {
+				stats.ApproxIngestedIntoL0Bytes += f.Size
+			}
 		}
 	}
 	d.opts.EventListener.TableIngested(info)
@@ -958,10 +1097,14 @@ type ingestTargetLevelFunc func(
 	baseLevel int,
 	compactions map[*compaction]struct{},
 	meta *fileMetadata,
+	precomputedOverlap ingestDataOverlapHint,
 ) (int, error)
 
 func (d *DB) ingestApply(
-	jobID int, meta []*fileMetadata, findTargetLevel ingestTargetLevelFunc,
+	jobID int,
+	meta []*fileMetadata,
+	findTargetLevel ingestTargetLevelFunc,
+	precomputedOverlap []ingestDataOverlapHint,
 ) (*versionEdit, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -985,9 +1128,10 @@ func (d *DB) ingestApply(
 		// Determine the lowest level in the LSM for which the sstable doesn't
 		// overlap any existing files in the level.
 		m := meta[i]
+		o := precomputedOverlap[i]
 		f := &ve.NewFiles[i]
 		var err error
-		f.Level, err = findTargetLevel(d.newIters, d.tableNewRangeKeyIter, iterOps, d.cmp, current, baseLevel, d.mu.compact.inProgress, m)
+		f.Level, err = findTargetLevel(d.newIters, d.tableNewRangeKeyIter, iterOps, d.cmp, current, baseLevel, d.mu.compact.inProgress, m, o)
 		if err != nil {
 			d.mu.versions.logUnlock()
 			return nil, err
