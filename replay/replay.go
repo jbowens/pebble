@@ -158,6 +158,12 @@ func (m *Metrics) WriteBenchmarkString(name string, w io.Writer) error {
 		label  string
 		values []benchfmt.Value
 	}{
+		{label: "CompactionConcurrency", values: []benchfmt.Value{
+			{
+				Value: float64(m.Final.Compact.Duration) / float64(m.Final.Uptime),
+				Unit:  "concurrency",
+			},
+		}},
 		{label: "CompactionCounts", values: []benchfmt.Value{
 			{Value: float64(m.CompactionCounts.Total), Unit: "compactions"},
 			{Value: float64(m.CompactionCounts.Default), Unit: "default"},
