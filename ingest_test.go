@@ -1950,6 +1950,213 @@ func TestIngestValidation(t *testing.T) {
 	}
 }
 
+func TestIngestOverlapStress(t *testing.T) {
+	o := &Options{
+		Comparer:           testkeys.Comparer,
+		FormatMajorVersion: FormatNewest,
+		FS:                 vfs.NewMem(),
+		EventListener: &EventListener{
+			FlushEnd: func(info FlushInfo) {
+				t.Log(info.String())
+			},
+			TableIngested: func(info TableIngestInfo) {
+				t.Log(info.String())
+			},
+		},
+		L0CompactionThreshold:     100,
+		L0CompactionFileThreshold: 1000,
+		L0StopWritesThreshold:     500,
+	}
+	o.Experimental.L0CompactionConcurrency = 2
+	d, err := Open("", o)
+	defer d.Close()
+	ks := testkeys.Alpha(2)
+	require.NoError(t, err)
+	seed := time.Now().UnixNano()
+	t.Logf("seed %d", seed)
+	rng := rand.New(rand.NewSource(uint64(seed)))
+
+	type op struct {
+		name string
+		fn   func(int) string
+	}
+	keyState := make([]bool, ks.Count())
+	pendingKeyState := make([]*bool, ks.Count())
+
+	wOpts := sstable.WriterOptions{
+		Comparer:    testkeys.Comparer,
+		TableFormat: sstable.TableFormatPebblev3,
+	}
+	pendingFilename := "ext"
+	f, err := o.FS.Create(pendingFilename)
+	require.NoError(t, err)
+	pending := sstable.NewWriter(objstorage.NewFileWritable(f), wOpts)
+	pendingLowerBound := 0
+	pendingRangeKeyLowerBound := 0
+	defer pending.Close()
+
+	ops := []op{
+		{
+			name: "set",
+			fn: func(int) string {
+				if pendingLowerBound >= ks.Count()-1 || rng.Intn(2) == 1 {
+					// Apply via memtable.
+					i := rng.Intn(ks.Count() - 1)
+					k := testkeys.Key(ks, i)
+					require.NoError(t, d.Set(k, k, nil))
+					keyState[i] = true
+					return fmt.Sprintf("mem.set(%q)", k)
+				}
+				// Apply to pending sstable.
+				i := rng.Intn(ks.Count()-pendingLowerBound) + pendingLowerBound
+				k := testkeys.Key(ks, i)
+				require.NoError(t, pending.Set(k, k))
+				pendingKeyState[i] = new(bool)
+				*pendingKeyState[i] = true
+				pendingLowerBound = i + 1
+				return fmt.Sprintf("pending.set(%q)", k)
+			},
+		},
+		{
+			name: "del",
+			fn: func(int) string {
+				if pendingLowerBound >= ks.Count()-1 || rng.Intn(2) == 1 {
+					// Apply via memtable.
+					i := rng.Intn(ks.Count() - 1)
+					k := testkeys.Key(ks, i)
+					keyState[i] = false
+					require.NoError(t, d.Delete(k, nil))
+					return fmt.Sprintf("mem.del(%q)", k)
+				}
+				// Apply to pending sstable.
+				i := rng.Intn(ks.Count()-pendingLowerBound) + pendingLowerBound
+				k := testkeys.Key(ks, i)
+				require.NoError(t, pending.Delete(k))
+				pendingKeyState[i] = new(bool)
+				pendingLowerBound = i + 1
+				return fmt.Sprintf("pending.del(%q)", k)
+			},
+		},
+		{
+			name: "delrange",
+			fn: func(int) string {
+				if pendingLowerBound+2 >= ks.Count() || rng.Intn(2) == 1 {
+					// Apply via memtable.
+					i, j := randSpanInRange(rng, 0, ks.Count()-1)
+					start := testkeys.Key(ks, i)
+					end := testkeys.Key(ks, j)
+					for k := i; k < j; k++ {
+						keyState[k] = false
+					}
+					require.NoError(t, d.DeleteRange(start, end, nil))
+					return fmt.Sprintf("mem.delrange(%q, %q)", start, end)
+				}
+				// Apply to pending sstable.
+				i, j := randSpanInRange(rng, pendingLowerBound, ks.Count()-1)
+				start := testkeys.Key(ks, i)
+				end := testkeys.Key(ks, j)
+				for k := i; k < j; k++ {
+					pendingKeyState[k] = new(bool)
+				}
+				pendingLowerBound = j
+				require.NoError(t, pending.DeleteRange(start, end))
+				return fmt.Sprintf("pending.delrange(%q, %q)", start, end)
+			},
+		},
+		{
+			name: "rangekeydel",
+			fn: func(int) string {
+				if pendingLowerBound+2 >= ks.Count() || rng.Intn(2) == 1 {
+					// Apply via memtable.
+					i, j := randSpanInRange(rng, 0, ks.Count()-1)
+					start := testkeys.Key(ks, i)
+					end := testkeys.Key(ks, j)
+					require.NoError(t, d.RangeKeyDelete(start, end, nil))
+					return fmt.Sprintf("mem.rangekeydelete(%q, %q)", start, end)
+				}
+				// Apply to pending sstable.
+				i, j := randSpanInRange(rng, pendingRangeKeyLowerBound, ks.Count()-1)
+				start := testkeys.Key(ks, i)
+				end := testkeys.Key(ks, j)
+				pendingRangeKeyLowerBound = j
+				require.NoError(t, pending.RangeKeyDelete(start, end))
+				return fmt.Sprintf("pending.rangekeydelete(%q, %q)", start, end)
+			},
+		},
+		{
+			name: "ingest",
+			fn: func(op int) string {
+				if pendingLowerBound == 0 {
+					return "noop"
+				}
+				require.NoError(t, pending.Close())
+				require.NoError(t, d.Ingest([]string{pendingFilename}))
+				for k, b := range pendingKeyState {
+					if b != nil {
+						keyState[k] = *b
+					}
+				}
+
+				pendingFilename = fmt.Sprintf("pending%d", op)
+				pendingLowerBound = 0
+				pendingRangeKeyLowerBound = 0
+				pendingKeyState = make([]*bool, ks.Count())
+				f, err = o.FS.Create(pendingFilename)
+				require.NoError(t, err)
+				pending = sstable.NewWriter(objstorage.NewFileWritable(f), wOpts)
+				return "db.ingest(pending)"
+			},
+		},
+	}
+
+	const numOps = 10_000
+	var wg sync.WaitGroup
+	wg.Add(numOps)
+	for i := 0; i < numOps; i++ {
+		t.Logf("%d: %s", i, ops[rng.Intn(len(ops))].fn(i))
+
+		iter := d.NewIter(nil)
+		keyStateCopy := append([]bool(nil), keyState...)
+		i := i
+		go func() {
+			defer wg.Done()
+			defer iter.Close()
+
+			for k := ks.Count() - 1; k >= 0; k-- {
+				key := testkeys.Key(ks, k)
+				valid := iter.SeekGE(key)
+				if keyStateCopy[k] {
+					if !valid || !bytes.Equal(iter.Key(), key) {
+						t.Fatalf("key %q is missing on iterator created after op %d", key, i)
+					}
+					iter.Next()
+					continue
+				}
+				if valid && bytes.Equal(iter.Key(), key) {
+					t.Fatalf("key %q unexpectedly present after op %d", key, i)
+				}
+			}
+		}()
+	}
+	t.Log(d.Metrics().String())
+	wg.Wait()
+}
+
+func randSpanInRange(rng *rand.Rand, low, high int) (int, int) {
+	if low+1 >= high {
+		panic(fmt.Sprintf("[%d,%d) does not allow two representable values", low, high))
+	}
+	i := rng.Intn(high-low-1) + low
+	j := rng.Intn(high-low) + low
+	for i == j {
+		j = rng.Intn(high-low) + low
+	}
+	if i > j {
+		i, j = j, i
+	}
+	return i, j
+}
+
 // BenchmarkManySSTables measures the cost of various operations with various
 // counts of SSTables within the database.
 func BenchmarkManySSTables(b *testing.B) {
