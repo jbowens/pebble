@@ -61,7 +61,7 @@ func (it *flushIterator) First() (*base.InternalKey, base.LazyValue) {
 	if key == nil {
 		return nil, base.LazyValue{}
 	}
-	*it.bytesIterated += uint64(it.nd.allocSize)
+	*it.bytesIterated += uint64(it.nd.keySize) + uint64(it.nd.valueSize) + minNodeSize
 	return key, val
 }
 
@@ -75,7 +75,7 @@ func (it *flushIterator) Next() (*base.InternalKey, base.LazyValue) {
 		return nil, base.LazyValue{}
 	}
 	it.decodeKey()
-	*it.bytesIterated += uint64(it.nd.allocSize)
+	*it.bytesIterated += uint64(it.nd.keySize) + uint64(it.nd.valueSize) + minNodeSize
 	return &it.key, base.MakeInPlaceValue(it.value())
 }
 

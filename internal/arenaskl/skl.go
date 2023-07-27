@@ -58,6 +58,7 @@ const (
 	maxHeight   = 20
 	maxNodeSize = int(unsafe.Sizeof(node{}))
 	linksSize   = int(unsafe.Sizeof(links{}))
+	minNodeSize = uint64(int(unsafe.Sizeof(node{})) - (maxHeight-1)*linksSize)
 	pValue      = 1 / math.E
 )
 

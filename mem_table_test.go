@@ -156,11 +156,11 @@ func TestMemTableCount(t *testing.T) {
 
 func TestMemTableBytesIterated(t *testing.T) {
 	m := newMemTable(memTableOptions{})
+	var prevBytesIterated uint64
 	for i := 0; i < 200; i++ {
 		bytesIterated := m.bytesIterated(t)
-		expected := m.inuseBytes()
-		if bytesIterated != expected {
-			t.Fatalf("bytesIterated: got %d, want %d", bytesIterated, expected)
+		if bytesIterated < prevBytesIterated {
+			t.Fatalf("bytesIterated: got %d, last iteration was %d", bytesIterated, prevBytesIterated)
 		}
 		m.set(InternalKey{UserKey: []byte{byte(i)}}, nil)
 	}

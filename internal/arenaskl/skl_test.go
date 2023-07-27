@@ -773,10 +773,9 @@ func TestIteratorBounds(t *testing.T) {
 
 func TestBytesIterated(t *testing.T) {
 	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
-	emptySize := l.arena.Size()
 	for i := 0; i < 200; i++ {
 		bytesIterated := l.bytesIterated(t)
-		expected := uint64(l.arena.Size() - emptySize)
+		expected := uint64(i) + uint64(i)*minNodeSize
 		if bytesIterated != expected {
 			t.Fatalf("bytesIterated: got %d, want %d", bytesIterated, expected)
 		}
