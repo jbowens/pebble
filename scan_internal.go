@@ -125,7 +125,7 @@ type pointCollapsingIterator struct {
 	savedKey    InternalKey
 	savedKeyBuf []byte
 	// Value at the current iterator position, at iterKey.
-	iterValue base.LazyValue
+	iterValue func() base.LazyValue
 	// If fixedSeqNum is non-zero, all emitted points are verified to have this
 	// fixed sequence number.
 	fixedSeqNum uint64
@@ -138,12 +138,12 @@ func (p *pointCollapsingIterator) Span() *keyspan.Span {
 // SeekPrefixGE implements the InternalIterator interface.
 func (p *pointCollapsingIterator) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	p.resetKey()
 	p.iterKey, p.iterValue = p.iter.SeekPrefixGE(prefix, key, flags)
 	p.pos = pcIterPosCur
 	if p.iterKey == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return p.findNextEntry()
 }
@@ -151,12 +151,12 @@ func (p *pointCollapsingIterator) SeekPrefixGE(
 // SeekGE implements the InternalIterator interface.
 func (p *pointCollapsingIterator) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	p.resetKey()
 	p.iterKey, p.iterValue = p.iter.SeekGE(key, flags)
 	p.pos = pcIterPosCur
 	if p.iterKey == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return p.findNextEntry()
 }
@@ -164,7 +164,7 @@ func (p *pointCollapsingIterator) SeekGE(
 // SeekLT implements the InternalIterator interface.
 func (p *pointCollapsingIterator) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
@@ -190,7 +190,7 @@ func (p *pointCollapsingIterator) verifySeqNum(key *base.InternalKey) *base.Inte
 
 // findNextEntry is called to return the next key. p.iter must be positioned at the
 // start of the first user key we are interested in.
-func (p *pointCollapsingIterator) findNextEntry() (*base.InternalKey, base.LazyValue) {
+func (p *pointCollapsingIterator) findNextEntry() (*base.InternalKey, func() base.LazyValue) {
 	p.saveKey()
 	// Saves a comparison in the fast path
 	firstIteration := true
@@ -253,22 +253,22 @@ func (p *pointCollapsingIterator) findNextEntry() (*base.InternalKey, base.LazyV
 		}
 	}
 	p.resetKey()
-	return nil, base.LazyValue{}
+	return nil, nil
 }
 
 // First implements the InternalIterator interface.
-func (p *pointCollapsingIterator) First() (*base.InternalKey, base.LazyValue) {
+func (p *pointCollapsingIterator) First() (*base.InternalKey, func() base.LazyValue) {
 	p.resetKey()
 	p.iterKey, p.iterValue = p.iter.First()
 	p.pos = pcIterPosCur
 	if p.iterKey == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return p.findNextEntry()
 }
 
 // Last implements the InternalIterator interface.
-func (p *pointCollapsingIterator) Last() (*base.InternalKey, base.LazyValue) {
+func (p *pointCollapsingIterator) Last() (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
@@ -282,7 +282,7 @@ func (p *pointCollapsingIterator) saveKey() {
 }
 
 // Next implements the InternalIterator interface.
-func (p *pointCollapsingIterator) Next() (*base.InternalKey, base.LazyValue) {
+func (p *pointCollapsingIterator) Next() (*base.InternalKey, func() base.LazyValue) {
 	switch p.pos {
 	case pcIterPosCur:
 		p.saveKey()
@@ -305,7 +305,7 @@ func (p *pointCollapsingIterator) Next() (*base.InternalKey, base.LazyValue) {
 		if key == nil {
 			// There are no keys to return.
 			p.resetKey()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		p.iterKey, p.iterValue = key, val
 	case pcIterPosNext:
@@ -313,18 +313,20 @@ func (p *pointCollapsingIterator) Next() (*base.InternalKey, base.LazyValue) {
 	}
 	if p.iterKey == nil {
 		p.resetKey()
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return p.findNextEntry()
 }
 
 // NextPrefix implements the InternalIterator interface.
-func (p *pointCollapsingIterator) NextPrefix(succKey []byte) (*base.InternalKey, base.LazyValue) {
+func (p *pointCollapsingIterator) NextPrefix(
+	succKey []byte,
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 // Prev implements the InternalIterator interface.
-func (p *pointCollapsingIterator) Prev() (*base.InternalKey, base.LazyValue) {
+func (p *pointCollapsingIterator) Prev() (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
@@ -401,7 +403,7 @@ type scanInternalIterator struct {
 	rangeKey        *iteratorRangeKeyState
 	pointKeyIter    internalIterator
 	iterKey         *InternalKey
-	iterValue       LazyValue
+	iterValue       func() LazyValue
 	alloc           *iterAlloc
 	newIters        tableNewIters
 	newIterRangeKey keyspan.TableNewSpanIter
@@ -877,7 +879,7 @@ func (i *scanInternalIterator) unsafeKey() *InternalKey {
 // position. Behaviour undefined if unsafeKey() returns a Range key or Rangedel
 // kind key.
 func (i *scanInternalIterator) lazyValue() LazyValue {
-	return i.iterValue
+	return i.iterValue()
 }
 
 // unsafeRangeDel returns a range key span. Behaviour undefined if UnsafeKey returns

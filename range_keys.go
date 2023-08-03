@@ -442,8 +442,8 @@ var _ internalIterator = (*lazyCombinedIter)(nil)
 // operations that land in the middle of a range key and must truncate to the
 // user-provided seek key.
 func (i *lazyCombinedIter) initCombinedIteration(
-	dir int8, pointKey *InternalKey, pointValue base.LazyValue, seekKey []byte,
-) (*InternalKey, base.LazyValue) {
+	dir int8, pointKey *InternalKey, pointValue func() base.LazyValue, seekKey []byte,
+) (*InternalKey, func() base.LazyValue) {
 	// Invariant: i.parent.rangeKey is nil.
 	// Invariant: !i.combinedIterState.initialized.
 	if invariants.Enabled {
@@ -544,7 +544,7 @@ func (i *lazyCombinedIter) initCombinedIteration(
 
 func (i *lazyCombinedIter) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.SeekGE(key, flags)
 	}
@@ -557,7 +557,7 @@ func (i *lazyCombinedIter) SeekGE(
 
 func (i *lazyCombinedIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.SeekPrefixGE(prefix, key, flags)
 	}
@@ -570,7 +570,7 @@ func (i *lazyCombinedIter) SeekPrefixGE(
 
 func (i *lazyCombinedIter) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.SeekLT(key, flags)
 	}
@@ -581,7 +581,7 @@ func (i *lazyCombinedIter) SeekLT(
 	return k, v
 }
 
-func (i *lazyCombinedIter) First() (*InternalKey, base.LazyValue) {
+func (i *lazyCombinedIter) First() (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.First()
 	}
@@ -592,7 +592,7 @@ func (i *lazyCombinedIter) First() (*InternalKey, base.LazyValue) {
 	return k, v
 }
 
-func (i *lazyCombinedIter) Last() (*InternalKey, base.LazyValue) {
+func (i *lazyCombinedIter) Last() (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.Last()
 	}
@@ -603,7 +603,7 @@ func (i *lazyCombinedIter) Last() (*InternalKey, base.LazyValue) {
 	return k, v
 }
 
-func (i *lazyCombinedIter) Next() (*InternalKey, base.LazyValue) {
+func (i *lazyCombinedIter) Next() (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.Next()
 	}
@@ -614,7 +614,7 @@ func (i *lazyCombinedIter) Next() (*InternalKey, base.LazyValue) {
 	return k, v
 }
 
-func (i *lazyCombinedIter) NextPrefix(succKey []byte) (*InternalKey, base.LazyValue) {
+func (i *lazyCombinedIter) NextPrefix(succKey []byte) (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.NextPrefix(succKey)
 	}
@@ -625,7 +625,7 @@ func (i *lazyCombinedIter) NextPrefix(succKey []byte) (*InternalKey, base.LazyVa
 	return k, v
 }
 
-func (i *lazyCombinedIter) Prev() (*InternalKey, base.LazyValue) {
+func (i *lazyCombinedIter) Prev() (*InternalKey, func() base.LazyValue) {
 	if i.combinedIterState.initialized {
 		return i.parent.rangeKey.iiter.Prev()
 	}

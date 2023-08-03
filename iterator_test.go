@@ -83,99 +83,103 @@ func (f *fakeIter) String() string {
 	return "fake"
 }
 
-func (f *fakeIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, base.LazyValue) {
+func (f *fakeIter) SeekGE(
+	key []byte, flags base.SeekGEFlags,
+) (*InternalKey, func() base.LazyValue) {
 	f.valid = false
 	for f.index = 0; f.index < len(f.keys); f.index++ {
 		if DefaultComparer.Compare(key, f.key().UserKey) <= 0 {
 			if f.upper != nil && DefaultComparer.Compare(f.upper, f.key().UserKey) <= 0 {
-				return nil, base.LazyValue{}
+				return nil, nil
 			}
 			f.valid = true
-			return f.Key(), f.Value()
+			return f.Key(), f.Value
 		}
 	}
-	return nil, base.LazyValue{}
+	return nil, nil
 }
 
 func (f *fakeIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	return f.SeekGE(key, flags)
 }
 
-func (f *fakeIter) SeekLT(key []byte, flags base.SeekLTFlags) (*InternalKey, base.LazyValue) {
+func (f *fakeIter) SeekLT(
+	key []byte, flags base.SeekLTFlags,
+) (*InternalKey, func() base.LazyValue) {
 	f.valid = false
 	for f.index = len(f.keys) - 1; f.index >= 0; f.index-- {
 		if DefaultComparer.Compare(key, f.key().UserKey) > 0 {
 			if f.lower != nil && DefaultComparer.Compare(f.lower, f.key().UserKey) > 0 {
-				return nil, base.LazyValue{}
+				return nil, nil
 			}
 			f.valid = true
-			return f.Key(), f.Value()
+			return f.Key(), f.Value
 		}
 	}
-	return nil, base.LazyValue{}
+	return nil, nil
 }
 
-func (f *fakeIter) First() (*InternalKey, base.LazyValue) {
+func (f *fakeIter) First() (*InternalKey, func() base.LazyValue) {
 	f.valid = false
 	f.index = -1
 	if key, _ := f.Next(); key == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if f.upper != nil && DefaultComparer.Compare(f.upper, f.key().UserKey) <= 0 {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	f.valid = true
-	return f.Key(), f.Value()
+	return f.Key(), f.Value
 }
 
-func (f *fakeIter) Last() (*InternalKey, base.LazyValue) {
+func (f *fakeIter) Last() (*InternalKey, func() base.LazyValue) {
 	f.valid = false
 	f.index = len(f.keys)
 	if key, _ := f.Prev(); key == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if f.lower != nil && DefaultComparer.Compare(f.lower, f.key().UserKey) > 0 {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	f.valid = true
-	return f.Key(), f.Value()
+	return f.Key(), f.Value
 }
 
-func (f *fakeIter) Next() (*InternalKey, base.LazyValue) {
+func (f *fakeIter) Next() (*InternalKey, func() base.LazyValue) {
 	f.valid = false
 	if f.index == len(f.keys) {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	f.index++
 	if f.index == len(f.keys) {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if f.upper != nil && DefaultComparer.Compare(f.upper, f.key().UserKey) <= 0 {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	f.valid = true
-	return f.Key(), f.Value()
+	return f.Key(), f.Value
 }
 
-func (f *fakeIter) Prev() (*InternalKey, base.LazyValue) {
+func (f *fakeIter) Prev() (*InternalKey, func() base.LazyValue) {
 	f.valid = false
 	if f.index < 0 {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	f.index--
 	if f.index < 0 {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if f.lower != nil && DefaultComparer.Compare(f.lower, f.key().UserKey) > 0 {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	f.valid = true
-	return f.Key(), f.Value()
+	return f.Key(), f.Value
 }
 
-func (f *fakeIter) NextPrefix(succKey []byte) (*InternalKey, base.LazyValue) {
+func (f *fakeIter) NextPrefix(succKey []byte) (*InternalKey, func() base.LazyValue) {
 	return f.SeekGE(succKey, base.SeekGEFlagsNone)
 }
 
@@ -243,26 +247,35 @@ func (i *invalidatingIter) ignoreKind(kind base.InternalKeyKind) {
 }
 
 func (i *invalidatingIter) update(
-	key *InternalKey, value base.LazyValue,
-) (*InternalKey, base.LazyValue) {
+	key *InternalKey, valueFn func() base.LazyValue,
+) (*InternalKey, func() base.LazyValue) {
 	i.zeroLast()
 
-	v, _, err := value.Value(nil)
-	if err != nil {
-		i.err = err
-		key = nil
+	var v []byte
+	if valueFn != nil {
+		lv := valueFn()
+		var err error
+		v, _, err = lv.Value(nil)
+		if err != nil {
+			i.err = err
+			key = nil
+		}
 	}
 	if key == nil {
 		i.lastKey = nil
 		i.lastValue = nil
-		return nil, LazyValue{}
+		return nil, nil
 	}
 
 	i.lastKey = &InternalKey{}
 	*i.lastKey = key.Clone()
 	i.lastValue = make([]byte, len(v))
 	copy(i.lastValue, v)
-	return i.lastKey, base.MakeInPlaceValue(i.lastValue)
+	return i.lastKey, i.value
+}
+
+func (i *invalidatingIter) value() base.LazyValue {
+	return base.MakeInPlaceValue(i.lastValue)
 }
 
 func (i *invalidatingIter) zeroLast() {
@@ -286,39 +299,39 @@ func (i *invalidatingIter) zeroLast() {
 
 func (i *invalidatingIter) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.SeekGE(key, flags))
 }
 
 func (i *invalidatingIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.SeekPrefixGE(prefix, key, flags))
 }
 
 func (i *invalidatingIter) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.SeekLT(key, flags))
 }
 
-func (i *invalidatingIter) First() (*InternalKey, base.LazyValue) {
+func (i *invalidatingIter) First() (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.First())
 }
 
-func (i *invalidatingIter) Last() (*InternalKey, base.LazyValue) {
+func (i *invalidatingIter) Last() (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.Last())
 }
 
-func (i *invalidatingIter) Next() (*InternalKey, base.LazyValue) {
+func (i *invalidatingIter) Next() (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.Next())
 }
 
-func (i *invalidatingIter) Prev() (*InternalKey, base.LazyValue) {
+func (i *invalidatingIter) Prev() (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.Prev())
 }
 
-func (i *invalidatingIter) NextPrefix(succKey []byte) (*InternalKey, base.LazyValue) {
+func (i *invalidatingIter) NextPrefix(succKey []byte) (*InternalKey, func() base.LazyValue) {
 	return i.update(i.iter.NextPrefix(succKey))
 }
 
@@ -936,7 +949,7 @@ type iterSeekOptWrapper struct {
 
 func (i *iterSeekOptWrapper) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if flags.TrySeekUsingNext() {
 		*i.seekGEUsingNext++
 	}
@@ -945,7 +958,7 @@ func (i *iterSeekOptWrapper) SeekGE(
 
 func (i *iterSeekOptWrapper) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if flags.TrySeekUsingNext() {
 		*i.seekPrefixGEUsingNext++
 	}
@@ -1049,9 +1062,11 @@ type errorSeekIter struct {
 	err                   error
 }
 
-func (i *errorSeekIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, base.LazyValue) {
+func (i *errorSeekIter) SeekGE(
+	key []byte, flags base.SeekGEFlags,
+) (*InternalKey, func() base.LazyValue) {
 	if i.tryInjectError() {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	i.err = nil
 	i.seekCount++
@@ -1060,18 +1075,20 @@ func (i *errorSeekIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey
 
 func (i *errorSeekIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if i.tryInjectError() {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	i.err = nil
 	i.seekCount++
 	return i.internalIterator.SeekPrefixGE(prefix, key, flags)
 }
 
-func (i *errorSeekIter) SeekLT(key []byte, flags base.SeekLTFlags) (*InternalKey, base.LazyValue) {
+func (i *errorSeekIter) SeekLT(
+	key []byte, flags base.SeekLTFlags,
+) (*InternalKey, func() base.LazyValue) {
 	if i.tryInjectError() {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	i.err = nil
 	i.seekCount++
@@ -1088,26 +1105,26 @@ func (i *errorSeekIter) tryInjectError() bool {
 	return false
 }
 
-func (i *errorSeekIter) First() (*InternalKey, base.LazyValue) {
+func (i *errorSeekIter) First() (*InternalKey, func() base.LazyValue) {
 	i.err = nil
 	return i.internalIterator.First()
 }
 
-func (i *errorSeekIter) Last() (*InternalKey, base.LazyValue) {
+func (i *errorSeekIter) Last() (*InternalKey, func() base.LazyValue) {
 	i.err = nil
 	return i.internalIterator.Last()
 }
 
-func (i *errorSeekIter) Next() (*InternalKey, base.LazyValue) {
+func (i *errorSeekIter) Next() (*InternalKey, func() base.LazyValue) {
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return i.internalIterator.Next()
 }
 
-func (i *errorSeekIter) Prev() (*InternalKey, base.LazyValue) {
+func (i *errorSeekIter) Prev() (*InternalKey, func() base.LazyValue) {
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return i.internalIterator.Prev()
 }

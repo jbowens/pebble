@@ -39,62 +39,66 @@ func (i *InternalIteratorShim) Span() *Span {
 // SeekGE implements (base.InternalIterator).SeekGE.
 func (i *InternalIteratorShim) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 // SeekPrefixGE implements (base.InternalIterator).SeekPrefixGE.
 func (i *InternalIteratorShim) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 // SeekLT implements (base.InternalIterator).SeekLT.
 func (i *InternalIteratorShim) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 // First implements (base.InternalIterator).First.
-func (i *InternalIteratorShim) First() (*base.InternalKey, base.LazyValue) {
+func (i *InternalIteratorShim) First() (*base.InternalKey, func() base.LazyValue) {
 	i.span = i.miter.First()
 	for i.span != nil && i.span.Empty() {
 		i.span = i.miter.Next()
 	}
 	if i.span == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	i.iterKey = base.InternalKey{UserKey: i.span.Start, Trailer: i.span.Keys[0].Trailer}
-	return &i.iterKey, base.MakeInPlaceValue(i.span.End)
+	return &i.iterKey, i.value
+}
+
+func (i *InternalIteratorShim) value() base.LazyValue {
+	return base.MakeInPlaceValue(i.span.End)
 }
 
 // Last implements (base.InternalIterator).Last.
-func (i *InternalIteratorShim) Last() (*base.InternalKey, base.LazyValue) {
+func (i *InternalIteratorShim) Last() (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 // Next implements (base.InternalIterator).Next.
-func (i *InternalIteratorShim) Next() (*base.InternalKey, base.LazyValue) {
+func (i *InternalIteratorShim) Next() (*base.InternalKey, func() base.LazyValue) {
 	i.span = i.miter.Next()
 	for i.span != nil && i.span.Empty() {
 		i.span = i.miter.Next()
 	}
 	if i.span == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	i.iterKey = base.InternalKey{UserKey: i.span.Start, Trailer: i.span.Keys[0].Trailer}
-	return &i.iterKey, base.MakeInPlaceValue(i.span.End)
+	return &i.iterKey, i.value
 }
 
 // NextPrefix implements (base.InternalIterator).NextPrefix.
-func (i *InternalIteratorShim) NextPrefix([]byte) (*base.InternalKey, base.LazyValue) {
+func (i *InternalIteratorShim) NextPrefix([]byte) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 // Prev implements (base.InternalIterator).Prev.
-func (i *InternalIteratorShim) Prev() (*base.InternalKey, base.LazyValue) {
+func (i *InternalIteratorShim) Prev() (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 

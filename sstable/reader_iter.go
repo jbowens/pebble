@@ -18,7 +18,7 @@ type Iterator interface {
 	base.InternalIterator
 
 	// NextPrefix implements (base.InternalIterator).NextPrefix.
-	NextPrefix(succKey []byte) (*InternalKey, base.LazyValue)
+	NextPrefix(succKey []byte) (*InternalKey, func() base.LazyValue)
 
 	// MaybeFilteredKeys may be called when an iterator is exhausted to indicate
 	// whether or not the last positioning method may have skipped any keys due
@@ -202,51 +202,51 @@ func (i *compactionIterator) String() string {
 
 func (i *compactionIterator) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekGE unimplemented")
 }
 
 func (i *compactionIterator) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekPrefixGE unimplemented")
 }
 
 func (i *compactionIterator) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekLT unimplemented")
 }
 
-func (i *compactionIterator) First() (*InternalKey, base.LazyValue) {
+func (i *compactionIterator) First() (*InternalKey, func() base.LazyValue) {
 	i.err = nil // clear cached iteration error
 	return i.skipForward(i.singleLevelIterator.First())
 }
 
-func (i *compactionIterator) Last() (*InternalKey, base.LazyValue) {
+func (i *compactionIterator) Last() (*InternalKey, func() base.LazyValue) {
 	panic("pebble: Last unimplemented")
 }
 
 // Note: compactionIterator.Next mirrors the implementation of Iterator.Next
 // due to performance. Keep the two in sync.
-func (i *compactionIterator) Next() (*InternalKey, base.LazyValue) {
+func (i *compactionIterator) Next() (*InternalKey, func() base.LazyValue) {
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return i.skipForward(i.data.Next())
 }
 
-func (i *compactionIterator) NextPrefix(succKey []byte) (*InternalKey, base.LazyValue) {
+func (i *compactionIterator) NextPrefix(succKey []byte) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: NextPrefix unimplemented")
 }
 
-func (i *compactionIterator) Prev() (*InternalKey, base.LazyValue) {
+func (i *compactionIterator) Prev() (*InternalKey, func() base.LazyValue) {
 	panic("pebble: Prev unimplemented")
 }
 
 func (i *compactionIterator) skipForward(
-	key *InternalKey, val base.LazyValue,
-) (*InternalKey, base.LazyValue) {
+	key *InternalKey, val func() base.LazyValue,
+) (*InternalKey, func() base.LazyValue) {
 	if key == nil {
 		for {
 			if key, _ := i.index.Next(); key == nil {
@@ -283,7 +283,7 @@ func (i *compactionIterator) skipForward(
 	if i.vState != nil && key != nil {
 		cmp := i.cmp(key.UserKey, i.vState.upper.UserKey)
 		if cmp > 0 || (i.vState.upper.IsExclusiveSentinel() && cmp == 0) {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 	}
 

@@ -208,15 +208,17 @@ func (l *Layout) Describe(
 					total-int32(unshared+value2), shared, unshared, value2)
 				formatIsRestart(iter.data, iter.restarts, iter.numRestarts, iter.offset)
 				if fmtRecord != nil {
+					lv := value()
 					fmt.Fprintf(w, "              ")
 					if l.Format < TableFormatPebblev3 {
-						fmtRecord(key, value.InPlaceValue())
+						fmtRecord(key, lv.InPlaceValue())
 					} else {
 						// InPlaceValue() will succeed even for data blocks where the
 						// actual value is in a different location, since this value was
 						// fetched from a blockIter which does not know about value
 						// blocks.
-						v := value.InPlaceValue()
+						lv := value()
+						v := lv.InPlaceValue()
 						if base.TrailerKind(key.Trailer) != InternalKeyKindSet {
 							fmtRecord(key, v)
 						} else if !isValueHandle(valuePrefix(v[0])) {
@@ -239,7 +241,8 @@ func (l *Layout) Describe(
 		case "index", "top-index":
 			iter, _ := newBlockIter(r.Compare, h.Get())
 			for key, value := iter.First(); key != nil; key, value = iter.Next() {
-				bh, err := decodeBlockHandleWithProperties(value.InPlaceValue())
+				lv := value()
+				bh, err := decodeBlockHandleWithProperties(lv.InPlaceValue())
 				if err != nil {
 					fmt.Fprintf(w, "%10d    [err: %s]\n", b.Offset+uint64(iter.offset), err)
 					continue

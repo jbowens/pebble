@@ -245,7 +245,8 @@ func rewriteBlocks(
 			// !iter.lazyValueHandling.hasValuePrefix, it will return the raw value
 			// in the block, which includes the 1-byte prefix. This is fine since bw
 			// also does not know about the prefix and will preserve it in bw.add.
-			v := val.InPlaceValue()
+			lv := val()
+			v := lv.InPlaceValue()
 			if invariants.Enabled && r.tableFormat >= TableFormatPebblev3 &&
 				key.Kind() == InternalKeyKindSet {
 				if len(v) < 1 {
@@ -497,7 +498,8 @@ func RewriteKeySuffixesViaWriter(
 		scratch.UserKey = append(scratch.UserKey, to...)
 		scratch.Trailer = k.Trailer
 
-		val, _, err := v.Value(nil)
+		lv := v()
+		val, _, err := lv.Value(nil)
 		if err != nil {
 			return nil, err
 		}

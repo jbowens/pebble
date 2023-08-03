@@ -309,9 +309,14 @@ func (i *compactionIter) First() (*InternalKey, []byte) {
 	if i.err != nil {
 		return nil, nil
 	}
-	var iterValue LazyValue
-	i.iterKey, iterValue = i.iter.First()
-	i.iterValue, _, i.err = iterValue.Value(nil)
+	var iterValueFn func() LazyValue
+	i.iterKey, iterValueFn = i.iter.First()
+	if iterValueFn != nil {
+		iterValue := iterValueFn()
+		i.iterValue, _, i.err = iterValue.Value(nil)
+	} else {
+		i.iterValue = nil
+	}
 	if i.err != nil {
 		return nil, nil
 	}
@@ -566,11 +571,16 @@ func (i *compactionIter) skipInStripe() {
 }
 
 func (i *compactionIter) iterNext() bool {
-	var iterValue LazyValue
-	i.iterKey, iterValue = i.iter.Next()
-	i.iterValue, _, i.err = iterValue.Value(nil)
-	if i.err != nil {
-		i.iterKey = nil
+	var iterValueFn func() LazyValue
+	i.iterKey, iterValueFn = i.iter.Next()
+	if iterValueFn == nil {
+		i.iterValue = nil
+	} else {
+		iterValue := iterValueFn()
+		i.iterValue, _, i.err = iterValue.Value(nil)
+		if i.err != nil {
+			i.iterKey = nil
+		}
 	}
 	return i.iterKey != nil
 }

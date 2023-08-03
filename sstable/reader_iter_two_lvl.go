@@ -221,7 +221,7 @@ func (i *twoLevelIterator) MaybeFilteredKeys() bool {
 // caller to ensure that key is greater than or equal to the lower bound.
 func (i *twoLevelIterator) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if i.vState != nil {
 		// Callers of SeekGE don't know about virtual sstable bounds, so we may
 		// have to internally restrict the bounds.
@@ -243,7 +243,7 @@ func (i *twoLevelIterator) SeekGE(
 		(i.exhaustedBounds == +1 || (i.data.isDataInvalidated() && i.index.isDataInvalidated())) &&
 		err == nil {
 		// Already exhausted, so return nil.
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 
 	// SeekGE performs various step-instead-of-seeking optimizations: eg enabled
@@ -273,13 +273,13 @@ func (i *twoLevelIterator) SeekGE(
 		if ikey, _ = i.topLevelIndex.SeekGE(key, flags); ikey == nil {
 			i.data.invalidate()
 			i.index.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 
 		result := i.loadIndex(+1)
 		if result == loadBlockFailed {
 			i.boundsCmp = 0
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if result == loadBlockIrrelevant {
 			// Enforce the upper bound here since don't want to bother moving
@@ -373,7 +373,7 @@ func (i *twoLevelIterator) SeekGE(
 // to the caller to ensure that key is greater than or equal to the lower bound.
 func (i *twoLevelIterator) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	if i.vState != nil {
 		// Callers of SeekGE don't know about virtual sstable bounds, so we may
 		// have to internally restrict the bounds.
@@ -401,7 +401,7 @@ func (i *twoLevelIterator) SeekPrefixGE(
 		(i.exhaustedBounds == +1 || (i.data.isDataInvalidated() && i.index.isDataInvalidated())) &&
 		err == nil {
 		// Already exhausted, so return nil.
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 
 	// Check prefix bloom filter.
@@ -415,7 +415,7 @@ func (i *twoLevelIterator) SeekPrefixGE(
 		dataH, i.err = i.reader.readFilter(i.ctx, i.stats)
 		if i.err != nil {
 			i.data.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		mayContain := i.reader.tableFilter.mayContain(dataH.Get(), prefix)
 		dataH.Release()
@@ -426,7 +426,7 @@ func (i *twoLevelIterator) SeekPrefixGE(
 			// the caller was allowed to call Next when SeekPrefixGE returned
 			// nil. This is no longer allowed.
 			i.data.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		i.lastBloomFilterMatched = true
 	}
@@ -461,13 +461,13 @@ func (i *twoLevelIterator) SeekPrefixGE(
 		if ikey, _ = i.topLevelIndex.SeekGE(key, flags); ikey == nil {
 			i.data.invalidate()
 			i.index.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 
 		result := i.loadIndex(+1)
 		if result == loadBlockFailed {
 			i.boundsCmp = 0
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if result == loadBlockIrrelevant {
 			// Enforce the upper bound here since don't want to bother moving
@@ -549,7 +549,7 @@ func (i *twoLevelIterator) SeekPrefixGE(
 
 // virtualLast should only be called if i.vReader != nil and i.endKeyInclusive
 // is true.
-func (i *twoLevelIterator) virtualLast() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) virtualLast() (*InternalKey, func() base.LazyValue) {
 	if i.vState == nil {
 		panic("pebble: invalid call to virtualLast")
 	}
@@ -580,7 +580,7 @@ func (i *twoLevelIterator) virtualLast() (*InternalKey, base.LazyValue) {
 // caller to ensure that key is less than the upper bound.
 func (i *twoLevelIterator) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	if i.vState != nil {
 		// Might have to fix upper bound since virtual sstable bounds are not
 		// known to callers of SeekLT.
@@ -614,12 +614,12 @@ func (i *twoLevelIterator) SeekLT(
 		if ikey, _ = i.topLevelIndex.Last(); ikey == nil {
 			i.data.invalidate()
 			i.index.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 
 		result = i.loadIndex(-1)
 		if result == loadBlockFailed {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if result == loadBlockOK {
 			if ikey, val := i.singleLevelIterator.lastInternal(); ikey != nil {
@@ -633,7 +633,7 @@ func (i *twoLevelIterator) SeekLT(
 	} else {
 		result = i.loadIndex(-1)
 		if result == loadBlockFailed {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if result == loadBlockOK {
 			if ikey, val := i.singleLevelIterator.SeekLT(key, flags); ikey != nil {
@@ -663,7 +663,7 @@ func (i *twoLevelIterator) SeekLT(
 // package. Note that First only checks the upper bound. It is up to the caller
 // to ensure that key is greater than or equal to the lower bound (e.g. via a
 // call to SeekGE(lower)).
-func (i *twoLevelIterator) First() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) First() (*InternalKey, func() base.LazyValue) {
 	// If the iterator was created on a virtual sstable, we will SeekGE to the
 	// lower bound instead of using First, because First does not respect
 	// bounds.
@@ -682,12 +682,12 @@ func (i *twoLevelIterator) First() (*InternalKey, base.LazyValue) {
 
 	var ikey *InternalKey
 	if ikey, _ = i.topLevelIndex.First(); ikey == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 
 	result := i.loadIndex(+1)
 	if result == loadBlockFailed {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if result == loadBlockOK {
 		if ikey, val := i.singleLevelIterator.First(); ikey != nil {
@@ -716,7 +716,7 @@ func (i *twoLevelIterator) First() (*InternalKey, base.LazyValue) {
 // package. Note that Last only checks the lower bound. It is up to the caller
 // to ensure that key is less than the upper bound (e.g. via a call to
 // SeekLT(upper))
-func (i *twoLevelIterator) Last() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) Last() (*InternalKey, func() base.LazyValue) {
 	if i.vState != nil {
 		if i.endKeyInclusive {
 			return i.virtualLast()
@@ -735,12 +735,12 @@ func (i *twoLevelIterator) Last() (*InternalKey, base.LazyValue) {
 
 	var ikey *InternalKey
 	if ikey, _ = i.topLevelIndex.Last(); ikey == nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 
 	result := i.loadIndex(-1)
 	if result == loadBlockFailed {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if result == loadBlockOK {
 		if ikey, val := i.singleLevelIterator.Last(); ikey != nil {
@@ -766,12 +766,12 @@ func (i *twoLevelIterator) Last() (*InternalKey, base.LazyValue) {
 // package.
 // Note: twoLevelCompactionIterator.Next mirrors the implementation of
 // twoLevelIterator.Next due to performance. Keep the two in sync.
-func (i *twoLevelIterator) Next() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) Next() (*InternalKey, func() base.LazyValue) {
 	// Seek optimization only applies until iterator is first positioned after SetBounds.
 	i.boundsCmp = 0
 	i.maybeFilteredKeysTwoLevel = false
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if key, val := i.singleLevelIterator.Next(); key != nil {
 		return key, val
@@ -780,7 +780,7 @@ func (i *twoLevelIterator) Next() (*InternalKey, base.LazyValue) {
 }
 
 // NextPrefix implements (base.InternalIterator).NextPrefix.
-func (i *twoLevelIterator) NextPrefix(succKey []byte) (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) NextPrefix(succKey []byte) (*InternalKey, func() base.LazyValue) {
 	if i.exhaustedBounds == +1 {
 		panic("Next called even though exhausted upper bound")
 	}
@@ -788,7 +788,7 @@ func (i *twoLevelIterator) NextPrefix(succKey []byte) (*InternalKey, base.LazyVa
 	i.boundsCmp = 0
 	i.maybeFilteredKeysTwoLevel = false
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if key, val := i.singleLevelIterator.NextPrefix(succKey); key != nil {
 		return key, val
@@ -799,11 +799,11 @@ func (i *twoLevelIterator) NextPrefix(succKey []byte) (*InternalKey, base.LazyVa
 	if ikey, _ = i.topLevelIndex.SeekGE(succKey, base.SeekGEFlagsNone); ikey == nil {
 		i.data.invalidate()
 		i.index.invalidate()
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	result := i.loadIndex(+1)
 	if result == loadBlockFailed {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if result == loadBlockIrrelevant {
 		// Enforce the upper bound here since don't want to bother moving to the
@@ -825,12 +825,12 @@ func (i *twoLevelIterator) NextPrefix(succKey []byte) (*InternalKey, base.LazyVa
 
 // Prev implements internalIterator.Prev, as documented in the pebble
 // package.
-func (i *twoLevelIterator) Prev() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) Prev() (*InternalKey, func() base.LazyValue) {
 	// Seek optimization only applies until iterator is first positioned after SetBounds.
 	i.boundsCmp = 0
 	i.maybeFilteredKeysTwoLevel = false
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if key, val := i.singleLevelIterator.Prev(); key != nil {
 		return key, val
@@ -838,21 +838,21 @@ func (i *twoLevelIterator) Prev() (*InternalKey, base.LazyValue) {
 	return i.skipBackward()
 }
 
-func (i *twoLevelIterator) skipForward() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) skipForward() (*InternalKey, func() base.LazyValue) {
 	for {
 		if i.err != nil || i.exhaustedBounds > 0 {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		i.exhaustedBounds = 0
 		var ikey *InternalKey
 		if ikey, _ = i.topLevelIndex.Next(); ikey == nil {
 			i.data.invalidate()
 			i.index.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		result := i.loadIndex(+1)
 		if result == loadBlockFailed {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if result == loadBlockOK {
 			if ikey, val := i.singleLevelIterator.firstInternal(); ikey != nil {
@@ -879,21 +879,21 @@ func (i *twoLevelIterator) skipForward() (*InternalKey, base.LazyValue) {
 	}
 }
 
-func (i *twoLevelIterator) skipBackward() (*InternalKey, base.LazyValue) {
+func (i *twoLevelIterator) skipBackward() (*InternalKey, func() base.LazyValue) {
 	for {
 		if i.err != nil || i.exhaustedBounds < 0 {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		i.exhaustedBounds = 0
 		var ikey *InternalKey
 		if ikey, _ = i.topLevelIndex.Prev(); ikey == nil {
 			i.data.invalidate()
 			i.index.invalidate()
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		result := i.loadIndex(-1)
 		if result == loadBlockFailed {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if result == loadBlockOK {
 			if ikey, val := i.singleLevelIterator.lastInternal(); ikey != nil {
@@ -966,45 +966,47 @@ func (i *twoLevelCompactionIterator) Close() error {
 
 func (i *twoLevelCompactionIterator) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekGE unimplemented")
 }
 
 func (i *twoLevelCompactionIterator) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekPrefixGE unimplemented")
 }
 
 func (i *twoLevelCompactionIterator) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekLT unimplemented")
 }
 
-func (i *twoLevelCompactionIterator) First() (*InternalKey, base.LazyValue) {
+func (i *twoLevelCompactionIterator) First() (*InternalKey, func() base.LazyValue) {
 	i.err = nil // clear cached iteration error
 	return i.skipForward(i.twoLevelIterator.First())
 }
 
-func (i *twoLevelCompactionIterator) Last() (*InternalKey, base.LazyValue) {
+func (i *twoLevelCompactionIterator) Last() (*InternalKey, func() base.LazyValue) {
 	panic("pebble: Last unimplemented")
 }
 
 // Note: twoLevelCompactionIterator.Next mirrors the implementation of
 // twoLevelIterator.Next due to performance. Keep the two in sync.
-func (i *twoLevelCompactionIterator) Next() (*InternalKey, base.LazyValue) {
+func (i *twoLevelCompactionIterator) Next() (*InternalKey, func() base.LazyValue) {
 	if i.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	return i.skipForward(i.singleLevelIterator.Next())
 }
 
-func (i *twoLevelCompactionIterator) NextPrefix(succKey []byte) (*InternalKey, base.LazyValue) {
+func (i *twoLevelCompactionIterator) NextPrefix(
+	succKey []byte,
+) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: NextPrefix unimplemented")
 }
 
-func (i *twoLevelCompactionIterator) Prev() (*InternalKey, base.LazyValue) {
+func (i *twoLevelCompactionIterator) Prev() (*InternalKey, func() base.LazyValue) {
 	panic("pebble: Prev unimplemented")
 }
 
@@ -1016,8 +1018,8 @@ func (i *twoLevelCompactionIterator) String() string {
 }
 
 func (i *twoLevelCompactionIterator) skipForward(
-	key *InternalKey, val base.LazyValue,
-) (*InternalKey, base.LazyValue) {
+	key *InternalKey, val func() base.LazyValue,
+) (*InternalKey, func() base.LazyValue) {
 	if key == nil {
 		for {
 			if key, _ := i.topLevelIndex.Next(); key == nil {
@@ -1054,7 +1056,7 @@ func (i *twoLevelCompactionIterator) skipForward(
 	if i.vState != nil && key != nil {
 		cmp := i.cmp(key.UserKey, i.vState.upper.UserKey)
 		if cmp > 0 || (i.vState.upper.IsExclusiveSentinel() && cmp == 0) {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 	}
 

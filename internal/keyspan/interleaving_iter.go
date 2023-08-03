@@ -110,7 +110,7 @@ type InterleavingIter struct {
 	// spans to an upper bound of the seeked prefix's immediate successor.
 	nextPrefixBuf []byte
 	pointKey      *base.InternalKey
-	pointVal      base.LazyValue
+	pointVal      func() base.LazyValue
 	// span holds the span at the keyspanIter's current position. If the span is
 	// wholly contained within the iterator bounds, this span is directly
 	// returned to the iterator consumer through Span(). If either bound needed
@@ -205,8 +205,8 @@ func (i *InterleavingIter) Init(
 // It allows for seeding the iterator with the current position of the point
 // iterator.
 func (i *InterleavingIter) InitSeekGE(
-	prefix, key []byte, pointKey *base.InternalKey, pointValue base.LazyValue,
-) (*base.InternalKey, base.LazyValue) {
+	prefix, key []byte, pointKey *base.InternalKey, pointValue func() base.LazyValue,
+) (*base.InternalKey, func() base.LazyValue) {
 	i.dir = +1
 	i.clearMask()
 	i.prefix = prefix != nil
@@ -230,8 +230,8 @@ func (i *InterleavingIter) InitSeekGE(
 // It allows for seeding the iterator with the current position of the point
 // iterator.
 func (i *InterleavingIter) InitSeekLT(
-	key []byte, pointKey *base.InternalKey, pointValue base.LazyValue,
-) (*base.InternalKey, base.LazyValue) {
+	key []byte, pointKey *base.InternalKey, pointValue func() base.LazyValue,
+) (*base.InternalKey, func() base.LazyValue) {
 	i.dir = -1
 	i.clearMask()
 	i.pointKey, i.pointVal = pointKey, pointValue
@@ -253,7 +253,7 @@ func (i *InterleavingIter) InitSeekLT(
 //	i.lower ≤ key
 func (i *InterleavingIter) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	i.clearMask()
 	i.disablePrefixMode()
 	i.pointKey, i.pointVal = i.pointIter.SeekGE(key, flags)
@@ -288,7 +288,7 @@ func (i *InterleavingIter) SeekGE(
 //	i.lower ≤ key
 func (i *InterleavingIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	i.clearMask()
 	i.pointKey, i.pointVal = i.pointIter.SeekPrefixGE(prefix, key, flags)
 	i.pointKeyInterleaved = false
@@ -337,7 +337,7 @@ func (i *InterleavingIter) SeekPrefixGE(
 // SeekLT implements (base.InternalIterator).SeekLT.
 func (i *InterleavingIter) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	i.clearMask()
 	i.disablePrefixMode()
 	i.pointKey, i.pointVal = i.pointIter.SeekLT(key, flags)
@@ -375,7 +375,7 @@ func (i *InterleavingIter) SeekLT(
 }
 
 // First implements (base.InternalIterator).First.
-func (i *InterleavingIter) First() (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) First() (*base.InternalKey, func() base.LazyValue) {
 	i.clearMask()
 	i.disablePrefixMode()
 	i.pointKey, i.pointVal = i.pointIter.First()
@@ -388,7 +388,7 @@ func (i *InterleavingIter) First() (*base.InternalKey, base.LazyValue) {
 }
 
 // Last implements (base.InternalIterator).Last.
-func (i *InterleavingIter) Last() (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) Last() (*base.InternalKey, func() base.LazyValue) {
 	i.clearMask()
 	i.disablePrefixMode()
 	i.pointKey, i.pointVal = i.pointIter.Last()
@@ -401,7 +401,7 @@ func (i *InterleavingIter) Last() (*base.InternalKey, base.LazyValue) {
 }
 
 // Next implements (base.InternalIterator).Next.
-func (i *InterleavingIter) Next() (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) Next() (*base.InternalKey, func() base.LazyValue) {
 	if i.dir == -1 {
 		// Switching directions.
 		i.dir = +1
@@ -480,7 +480,7 @@ func (i *InterleavingIter) Next() (*base.InternalKey, base.LazyValue) {
 }
 
 // NextPrefix implements (base.InternalIterator).NextPrefix.
-func (i *InterleavingIter) NextPrefix(succKey []byte) (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) NextPrefix(succKey []byte) (*base.InternalKey, func() base.LazyValue) {
 	if i.dir == -1 {
 		panic("pebble: cannot switch directions with NextPrefix")
 	}
@@ -504,7 +504,7 @@ func (i *InterleavingIter) NextPrefix(succKey []byte) (*base.InternalKey, base.L
 }
 
 // Prev implements (base.InternalIterator).Prev.
-func (i *InterleavingIter) Prev() (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) Prev() (*base.InternalKey, func() base.LazyValue) {
 	if i.dir == +1 {
 		// Switching directions.
 		i.dir = -1
@@ -600,7 +600,7 @@ func (i *InterleavingIter) Prev() (*base.InternalKey, base.LazyValue) {
 
 func (i *InterleavingIter) interleaveForward(
 	lowerBound []byte, prefix []byte,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	// This loop determines whether a point key or a span marker key should be
 	// interleaved on each iteration. If masking is disabled and the span is
 	// nonempty, this loop executes for exactly one iteration. If masking is
@@ -744,7 +744,7 @@ func (i *InterleavingIter) interleaveForward(
 	}
 }
 
-func (i *InterleavingIter) interleaveBackward() (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) interleaveBackward() (*base.InternalKey, func() base.LazyValue) {
 	// This loop determines whether a point key or a span's start key should be
 	// interleaved on each iteration. If masking is disabled and the span is
 	// nonempty, this loop executes for exactly one iteration. If masking is
@@ -942,13 +942,13 @@ func (i *InterleavingIter) checkBackwardBound() {
 	}
 }
 
-func (i *InterleavingIter) yieldNil() (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) yieldNil() (*base.InternalKey, func() base.LazyValue) {
 	i.spanCoversKey = false
 	i.clearMask()
-	return i.verify(nil, base.LazyValue{})
+	return i.verify(nil, nil)
 }
 
-func (i *InterleavingIter) yieldPointKey(covered bool) (*base.InternalKey, base.LazyValue) {
+func (i *InterleavingIter) yieldPointKey(covered bool) (*base.InternalKey, func() base.LazyValue) {
 	i.pointKeyInterleaved = true
 	i.spanCoversKey = covered
 	i.maybeUpdateMask(covered)
@@ -957,7 +957,7 @@ func (i *InterleavingIter) yieldPointKey(covered bool) (*base.InternalKey, base.
 
 func (i *InterleavingIter) yieldSyntheticSpanMarker(
 	lowerBound []byte,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	i.spanMarker.UserKey = i.startKey()
 	i.spanMarker.Trailer = base.MakeTrailer(base.InternalKeySeqNumMax, i.span.Keys[0].Kind())
 	i.keyspanInterleaved = true
@@ -993,7 +993,7 @@ func (i *InterleavingIter) yieldSyntheticSpanMarker(
 		i.spanMarkerTruncated = true
 	}
 	i.maybeUpdateMask(true /* covered */)
-	return i.verify(&i.spanMarker, base.LazyValue{})
+	return i.verify(&i.spanMarker, nil)
 }
 
 func (i *InterleavingIter) disablePrefixMode() {
@@ -1006,8 +1006,8 @@ func (i *InterleavingIter) disablePrefixMode() {
 }
 
 func (i *InterleavingIter) verify(
-	k *base.InternalKey, v base.LazyValue,
-) (*base.InternalKey, base.LazyValue) {
+	k *base.InternalKey, v func() base.LazyValue,
+) (*base.InternalKey, func() base.LazyValue) {
 	// Wrap the entire function body in the invariants build tag, so that
 	// production builds elide this entire function.
 	if invariants.Enabled {
@@ -1106,7 +1106,7 @@ func (i *InterleavingIter) SetBounds(lower, upper []byte) {
 func (i *InterleavingIter) Invalidate() {
 	i.span = nil
 	i.pointKey = nil
-	i.pointVal = base.LazyValue{}
+	i.pointVal = nil
 }
 
 // Error implements (base.InternalIterator).Error.

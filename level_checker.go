@@ -52,7 +52,7 @@ type simpleMergingIterLevel struct {
 	levelIterBoundaryContext
 
 	iterKey   *InternalKey
-	iterValue base.LazyValue
+	iterValue func() base.LazyValue
 	tombstone *keyspan.Span
 }
 
@@ -157,7 +157,12 @@ func (m *simpleMergingIter) step() bool {
 			}
 			m.valueMerger = nil
 		}
-		itemValue, _, err := item.value.Value(nil)
+		var err error
+		var itemValue []byte
+		if item.value != nil {
+			lv := item.value()
+			itemValue, _, err = lv.Value(nil)
+		}
 		if err != nil {
 			m.err = err
 			return false
@@ -679,7 +684,7 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 type simpleMergingIterItem struct {
 	index int
 	key   InternalKey
-	value base.LazyValue
+	value func() base.LazyValue
 }
 
 type simpleMergingIterHeap struct {

@@ -411,9 +411,9 @@ func (s *simpleLevelIter) resetFilteredIters() {
 
 func (s *simpleLevelIter) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	if s.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	// Find the first file that is entirely >= key. The file before that could
 	// contain the key we're looking for.
@@ -439,9 +439,9 @@ func (s *simpleLevelIter) SeekGE(
 
 func (s *simpleLevelIter) skipEmptyFileForward(
 	seekKey []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	var iterKey *base.InternalKey
-	var val base.LazyValue
+	var val func() base.LazyValue
 	for s.currentIdx >= 0 && s.currentIdx < len(s.filtered) && s.err == nil {
 		if seekKey != nil {
 			iterKey, val = s.filtered[s.currentIdx].SeekGE(seekKey, flags)
@@ -458,39 +458,39 @@ func (s *simpleLevelIter) skipEmptyFileForward(
 		}
 		s.currentIdx++
 	}
-	return nil, base.LazyValue{}
+	return nil, nil
 }
 
 func (s *simpleLevelIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
 func (s *simpleLevelIter) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
-func (s *simpleLevelIter) First() (*base.InternalKey, base.LazyValue) {
+func (s *simpleLevelIter) First() (*base.InternalKey, func() base.LazyValue) {
 	if s.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	s.currentIdx = 0
 	return s.skipEmptyFileForward(nil /* seekKey */, base.SeekGEFlagsNone)
 }
 
-func (s *simpleLevelIter) Last() (*base.InternalKey, base.LazyValue) {
+func (s *simpleLevelIter) Last() (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 
-func (s *simpleLevelIter) Next() (*base.InternalKey, base.LazyValue) {
+func (s *simpleLevelIter) Next() (*base.InternalKey, func() base.LazyValue) {
 	if s.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if s.currentIdx < 0 || s.currentIdx >= len(s.filtered) {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if iterKey, val := s.filtered[s.currentIdx].Next(); iterKey != nil {
 		return iterKey, val
@@ -499,12 +499,12 @@ func (s *simpleLevelIter) Next() (*base.InternalKey, base.LazyValue) {
 	return s.skipEmptyFileForward(nil /* seekKey */, base.SeekGEFlagsNone)
 }
 
-func (s *simpleLevelIter) NextPrefix(succKey []byte) (*base.InternalKey, base.LazyValue) {
+func (s *simpleLevelIter) NextPrefix(succKey []byte) (*base.InternalKey, func() base.LazyValue) {
 	if s.err != nil {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if s.currentIdx < 0 || s.currentIdx >= len(s.filtered) {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	if iterKey, val := s.filtered[s.currentIdx].NextPrefix(succKey); iterKey != nil {
 		return iterKey, val
@@ -513,7 +513,7 @@ func (s *simpleLevelIter) NextPrefix(succKey []byte) (*base.InternalKey, base.La
 	return s.skipEmptyFileForward(succKey /* seekKey */, base.SeekGEFlagsNone)
 }
 
-func (s *simpleLevelIter) Prev() (*base.InternalKey, base.LazyValue) {
+func (s *simpleLevelIter) Prev() (*base.InternalKey, func() base.LazyValue) {
 	panic("unimplemented")
 }
 

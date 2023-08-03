@@ -20,38 +20,42 @@ func newErrorIter(err error) *errorIter {
 	return &errorIter{err: err}
 }
 
-func (c *errorIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) SeekGE(
+	key []byte, flags base.SeekGEFlags,
+) (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
 func (c *errorIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+) (*base.InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
-func (c *errorIter) SeekLT(key []byte, flags base.SeekLTFlags) (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) SeekLT(
+	key []byte, flags base.SeekLTFlags,
+) (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
-func (c *errorIter) First() (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) First() (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
-func (c *errorIter) Last() (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) Last() (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
-func (c *errorIter) Next() (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) Next() (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
-func (c *errorIter) Prev() (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) Prev() (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
-func (c *errorIter) NextPrefix([]byte) (*InternalKey, base.LazyValue) {
-	return nil, base.LazyValue{}
+func (c *errorIter) NextPrefix([]byte) (*InternalKey, func() base.LazyValue) {
+	return nil, nil
 }
 
 func (c *errorIter) Error() error {

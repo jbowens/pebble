@@ -77,11 +77,13 @@ func (it *Iterator) Error() error {
 // pointing at a valid entry, and (nil, nil) otherwise. Note that SeekGE only
 // checks the upper bound. It is up to the caller to ensure that key is greater
 // than or equal to the lower bound.
-func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) SeekGE(
+	key []byte, flags base.SeekGEFlags,
+) (*base.InternalKey, func() base.LazyValue) {
 	if flags.TrySeekUsingNext() {
 		if it.nd == it.list.tail {
 			// Iterator is done.
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		less := it.list.cmp(it.key.UserKey, key) < 0
 		// Arbitrary constant. By measuring the seek cost as a function of the
@@ -93,24 +95,24 @@ func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) (*base.InternalKe
 			k, _ := it.Next()
 			if k == nil {
 				// Iterator is done.
-				return nil, base.LazyValue{}
+				return nil, nil
 			}
 			less = it.list.cmp(it.key.UserKey, key) < 0
 		}
 		if !less {
-			return &it.key, base.MakeInPlaceValue(it.value())
+			return &it.key, it.value
 		}
 	}
 	_, it.nd, _ = it.seekForBaseSplice(key)
 	if it.nd == it.list.tail {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	it.decodeKey()
 	if it.upper != nil && it.list.cmp(it.upper, it.key.UserKey) <= 0 {
 		it.nd = it.list.tail
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
-	return &it.key, base.MakeInPlaceValue(it.value())
+	return &it.key, it.value
 }
 
 // SeekPrefixGE moves the iterator to the first entry whose key is greater than
@@ -119,7 +121,7 @@ func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) (*base.InternalKe
 // internal/base.InternalIterator interface.
 func (it *Iterator) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	return it.SeekGE(key, flags)
 }
 
@@ -127,97 +129,99 @@ func (it *Iterator) SeekPrefixGE(
 // key. Returns the key and value if the iterator is pointing at a valid entry,
 // and (nil, nil) otherwise. Note that SeekLT only checks the lower bound. It
 // is up to the caller to ensure that key is less than the upper bound.
-func (it *Iterator) SeekLT(key []byte, flags base.SeekLTFlags) (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) SeekLT(
+	key []byte, flags base.SeekLTFlags,
+) (*base.InternalKey, func() base.LazyValue) {
 	// NB: the top-level Iterator has already adjusted key based on
 	// the upper-bound.
 	it.nd, _, _ = it.seekForBaseSplice(key)
 	if it.nd == it.list.head {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	it.decodeKey()
 	if it.lower != nil && it.list.cmp(it.lower, it.key.UserKey) > 0 {
 		it.nd = it.list.head
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
-	return &it.key, base.MakeInPlaceValue(it.value())
+	return &it.key, it.value
 }
 
 // First seeks position at the first entry in list. Returns the key and value
 // if the iterator is pointing at a valid entry, and (nil, nil) otherwise. Note
 // that First only checks the upper bound. It is up to the caller to ensure
 // that key is greater than or equal to the lower bound (e.g. via a call to SeekGE(lower)).
-func (it *Iterator) First() (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) First() (*base.InternalKey, func() base.LazyValue) {
 	it.nd = it.list.getNext(it.list.head, 0)
 	if it.nd == it.list.tail {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	it.decodeKey()
 	if it.upper != nil && it.list.cmp(it.upper, it.key.UserKey) <= 0 {
 		it.nd = it.list.tail
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
-	return &it.key, base.MakeInPlaceValue(it.value())
+	return &it.key, it.value
 }
 
 // Last seeks position at the last entry in list. Returns the key and value if
 // the iterator is pointing at a valid entry, and (nil, nil) otherwise. Note
 // that Last only checks the lower bound. It is up to the caller to ensure that
 // key is less than the upper bound (e.g. via a call to SeekLT(upper)).
-func (it *Iterator) Last() (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) Last() (*base.InternalKey, func() base.LazyValue) {
 	it.nd = it.list.getPrev(it.list.tail, 0)
 	if it.nd == it.list.head {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	it.decodeKey()
 	if it.lower != nil && it.list.cmp(it.lower, it.key.UserKey) > 0 {
 		it.nd = it.list.head
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
-	return &it.key, base.MakeInPlaceValue(it.value())
+	return &it.key, it.value
 }
 
 // Next advances to the next position. Returns the key and value if the
 // iterator is pointing at a valid entry, and (nil, nil) otherwise.
 // Note: flushIterator.Next mirrors the implementation of Iterator.Next
 // due to performance. Keep the two in sync.
-func (it *Iterator) Next() (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) Next() (*base.InternalKey, func() base.LazyValue) {
 	it.nd = it.list.getNext(it.nd, 0)
 	if it.nd == it.list.tail {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	it.decodeKey()
 	if it.upper != nil && it.list.cmp(it.upper, it.key.UserKey) <= 0 {
 		it.nd = it.list.tail
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
-	return &it.key, base.MakeInPlaceValue(it.value())
+	return &it.key, it.value
 }
 
 // NextPrefix advances to the next position with a new prefix. Returns the key
 // and value if the iterator is pointing at a valid entry, and (nil, nil)
 // otherwise.
-func (it *Iterator) NextPrefix(succKey []byte) (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) NextPrefix(succKey []byte) (*base.InternalKey, func() base.LazyValue) {
 	return it.SeekGE(succKey, base.SeekGEFlagsNone.EnableTrySeekUsingNext())
 }
 
 // Prev moves to the previous position. Returns the key and value if the
 // iterator is pointing at a valid entry, and (nil, nil) otherwise.
-func (it *Iterator) Prev() (*base.InternalKey, base.LazyValue) {
+func (it *Iterator) Prev() (*base.InternalKey, func() base.LazyValue) {
 	it.nd = it.list.getPrev(it.nd, 0)
 	if it.nd == it.list.head {
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
 	it.decodeKey()
 	if it.lower != nil && it.list.cmp(it.lower, it.key.UserKey) > 0 {
 		it.nd = it.list.head
-		return nil, base.LazyValue{}
+		return nil, nil
 	}
-	return &it.key, base.MakeInPlaceValue(it.value())
+	return &it.key, it.value
 }
 
 // value returns the value at the current position.
-func (it *Iterator) value() []byte {
-	return it.nd.getValue(it.list.arena)
+func (it *Iterator) value() base.LazyValue {
+	return base.MakeInPlaceValue(it.nd.getValue(it.list.arena))
 }
 
 // Head true iff the iterator is positioned at the sentinel head node.

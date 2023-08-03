@@ -937,8 +937,9 @@ func TestBatchRangeOps(t *testing.T) {
 				}
 			} else {
 				for k, v := internalIter.First(); k != nil; k, v = internalIter.Next() {
+					lv := v()
 					k.SetSeqNum(k.SeqNum() &^ InternalKeySeqNumBatch)
-					fmt.Fprintf(&buf, "%s:%s\n", k, v.InPlaceValue())
+					fmt.Fprintf(&buf, "%s:%s\n", k, lv.InPlaceValue())
 				}
 			}
 			return buf.String()
@@ -1118,7 +1119,8 @@ func TestFlushableBatchDeleteRange(t *testing.T) {
 
 func scanInternalIter(w io.Writer, ii internalIterator) {
 	for k, v := ii.First(); k != nil; k, v = ii.Next() {
-		fmt.Fprintf(w, "%s:%s\n", k, v.InPlaceValue())
+		lv := v()
+		fmt.Fprintf(w, "%s:%s\n", k, lv.InPlaceValue())
 	}
 }
 

@@ -362,8 +362,8 @@ type levelIterTestIter struct {
 }
 
 func (i *levelIterTestIter) rangeDelSeek(
-	key []byte, ikey *InternalKey, val base.LazyValue, dir int,
-) (*InternalKey, base.LazyValue) {
+	key []byte, ikey *InternalKey, val func() base.LazyValue, dir int,
+) (*InternalKey, func() base.LazyValue) {
 	var tombstone keyspan.Span
 	if i.rangeDelIter != nil {
 		var t *keyspan.Span
@@ -379,7 +379,7 @@ func (i *levelIterTestIter) rangeDelSeek(
 	if ikey == nil {
 		return &InternalKey{
 			UserKey: []byte(fmt.Sprintf("./%s", tombstone)),
-		}, base.LazyValue{}
+		}, nil
 	}
 	return &InternalKey{
 		UserKey: []byte(fmt.Sprintf("%s/%s", ikey.UserKey, tombstone)),
@@ -393,21 +393,21 @@ func (i *levelIterTestIter) String() string {
 
 func (i *levelIterTestIter) SeekGE(
 	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	ikey, val := i.levelIter.SeekGE(key, flags)
 	return i.rangeDelSeek(key, ikey, val, 1)
 }
 
 func (i *levelIterTestIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	ikey, val := i.levelIter.SeekPrefixGE(prefix, key, flags)
 	return i.rangeDelSeek(key, ikey, val, 1)
 }
 
 func (i *levelIterTestIter) SeekLT(
 	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
+) (*InternalKey, func() base.LazyValue) {
 	ikey, val := i.levelIter.SeekLT(key, flags)
 	return i.rangeDelSeek(key, ikey, val, -1)
 }

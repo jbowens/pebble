@@ -398,9 +398,14 @@ func runInternalIterCmd(
 		opt(&o)
 	}
 
-	getKV := func(key *InternalKey, val LazyValue) (*InternalKey, []byte) {
-		v, _, err := val.Value(nil)
-		require.NoError(t, err)
+	getKV := func(key *InternalKey, val func() LazyValue) (*InternalKey, []byte) {
+		var v []byte
+		if val != nil {
+			lv := val()
+			var err error
+			v, _, err = lv.Value(nil)
+			require.NoError(t, err)
+		}
 		return key, v
 	}
 	var b bytes.Buffer
@@ -633,9 +638,10 @@ func runBuildCmd(td *datadriven.TestData, d *DB, fs vfs.FS) error {
 	w := sstable.NewWriter(objstorageprovider.NewFileWritable(f), writeOpts)
 	iter := b.newInternalIter(nil)
 	for key, val := iter.First(); key != nil; key, val = iter.Next() {
+		lv := val()
 		tmp := *key
 		tmp.SetSeqNum(0)
-		if err := w.Add(tmp, val.InPlaceValue()); err != nil {
+		if err := w.Add(tmp, lv.InPlaceValue()); err != nil {
 			return err
 		}
 	}

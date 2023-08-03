@@ -63,9 +63,9 @@ func (r *Reader) get(key []byte) (value []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	var v base.LazyValue
 	ikey, v := i.SeekGE(key, base.SeekGEFlagsNone)
-	value, _, err = v.Value(nil)
+	lv := v()
+	value, _, err = lv.Value(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +103,10 @@ func newIterAdapter(iter Iterator) *iterAdapter {
 	}
 }
 
-func (i *iterAdapter) update(key *InternalKey, val base.LazyValue) bool {
+func (i *iterAdapter) update(key *InternalKey, val func() base.LazyValue) bool {
 	i.key = key
-	if v, _, err := val.Value(nil); err != nil {
+	lv := val()
+	if v, _, err := lv.Value(nil); err != nil {
 		i.key = nil
 		i.val = nil
 	} else {
@@ -148,7 +149,7 @@ func (i *iterAdapter) NextPrefix(succKey []byte) bool {
 
 func (i *iterAdapter) NextIgnoreResult() {
 	i.Iterator.Next()
-	i.update(nil, base.LazyValue{})
+	i.update(nil, nil)
 }
 
 func (i *iterAdapter) Prev() bool {
@@ -341,7 +342,8 @@ func TestVirtualReader(t *testing.T) {
 
 			var buf bytes.Buffer
 			for key, val := iter.First(); key != nil; key, val = iter.Next() {
-				fmt.Fprintf(&buf, "%s:%s\n", key.String(), val.InPlaceValue())
+				lv := val()
+				fmt.Fprintf(&buf, "%s:%s\n", key.String(), lv.InPlaceValue())
 			}
 			err = iter.Close()
 			if err != nil {
@@ -613,7 +615,8 @@ func TestInjectedErrors(t *testing.T) {
 				return err
 			}
 			defer func() { reterr = firstError(reterr, iter.Close()) }()
-			for k, v := iter.First(); k != nil; k, v = iter.Next() {
+			for k, vFn := iter.First(); k != nil; k, vFn = iter.Next() {
+				v := vFn()
 				val, _, err := v.Value(nil)
 				if err != nil {
 					return err
@@ -679,7 +682,8 @@ func indexLayoutString(t *testing.T, r *Reader) string {
 	}()
 	require.NoError(t, err)
 	for key, value := iter.First(); key != nil; key, value = iter.Next() {
-		bh, err := decodeBlockHandleWithProperties(value.InPlaceValue())
+		lv := value()
+		bh, err := decodeBlockHandleWithProperties(lv.InPlaceValue())
 		require.NoError(t, err)
 		fmt.Fprintf(&buf, " %s: size %d\n", string(key.UserKey), bh.Length)
 		if twoLevelIndex {

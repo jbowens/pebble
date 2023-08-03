@@ -34,7 +34,7 @@ type getIter struct {
 	l0           []manifest.LevelSlice
 	version      *version
 	iterKey      *InternalKey
-	iterValue    base.LazyValue
+	iterValue    func() base.LazyValue
 	err          error
 }
 
@@ -48,29 +48,29 @@ func (g *getIter) String() string {
 	return fmt.Sprintf("len(l0)=%d, len(mem)=%d, level=%d", len(g.l0), len(g.mem), g.level)
 }
 
-func (g *getIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, base.LazyValue) {
+func (g *getIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekGE unimplemented")
 }
 
 func (g *getIter) SeekPrefixGE(
 	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
+) (*base.InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekPrefixGE unimplemented")
 }
 
-func (g *getIter) SeekLT(key []byte, flags base.SeekLTFlags) (*InternalKey, base.LazyValue) {
+func (g *getIter) SeekLT(key []byte, flags base.SeekLTFlags) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: SeekLT unimplemented")
 }
 
-func (g *getIter) First() (*InternalKey, base.LazyValue) {
+func (g *getIter) First() (*InternalKey, func() base.LazyValue) {
 	return g.Next()
 }
 
-func (g *getIter) Last() (*InternalKey, base.LazyValue) {
+func (g *getIter) Last() (*InternalKey, func() base.LazyValue) {
 	panic("pebble: Last unimplemented")
 }
 
-func (g *getIter) Next() (*InternalKey, base.LazyValue) {
+func (g *getIter) Next() (*InternalKey, func() base.LazyValue) {
 	if g.iter != nil {
 		g.iterKey, g.iterValue = g.iter.Next()
 	}
@@ -85,7 +85,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			if g.rangeDelIter != nil {
 				g.tombstone = keyspan.Get(g.cmp, g.rangeDelIter, g.key)
 				if g.err = g.rangeDelIter.Close(); g.err != nil {
-					return nil, base.LazyValue{}
+					return nil, nil
 				}
 				g.rangeDelIter = nil
 			}
@@ -99,7 +99,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 					// effectively stopping iteration.
 					g.err = g.iter.Close()
 					g.iter = nil
-					return nil, base.LazyValue{}
+					return nil, nil
 				}
 				if g.equal(g.key, key.UserKey) {
 					if !key.Visible(g.snapshot, base.InternalKeySeqNumMax) {
@@ -114,7 +114,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			g.err = g.iter.Close()
 			g.iter = nil
 			if g.err != nil {
-				return nil, base.LazyValue{}
+				return nil, nil
 			}
 		}
 
@@ -122,8 +122,8 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		if g.batch != nil {
 			if g.batch.index == nil {
 				g.err = ErrNotIndexed
-				g.iterKey, g.iterValue = nil, base.LazyValue{}
-				return nil, base.LazyValue{}
+				g.iterKey, g.iterValue = nil, nil
+				return nil, nil
 			}
 			g.iter = g.batch.newInternalIter(nil)
 			g.rangeDelIter = g.batch.newRangeDelIter(
@@ -140,7 +140,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		// If we have a tombstone from a previous level it is guaranteed to delete
 		// keys in lower levels.
 		if g.tombstone != nil && g.tombstone.VisibleAt(g.snapshot) {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 
 		// Create iterators from memtables from newest to oldest.
@@ -168,7 +168,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 				g.iterKey, g.iterValue = g.iter.SeekGE(g.key, base.SeekGEFlagsNone)
 				if bc.isSyntheticIterBoundsKey || bc.isIgnorableBoundaryKey {
 					g.iterKey = nil
-					g.iterValue = base.LazyValue{}
+					g.iterValue = nil
 				}
 				continue
 			}
@@ -176,7 +176,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		}
 
 		if g.level >= numLevels {
-			return nil, base.LazyValue{}
+			return nil, nil
 		}
 		if g.version.Levels[g.level].Empty() {
 			g.level++
@@ -194,16 +194,16 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		g.iterKey, g.iterValue = g.iter.SeekGE(g.key, base.SeekGEFlagsNone)
 		if bc.isSyntheticIterBoundsKey || bc.isIgnorableBoundaryKey {
 			g.iterKey = nil
-			g.iterValue = base.LazyValue{}
+			g.iterValue = nil
 		}
 	}
 }
 
-func (g *getIter) Prev() (*InternalKey, base.LazyValue) {
+func (g *getIter) Prev() (*InternalKey, func() base.LazyValue) {
 	panic("pebble: Prev unimplemented")
 }
 
-func (g *getIter) NextPrefix([]byte) (*InternalKey, base.LazyValue) {
+func (g *getIter) NextPrefix([]byte) (*InternalKey, func() base.LazyValue) {
 	panic("pebble: NextPrefix unimplemented")
 }
 

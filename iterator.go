@@ -218,7 +218,7 @@ type Iterator struct {
 	// iterKey, iterValue reflect the latest position of iter, except when
 	// SetBounds is called. In that case, these are explicitly set to nil.
 	iterKey             *InternalKey
-	iterValue           LazyValue
+	iterValue           func() LazyValue
 	alloc               *iterAlloc
 	getIterAlloc        *getIterAlloc
 	prefixOrFullSeekKey []byte
@@ -578,7 +578,7 @@ func (i *Iterator) findNextEntry(limit []byte) {
 		case InternalKeyKindSet, InternalKeyKindSetWithDelete:
 			i.keyBuf = append(i.keyBuf[:0], key.UserKey...)
 			i.key = i.keyBuf
-			i.value = i.iterValue
+			i.value = i.iterValue()
 			i.iterValidityState = IterValid
 			i.saveRangeKey()
 			return
@@ -641,7 +641,7 @@ func (i *Iterator) nextPointCurrentUserKey() bool {
 		return false
 
 	case InternalKeyKindSet, InternalKeyKindSetWithDelete:
-		i.value = i.iterValue
+		i.value = i.iterValue()
 		return true
 
 	case InternalKeyKindMerge:
@@ -662,7 +662,8 @@ func (i *Iterator) nextPointCurrentUserKey() bool {
 // mergeForward does not update iterValidityState.
 func (i *Iterator) mergeForward(key base.InternalKey) (valid bool) {
 	var iterValue []byte
-	iterValue, _, i.err = i.iterValue.Value(nil)
+	lv := i.iterValue()
+	iterValue, _, i.err = lv.Value(nil)
 	if i.err != nil {
 		return false
 	}
@@ -964,7 +965,8 @@ func (i *Iterator) findPrevEntry(limit []byte) {
 			// call, so use valueBuf instead. Note that valueBuf is only used
 			// in this one instance; everywhere else (eg. in findNextEntry),
 			// we just point i.value to the unsafe i.iter-owned value buffer.
-			i.value, i.valueBuf = i.iterValue.Clone(i.valueBuf[:0], &i.fetcher)
+			lv := i.iterValue()
+			i.value, i.valueBuf = lv.Clone(i.valueBuf[:0], &i.fetcher)
 			i.saveRangeKey()
 			i.iterValidityState = IterValid
 			i.iterKey, i.iterValue = i.iter.Prev()
@@ -978,7 +980,8 @@ func (i *Iterator) findPrevEntry(limit []byte) {
 				i.key = i.keyBuf
 				i.saveRangeKey()
 				var iterValue []byte
-				iterValue, _, i.err = i.iterValue.Value(nil)
+				lv := i.iterValue()
+				iterValue, _, i.err = lv.Value(nil)
 				if i.err != nil {
 					return
 				}
@@ -1002,7 +1005,8 @@ func (i *Iterator) findPrevEntry(limit []byte) {
 				}
 				valueMerger, i.err = i.merge(i.key, value)
 				var iterValue []byte
-				iterValue, _, i.err = i.iterValue.Value(nil)
+				lv := i.iterValue()
+				iterValue, _, i.err = lv.Value(nil)
 				if i.err != nil {
 					return
 				}
@@ -1015,7 +1019,8 @@ func (i *Iterator) findPrevEntry(limit []byte) {
 				}
 			} else {
 				var iterValue []byte
-				iterValue, _, i.err = i.iterValue.Value(nil)
+				lv := i.iterValue()
+				iterValue, _, i.err = lv.Value(nil)
 				if i.err != nil {
 					return
 				}
@@ -1110,7 +1115,8 @@ func (i *Iterator) mergeNext(key InternalKey, valueMerger ValueMerger) {
 		case InternalKeyKindSet, InternalKeyKindSetWithDelete:
 			// We've hit a Set value. Merge with the existing value and return.
 			var iterValue []byte
-			iterValue, _, i.err = i.iterValue.Value(nil)
+			lv := i.iterValue()
+			iterValue, _, i.err = lv.Value(nil)
 			if i.err != nil {
 				return
 			}
@@ -1121,7 +1127,8 @@ func (i *Iterator) mergeNext(key InternalKey, valueMerger ValueMerger) {
 			// We've hit another Merge value. Merge with the existing value and
 			// continue looping.
 			var iterValue []byte
-			iterValue, _, i.err = i.iterValue.Value(nil)
+			lv := i.iterValue()
+			iterValue, _, i.err = lv.Value(nil)
 			if i.err != nil {
 				return
 			}
@@ -2571,7 +2578,7 @@ func (i *Iterator) invalidate() {
 	i.lastPositioningOp = invalidatedLastPositionOp
 	i.hasPrefix = false
 	i.iterKey = nil
-	i.iterValue = LazyValue{}
+	i.iterValue = nil
 	i.err = nil
 	// This switch statement isn't necessary for correctness since callers
 	// should call a repositioning method. We could have arbitrarily set i.pos

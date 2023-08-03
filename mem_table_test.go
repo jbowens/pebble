@@ -39,7 +39,8 @@ func (m *memTable) get(key []byte) (value []byte, err error) {
 	case InternalKeyKindDelete, InternalKeyKindSingleDelete, InternalKeyKindDeleteSized:
 		return nil, ErrNotFound
 	default:
-		return val.InPlaceValue(), nil
+		lv := val()
+		return lv.InPlaceValue(), nil
 	}
 }
 
