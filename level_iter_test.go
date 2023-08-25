@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/rangedel"
+	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
@@ -86,12 +87,9 @@ func TestLevelIter(t *testing.T) {
 				}
 			}
 
-			iter := newLevelIter(opts, DefaultComparer.Compare,
-				func(a []byte) int { return len(a) }, newIters, files.Iter(), manifest.Level(level),
+			iter := newLevelIter(opts, testkeys.Comparer, newIters, files.Iter(), manifest.Level(level),
 				internalIterOpts{})
 			defer iter.Close()
-			// Fake up the range deletion initialization.
-			iter.initRangeDel(new(keyspan.FragmentIterator))
 			iter.disableInvariants = true
 			return runInternalIterCmd(t, d, iter, iterCmdVerboseKey)
 
@@ -129,8 +127,7 @@ func TestLevelIter(t *testing.T) {
 				return newIters(ctx, file, opts, internalOpts)
 			}
 
-			iter := newLevelIter(opts, DefaultComparer.Compare,
-				func(a []byte) int { return len(a) }, newIters2, files.Iter(),
+			iter := newLevelIter(opts, testkeys.Comparer, newIters2, files.Iter(),
 				manifest.Level(level), internalIterOpts{})
 			iter.SeekGE([]byte(key), base.SeekGEFlagsNone)
 			lower, upper := tableOpts.GetLowerBound(), tableOpts.GetUpperBound()
@@ -324,11 +321,8 @@ func TestLevelIterBoundaries(t *testing.T) {
 			}
 			if iter == nil {
 				slice := manifest.NewLevelSliceKeySorted(lt.cmp.Compare, lt.metas)
-				iter = newLevelIter(IterOptions{}, DefaultComparer.Compare,
-					func(a []byte) int { return len(a) }, lt.newIters, slice.Iter(),
+				iter = newLevelIter(IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(),
 					manifest.Level(level), internalIterOpts{})
-				// Fake up the range deletion initialization.
-				iter.initRangeDel(new(keyspan.FragmentIterator))
 			}
 			if !save {
 				defer func() {
@@ -428,11 +422,9 @@ func TestLevelIterSeek(t *testing.T) {
 			var stats base.InternalIteratorStats
 			slice := manifest.NewLevelSliceKeySorted(lt.cmp.Compare, lt.metas)
 			iter := &levelIterTestIter{levelIter: &levelIter{}}
-			iter.init(context.Background(), IterOptions{}, DefaultComparer.Compare,
-				func(a []byte) int { return len(a) }, lt.newIters, slice.Iter(),
+			iter.init(context.Background(), IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(),
 				manifest.Level(level), internalIterOpts{stats: &stats})
 			defer iter.Close()
-			iter.initRangeDel(&iter.rangeDelIter)
 			return runInternalIterCmd(t, d, iter, iterCmdVerboseKey, iterCmdStats(&stats))
 
 		case "iters-created":
@@ -536,7 +528,7 @@ func BenchmarkLevelIterSeekGE(b *testing.B) {
 								iter, err := readers[file.FileNum].NewIter(nil /* lower */, nil /* upper */)
 								return iter, nil, err
 							}
-							l := newLevelIter(IterOptions{}, DefaultComparer.Compare, nil, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
+							l := newLevelIter(IterOptions{}, DefaultComparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
 							rng := rand.New(rand.NewSource(uint64(time.Now().UnixNano())))
 
 							b.ResetTimer()
@@ -578,10 +570,7 @@ func BenchmarkLevelIterSeqSeekGEWithBounds(b *testing.B) {
 									opts.LowerBound, opts.UpperBound)
 								return iter, nil, err
 							}
-							l := newLevelIter(IterOptions{}, DefaultComparer.Compare, nil, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
-							// Fake up the range deletion initialization, to resemble the usage
-							// in a mergingIter.
-							l.initRangeDel(new(keyspan.FragmentIterator))
+							l := newLevelIter(IterOptions{}, DefaultComparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
 							keyCount := len(keys)
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {
@@ -625,12 +614,8 @@ func BenchmarkLevelIterSeqSeekPrefixGE(b *testing.B) {
 		for _, useNext := range []bool{false, true} {
 			b.Run(fmt.Sprintf("skip=%d/use-next=%t", skip, useNext),
 				func(b *testing.B) {
-					l := newLevelIter(IterOptions{}, DefaultComparer.Compare,
-						func(a []byte) int { return len(a) }, newIters, metas.Iter(),
+					l := newLevelIter(IterOptions{}, testkeys.Comparer, newIters, metas.Iter(),
 						manifest.Level(level), internalIterOpts{})
-					// Fake up the range deletion initialization, to resemble the usage
-					// in a mergingIter.
-					l.initRangeDel(new(keyspan.FragmentIterator))
 					keyCount := len(keys)
 					pos := 0
 					l.SeekPrefixGE(keys[pos], keys[pos], base.SeekGEFlagsNone)
@@ -672,7 +657,7 @@ func BenchmarkLevelIterNext(b *testing.B) {
 								iter, err := readers[file.FileNum].NewIter(nil /* lower */, nil /* upper */)
 								return iter, nil, err
 							}
-							l := newLevelIter(IterOptions{}, DefaultComparer.Compare, nil, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
+							l := newLevelIter(IterOptions{}, DefaultComparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
 
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {
@@ -706,7 +691,7 @@ func BenchmarkLevelIterPrev(b *testing.B) {
 								iter, err := readers[file.FileNum].NewIter(nil /* lower */, nil /* upper */)
 								return iter, nil, err
 							}
-							l := newLevelIter(IterOptions{}, DefaultComparer.Compare, nil, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
+							l := newLevelIter(IterOptions{}, DefaultComparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
 
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {

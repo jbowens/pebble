@@ -256,7 +256,7 @@ func TestCheckLevelsCornerCases(t *testing.T) {
 				files)
 			readState := &readState{current: version}
 			c := &checkConfig{
-				cmp:       cmp,
+				comparer:  base.DefaultComparer,
 				readState: readState,
 				newIters:  newIters,
 				seqNum:    InternalKeySeqNumMax,

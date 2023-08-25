@@ -996,3 +996,77 @@ Span: f-g:{(#6,RANGEKEYSET,@9,foo)}
 -- SpanChanged(nil)
 .
 .
+
+# Test the same but with end boundaries interleaved.
+
+iter interleave-end=t
+first
+next-prefix
+next-prefix
+next-prefix
+next-prefix
+next-prefix
+next-prefix
+next-prefix
+next-prefix
+----
+-- SpanChanged(nil)
+-- SpanChanged(nil)
+PointKey: a@4#8,1
+Span: <invalid>
+-
+-- SpanChanged(b-e:{(#5,RANGEKEYSET,@9,foo)})
+PointKey: b#72057594037927935,21
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: c@11#8,1
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: d@5#3,1
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: e#72057594037927935,21
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+-- SpanChanged(nil)
+PointKey: e@9#2,1
+Span: <invalid>
+-
+-- SpanChanged(f-g:{(#6,RANGEKEYSET,@9,foo)})
+PointKey: f#72057594037927935,21
+Span: f-g:{(#6,RANGEKEYSET,@9,foo)}
+-
+PointKey: g#72057594037927935,21
+Span: f-g:{(#6,RANGEKEYSET,@9,foo)}
+-
+-- SpanChanged(nil)
+.
+
+iter interleave-end=t
+seek-ge bat
+next
+next
+next
+next
+next
+----
+-- SpanChanged(nil)
+-- SpanChanged(b-e:{(#5,RANGEKEYSET,@9,foo)})
+PointKey: bat#72057594037927935,21
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: c@11#8,1
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: c@3#8,1
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: c@1#4,1
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: d@5#3,1
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-
+PointKey: e#72057594037927935,21
+Span: b-e:{(#5,RANGEKEYSET,@9,foo)}
+-

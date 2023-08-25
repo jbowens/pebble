@@ -117,6 +117,7 @@ type flushableList []*flushableEntry
 // ingesting sstables which are added to the flushable list.
 type ingestedFlushable struct {
 	files            []physicalMeta
+	comparer         *Comparer
 	cmp              Compare
 	split            Split
 	newIters         tableNewIters
@@ -131,8 +132,7 @@ type ingestedFlushable struct {
 
 func newIngestedFlushable(
 	files []*fileMetadata,
-	cmp Compare,
-	split Split,
+	comparer *Comparer,
 	newIters tableNewIters,
 	newRangeKeyIters keyspan.TableNewSpanIter,
 ) *ingestedFlushable {
@@ -147,12 +147,11 @@ func newIngestedFlushable(
 
 	ret := &ingestedFlushable{
 		files:            physicalFiles,
-		cmp:              cmp,
-		split:            split,
+		comparer:         comparer,
 		newIters:         newIters,
 		newRangeKeyIters: newRangeKeyIters,
 		// slice is immutable and can be set once and used many times.
-		slice:        manifest.NewLevelSliceKeySorted(cmp, files),
+		slice:        manifest.NewLevelSliceKeySorted(comparer.Compare, files),
 		hasRangeKeys: hasRangeKeys,
 	}
 
@@ -173,7 +172,7 @@ func (s *ingestedFlushable) newIter(o *IterOptions) internalIterator {
 	// aren't truly levels in the lsm. Right now, the encoding only supports
 	// L0 sublevels, and the rest of the levels in the lsm.
 	return newLevelIter(
-		opts, s.cmp, s.split, s.newIters, s.slice.Iter(), manifest.Level(0), internalIterOpts{},
+		opts, s.comparer, s.newIters, s.slice.Iter(), manifest.Level(0), internalIterOpts{},
 	)
 }
 

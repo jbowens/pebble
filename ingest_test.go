@@ -1936,7 +1936,7 @@ func TestIngestTargetLevel(t *testing.T) {
 			readState := d.loadReadState()
 			c := &checkConfig{
 				logger:    d.opts.Logger,
-				cmp:       d.cmp,
+				comparer:  d.opts.Comparer,
 				readState: readState,
 				newIters:  d.newIters,
 				// TODO: runDBDefineCmd doesn't properly update the visible
@@ -1960,7 +1960,7 @@ func TestIngestTargetLevel(t *testing.T) {
 				meta := parseMeta(target)
 				level, err := ingestTargetLevel(
 					d.newIters, d.tableNewRangeKeyIter, IterOptions{logger: d.opts.Logger},
-					d.cmp, d.mu.versions.currentVersion(), 1, d.mu.compact.inProgress, meta,
+					d.opts.Comparer, d.mu.versions.currentVersion(), 1, d.mu.compact.inProgress, meta,
 				)
 				if err != nil {
 					return err.Error()

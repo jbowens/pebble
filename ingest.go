@@ -801,12 +801,13 @@ func ingestTargetLevel(
 	newIters tableNewIters,
 	newRangeKeyIter keyspan.TableNewSpanIter,
 	iterOps IterOptions,
-	cmp Compare,
+	comparer *Comparer,
 	v *version,
 	baseLevel int,
 	compactions map[*compaction]struct{},
 	meta *fileMetadata,
 ) (int, error) {
+	cmp := comparer.Compare
 	// Find the lowest level which does not have any files which overlap meta. We
 	// search from L0 to L6 looking for whether there are any files in the level
 	// which overlap meta. We want the "lowest" level (where lower means
@@ -874,13 +875,8 @@ func ingestTargetLevel(
 	}
 	// Check for overlap over the keys of L0 by iterating over the sublevels.
 	for subLevel := 0; subLevel < len(v.L0SublevelFiles); subLevel++ {
-		iter := newLevelIter(iterOps, cmp, nil /* split */, newIters,
+		iter := newLevelIter(iterOps, comparer, newIters,
 			v.L0Sublevels.Levels[subLevel].Iter(), manifest.Level(0), internalIterOpts{})
-
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		iter.initRangeDel(&rangeDelIter)
 
 		levelIter := keyspan.LevelIter{}
 		levelIter.Init(
@@ -892,7 +888,7 @@ func ingestTargetLevel(
 			smallest: meta.Smallest,
 			largest:  meta.Largest,
 		}
-		overlap := overlapWithIterator(iter, &rangeDelIter, &levelIter, kr, cmp)
+		overlap := overlapWithIterator(iter, nil /* TODO FIX */, &levelIter, kr, cmp)
 		err := iter.Close() // Closes range del iter as well.
 		err = firstError(err, levelIter.Close())
 		if err != nil {
@@ -905,13 +901,8 @@ func ingestTargetLevel(
 
 	level := baseLevel
 	for ; level < numLevels; level++ {
-		levelIter := newLevelIter(iterOps, cmp, nil /* split */, newIters,
+		levelIter := newLevelIter(iterOps, comparer, newIters,
 			v.Levels[level].Iter(), manifest.Level(level), internalIterOpts{})
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		levelIter.initRangeDel(&rangeDelIter)
-
 		rkeyLevelIter := &keyspan.LevelIter{}
 		rkeyLevelIter.Init(
 			keyspan.SpanIterOptions{}, cmp, newRangeKeyIter,
@@ -922,7 +913,7 @@ func ingestTargetLevel(
 			smallest: meta.Smallest,
 			largest:  meta.Largest,
 		}
-		overlap := overlapWithIterator(levelIter, &rangeDelIter, rkeyLevelIter, kr, cmp)
+		overlap := overlapWithIterator(levelIter, nil /* TODO FIX ME */, rkeyLevelIter, kr, cmp)
 		err := levelIter.Close() // Closes range del iter as well.
 		err = firstError(err, rkeyLevelIter.Close())
 		if err != nil {
@@ -1143,7 +1134,7 @@ func (d *DB) newIngestedFlushableEntry(
 		return nil, err
 	}
 
-	f := newIngestedFlushable(meta, d.cmp, d.split, d.newIters, d.tableNewRangeKeyIter)
+	f := newIngestedFlushable(meta, d.opts.Comparer, d.newIters, d.tableNewRangeKeyIter)
 
 	// NB: The logNum/seqNum are the WAL number which we're writing this entry
 	// to and the sequence number within the WAL which we'll write this entry
@@ -1815,7 +1806,7 @@ type ingestTargetLevelFunc func(
 	newIters tableNewIters,
 	newRangeKeyIter keyspan.TableNewSpanIter,
 	iterOps IterOptions,
-	cmp Compare,
+	comparer *Comparer,
 	v *version,
 	baseLevel int,
 	compactions map[*compaction]struct{},
@@ -1907,7 +1898,7 @@ func (d *DB) ingestApply(
 					f.Level = 6
 				}
 			} else {
-				f.Level, err = findTargetLevel(d.newIters, d.tableNewRangeKeyIter, iterOps, d.cmp, current, baseLevel, d.mu.compact.inProgress, m)
+				f.Level, err = findTargetLevel(d.newIters, d.tableNewRangeKeyIter, iterOps, d.opts.Comparer, current, baseLevel, d.mu.compact.inProgress, m)
 			}
 		}
 		if err != nil {
