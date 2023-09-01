@@ -39,14 +39,41 @@ type compactionEnv struct {
 }
 
 type compactionPicker interface {
-	getScores([]compactionInfo) [numLevels]float64
+	getStatistics() pickerStatistics
 	getBaseLevel() int
-	estimatedCompactionDebt(l0ExtraSize uint64) uint64
 	pickAuto(env compactionEnv) (pc *pickedCompaction)
 	pickElisionOnlyCompaction(env compactionEnv) (pc *pickedCompaction)
 	pickRewriteCompaction(env compactionEnv) (pc *pickedCompaction)
 	pickReadTriggeredCompaction(env compactionEnv) (pc *pickedCompaction)
 	forceBaseLevel1()
+}
+
+type pickerStatistics struct {
+	estimatedDebt uint64
+	levelScores   [numLevels]candidateLevelInfo
+}
+
+// compactionPickerByScore holds the state and logic for picking a compaction. A
+// compaction picker is associated with a single version. A new compaction
+// picker is created and initialized every time a new version is installed.
+type compactionPickerByScore struct {
+	opts *Options
+	vers *version
+	preferredLSMShape
+	levelScores [numLevels]candidateLevelInfo
+}
+
+var _ compactionPicker = &compactionPickerByScore{}
+
+func newCompactionPicker(
+	v *version, opts *Options, inProgressCompactions []compactionInfo,
+) *compactionPickerByScore {
+	p := &compactionPickerByScore{
+		opts: opts,
+		vers: v,
+	}
+	p.preferredLSMShape = calculatePreferredLSMShape(v, opts, inProgressCompactions)
+	return p
 }
 
 // readCompactionEnv is used to hold data required to perform read compactions
@@ -650,17 +677,6 @@ func expandToAtomicUnit(
 	return inputs, isCompacting
 }
 
-func newCompactionPicker(
-	v *version, opts *Options, inProgressCompactions []compactionInfo,
-) compactionPicker {
-	p := &compactionPickerByScore{
-		opts: opts,
-		vers: v,
-	}
-	p.initLevelMaxBytes(inProgressCompactions)
-	return p
-}
-
 // Information about a candidate compaction level that has been identified by
 // the compaction picker.
 type candidateLevelInfo struct {
@@ -740,81 +756,43 @@ func totalCompensatedSize(iter manifest.LevelIterator) uint64 {
 	return sz
 }
 
-// compactionPickerByScore holds the state and logic for picking a compaction. A
-// compaction picker is associated with a single version. A new compaction
-// picker is created and initialized every time a new version is installed.
-type compactionPickerByScore struct {
-	opts *Options
-	vers *version
-	// The level to target for L0 compactions. Levels L1 to baseLevel must be
-	// empty.
-	baseLevel int
-	// levelMaxBytes holds the dynamically adjusted max bytes setting for each
-	// level.
-	levelMaxBytes [numLevels]int64
-}
-
 var _ compactionPicker = &compactionPickerByScore{}
 
-func (p *compactionPickerByScore) getScores(inProgress []compactionInfo) [numLevels]float64 {
-	var scores [numLevels]float64
-	for _, info := range p.calculateLevelScores(inProgress) {
-		scores[info.level] = info.score
-	}
-	return scores
-}
-
+// getBaseLevel returns the current base level of the LSM.
 func (p *compactionPickerByScore) getBaseLevel() int {
-	if p == nil {
-		return 1
-	}
 	return p.baseLevel
 }
 
-// estimatedCompactionDebt estimates the number of bytes which need to be
-// compacted before the LSM tree becomes stable.
-func (p *compactionPickerByScore) estimatedCompactionDebt(l0ExtraSize uint64) uint64 {
-	if p == nil {
-		return 0
+// getStatistics returns the most recently computed version of statistics
+// computed by the compaction picker.
+func (p *compactionPickerByScore) getStatistics() pickerStatistics {
+	return pickerStatistics{
+		estimatedDebt: p.preferredLSMShape.estimatedDebt,
+		levelScores:   p.levelScores,
 	}
-
-	// We assume that all the bytes in L0 need to be compacted to Lbase. This is
-	// unlike the RocksDB logic that figures out whether L0 needs compaction.
-	bytesAddedToNextLevel := l0ExtraSize + p.vers.Levels[0].Size()
-	lbaseSize := p.vers.Levels[p.baseLevel].Size()
-
-	var compactionDebt uint64
-	if bytesAddedToNextLevel > 0 && lbaseSize > 0 {
-		// We only incur compaction debt if both L0 and Lbase contain data. If L0
-		// is empty, no compaction is necessary. If Lbase is empty, a move-based
-		// compaction from L0 would occur.
-		compactionDebt += bytesAddedToNextLevel + lbaseSize
-	}
-
-	// loop invariant: At the beginning of the loop, bytesAddedToNextLevel is the
-	// bytes added to `level` in the loop.
-	for level := p.baseLevel; level < numLevels-1; level++ {
-		levelSize := p.vers.Levels[level].Size() + bytesAddedToNextLevel
-		nextLevelSize := p.vers.Levels[level+1].Size()
-		if levelSize > uint64(p.levelMaxBytes[level]) {
-			bytesAddedToNextLevel = levelSize - uint64(p.levelMaxBytes[level])
-			if nextLevelSize > 0 {
-				// We only incur compaction debt if the next level contains data. If the
-				// next level is empty, a move-based compaction would be used.
-				levelRatio := float64(nextLevelSize) / float64(levelSize)
-				// The current level contributes bytesAddedToNextLevel to compactions.
-				// The next level contributes levelRatio * bytesAddedToNextLevel.
-				compactionDebt += uint64(float64(bytesAddedToNextLevel) * (levelRatio + 1))
-			}
-		} else {
-			// We're not moving any bytes to the next level.
-			bytesAddedToNextLevel = 0
-		}
-	}
-	return compactionDebt
 }
 
-func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []compactionInfo) {
+type preferredLSMShape struct {
+	// The base level is the level of the LSM to target for L0 compactions.
+	// Levels L1 to baseLevel must be empty.
+	baseLevel int
+	// levelMaxBytes holds the dynamically adjusted max bytes setting for each
+	// level, describing the desired LSM shape.
+	levelMaxBytes [numLevels]int64
+	// estimateDebt calculates an estimate of the number of bytes which need to
+	// be compacted before the LSM tree reaches the preferred shape and becomes
+	// stable.
+	estimatedDebt uint64
+}
+
+// calculatePreferredLSMShape calculates a target shape (how large each level
+// should be) for the LSM based on user configuration, the existing shape of the
+// database and the set of in-progress compactions. The output is an array
+// indicating a target size for each level of the LSM, as well as a base level
+// indicating the first non-L0 level that should have any data whatsoever.
+func calculatePreferredLSMShape(
+	vers *version, opts *Options, inProgressCompactions []compactionInfo,
+) (s preferredLSMShape) {
 	// The levelMaxBytes calculations here differ from RocksDB in two ways:
 	//
 	// 1. The use of dbSize vs maxLevelSize. RocksDB uses the size of the maximum
@@ -837,11 +815,11 @@ func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []comp
 	firstNonEmptyLevel := -1
 	var dbSize uint64
 	for level := 1; level < numLevels; level++ {
-		if p.vers.Levels[level].Size() > 0 {
+		if vers.Levels[level].Size() > 0 {
 			if firstNonEmptyLevel == -1 {
 				firstNonEmptyLevel = level
 			}
-			dbSize += p.vers.Levels[level].Size()
+			dbSize += vers.Levels[level].Size()
 		}
 	}
 	for _, c := range inProgressCompactions {
@@ -857,56 +835,95 @@ func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []comp
 	// disallow compaction for that level. We'll fill in the actual value below
 	// for levels we want to allow compactions from.
 	for level := 0; level < numLevels; level++ {
-		p.levelMaxBytes[level] = math.MaxInt64
+		s.levelMaxBytes[level] = math.MaxInt64
 	}
 
 	if dbSize == 0 {
 		// No levels for L1 and up contain any data. Target L0 compactions for the
 		// last level or to the level to which there is an ongoing L0 compaction.
-		p.baseLevel = numLevels - 1
+		s.baseLevel = numLevels - 1
 		if firstNonEmptyLevel >= 0 {
-			p.baseLevel = firstNonEmptyLevel
+			s.baseLevel = firstNonEmptyLevel
 		}
+		// If all levels L1+ are empty, any data in L0 may be compacted into
+		// Lbase with move compactions.
+		s.estimatedDebt = 0
 		return
 	}
 
-	dbSize += p.vers.Levels[0].Size()
-	bottomLevelSize := dbSize - dbSize/uint64(p.opts.Experimental.LevelMultiplier)
+	dbSize += vers.Levels[0].Size()
+	bottomLevelSize := dbSize - dbSize/uint64(opts.Experimental.LevelMultiplier)
 
 	curLevelSize := bottomLevelSize
 	for level := numLevels - 2; level >= firstNonEmptyLevel; level-- {
-		curLevelSize = uint64(float64(curLevelSize) / float64(p.opts.Experimental.LevelMultiplier))
+		curLevelSize = uint64(float64(curLevelSize) / float64(opts.Experimental.LevelMultiplier))
 	}
 
 	// Compute base level (where L0 data is compacted to).
-	baseBytesMax := uint64(p.opts.LBaseMaxBytes)
-	p.baseLevel = firstNonEmptyLevel
-	for p.baseLevel > 1 && curLevelSize > baseBytesMax {
-		p.baseLevel--
-		curLevelSize = uint64(float64(curLevelSize) / float64(p.opts.Experimental.LevelMultiplier))
+	baseBytesMax := uint64(opts.LBaseMaxBytes)
+	s.baseLevel = firstNonEmptyLevel
+	for s.baseLevel > 1 && curLevelSize > baseBytesMax {
+		s.baseLevel--
+		curLevelSize = uint64(float64(curLevelSize) / float64(opts.Experimental.LevelMultiplier))
 	}
 
+	// Compute levelMaxBytes: the maximum number of bytes to allow in each level
+	// in a stable state.
 	smoothedLevelMultiplier := 1.0
-	if p.baseLevel < numLevels-1 {
+	if s.baseLevel < numLevels-1 {
 		smoothedLevelMultiplier = math.Pow(
 			float64(bottomLevelSize)/float64(baseBytesMax),
-			1.0/float64(numLevels-p.baseLevel-1))
+			1.0/float64(numLevels-s.baseLevel-1))
 	}
-
 	levelSize := float64(baseBytesMax)
-	for level := p.baseLevel; level < numLevels; level++ {
-		if level > p.baseLevel && levelSize > 0 {
+	for level := s.baseLevel; level < numLevels; level++ {
+		if level > s.baseLevel && levelSize > 0 {
 			levelSize *= smoothedLevelMultiplier
 		}
 		// Round the result since test cases use small target level sizes, which
 		// can be impacted by floating-point imprecision + integer truncation.
 		roundedLevelSize := math.Round(levelSize)
 		if roundedLevelSize > float64(math.MaxInt64) {
-			p.levelMaxBytes[level] = math.MaxInt64
+			s.levelMaxBytes[level] = math.MaxInt64
 		} else {
-			p.levelMaxBytes[level] = int64(roundedLevelSize)
+			s.levelMaxBytes[level] = int64(roundedLevelSize)
 		}
 	}
+
+	// Finally, an estimate of the volume of compaction "debt".
+	// We assume that all the bytes in L0 need to be compacted to Lbase. This is
+	// unlike the RocksDB logic that figures out whether L0 needs compaction.
+	s.estimatedDebt = 0
+	bytesAddedToNextLevel := vers.Levels[0].Size()
+	lbaseSize := vers.Levels[s.baseLevel].Size()
+	if bytesAddedToNextLevel > 0 && lbaseSize > 0 {
+		// We only incur compaction debt if both L0 and Lbase contain data. If L0
+		// is empty, no compaction is necessary. If Lbase is empty, a move-based
+		// compaction from L0 would occur.
+		s.estimatedDebt += bytesAddedToNextLevel + lbaseSize
+	}
+
+	// loop invariant: At the beginning of the loop, bytesAddedToNextLevel is the
+	// bytes added to `level` in the loop.
+	for level := s.baseLevel; level < numLevels-1; level++ {
+		levelSize := vers.Levels[level].Size() + bytesAddedToNextLevel
+		nextLevelSize := vers.Levels[level+1].Size()
+		if levelSize > uint64(s.levelMaxBytes[level]) {
+			bytesAddedToNextLevel = levelSize - uint64(s.levelMaxBytes[level])
+			if nextLevelSize > 0 {
+				// We only incur compaction debt if the next level contains data. If the
+				// next level is empty, a move-based compaction would be used.
+				levelRatio := float64(nextLevelSize) / float64(levelSize)
+				// The current level contributes bytesAddedToNextLevel to compactions.
+				// The next level contributes levelRatio * bytesAddedToNextLevel.
+				s.estimatedDebt += uint64(float64(bytesAddedToNextLevel) * (levelRatio + 1))
+			}
+		} else {
+			// We're not moving any bytes to the next level.
+			bytesAddedToNextLevel = 0
+		}
+	}
+	return s
 }
 
 type levelSizeAdjust struct {
@@ -970,8 +987,8 @@ func levelCompensatedSize(lm manifest.LevelMetadata) uint64 {
 	return *lm.Annotation(compensatedSizeAnnotator{}).(*uint64)
 }
 
-func (p *compactionPickerByScore) calculateLevelScores(
-	inProgressCompactions []compactionInfo,
+func calculateLevelScores(
+	vers *version, opts *Options, shape *preferredLSMShape, inProgressCompactions []compactionInfo,
 ) [numLevels]candidateLevelInfo {
 	var scores [numLevels]candidateLevelInfo
 	for i := range scores {
@@ -979,20 +996,20 @@ func (p *compactionPickerByScore) calculateLevelScores(
 		scores[i].outputLevel = i + 1
 	}
 	scores[0] = candidateLevelInfo{
-		outputLevel: p.baseLevel,
-		score:       calculateL0Score(p.vers, p.opts, inProgressCompactions),
+		outputLevel: shape.baseLevel,
+		score:       calculateL0Score(vers, opts, inProgressCompactions),
 	}
 	sizeAdjust := calculateSizeAdjust(inProgressCompactions)
 	for level := 1; level < numLevels; level++ {
-		compensatedLevelSize := levelCompensatedSize(p.vers.Levels[level]) + sizeAdjust[level].compensated()
-		scores[level].score = float64(compensatedLevelSize) / float64(p.levelMaxBytes[level])
+		compensatedLevelSize := levelCompensatedSize(vers.Levels[level]) + sizeAdjust[level].compensated()
+		scores[level].score = float64(compensatedLevelSize) / float64(shape.levelMaxBytes[level])
 		scores[level].origScore = scores[level].score
 
 		// In addition to the compensated score, we calculate a separate score
 		// that uses actual file sizes, not compensated sizes. This is used
 		// during score smoothing down below to prevent excessive
 		// prioritization of reclaiming disk space.
-		scores[level].rawScore = float64(p.vers.Levels[level].Size()+sizeAdjust[level].actual()) / float64(p.levelMaxBytes[level])
+		scores[level].rawScore = float64(vers.Levels[level].Size()+sizeAdjust[level].actual()) / float64(shape.levelMaxBytes[level])
 	}
 
 	// Adjust each level's score by the score of the next level. If the next
@@ -1017,7 +1034,7 @@ func (p *compactionPickerByScore) calculateLevelScores(
 	//   L5        3.4        2.0      6.6 G      3.3 G
 	//   L6        0.6        0.6       14 G       24 G
 	var prevLevel int
-	for level := p.baseLevel; level < numLevels; level++ {
+	for level := shape.baseLevel; level < numLevels; level++ {
 		if scores[prevLevel].score >= 1 {
 			// Avoid absurdly large scores by placing a floor on the score that we'll
 			// adjust a level by. The value of 0.01 was chosen somewhat arbitrarily
@@ -1201,6 +1218,14 @@ func pickCompactionSeedFile(
 // If a score-based compaction cannot be found, pickAuto falls back to looking
 // for an elision-only compaction to remove obsolete keys.
 func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompaction) {
+	// Compute the preferred shape of the LSM based on user configuration (eg,
+	// Options.LBaseMaxBytes), the current size of the levels, and the set of
+	// in-flight compactions that will soon alter the sizes of levels. We
+	// compute this first so that we have an up-to-date calculation of the
+	// estimated compaction debt when we determine whether or not we want to
+	// allow another concurrent compaction to begin.
+	p.preferredLSMShape = calculatePreferredLSMShape(p.vers, p.opts, env.inProgressCompactions)
+
 	// Compaction concurrency is controlled by L0 read-amp. We allow one
 	// additional compaction per L0CompactionConcurrency sublevels, as well as
 	// one additional compaction per CompactionDebtConcurrency bytes of
@@ -1211,15 +1236,18 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 	// bytes have been compacted further down the LSM.
 	if n := len(env.inProgressCompactions); n > 0 {
 		l0ReadAmp := p.vers.L0Sublevels.MaxDepthAfterOngoingCompactions()
-		compactionDebt := p.estimatedCompactionDebt(0)
 		ccSignal1 := n * p.opts.Experimental.L0CompactionConcurrency
 		ccSignal2 := uint64(n) * p.opts.Experimental.CompactionDebtConcurrency
-		if l0ReadAmp < ccSignal1 && compactionDebt < ccSignal2 {
+		if l0ReadAmp < ccSignal1 && p.preferredLSMShape.estimatedDebt < ccSignal2 {
 			return nil
 		}
 	}
 
-	scores := p.calculateLevelScores(env.inProgressCompactions)
+	// Based on the current level sizes and the preferred LSM shape computed
+	// earlier, assign each level a float score indicating the relative priority
+	// of compacting the level. A score < 1.0 indicates that a level is already
+	// appropriately sized.
+	p.levelScores = calculateLevelScores(p.vers, p.opts, &p.preferredLSMShape, env.inProgressCompactions)
 
 	// TODO(bananabrick): Either remove, or change this into an event sent to the
 	// EventListener.
@@ -1231,9 +1259,9 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 			}
 
 			var info *candidateLevelInfo
-			for j := range scores {
-				if scores[j].level == i {
-					info = &scores[j]
+			for j := range p.levelScores {
+				if p.levelScores[j].level == i {
+					info = &p.levelScores[j]
 					break
 				}
 			}
@@ -1276,8 +1304,8 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 	// Check for a score-based compaction. "scores" has been sorted in order of
 	// decreasing score. For each level with a score >= 1, we attempt to find a
 	// compaction anchored at at that level.
-	for i := range scores {
-		info := &scores[i]
+	for i := range p.levelScores {
+		info := &p.levelScores[i]
 		if info.score < 1 {
 			break
 		}
@@ -1290,7 +1318,7 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 			// Fail-safe to protect against compacting the same sstable
 			// concurrently.
 			if pc != nil && !inputRangeAlreadyCompacting(env, pc) {
-				p.addScoresToPickedCompactionMetrics(pc, scores)
+				p.addScoresToPickedCompactionMetrics(pc, p.levelScores)
 				pc.score = info.score
 				// TODO(bananabrick): Create an EventListener for logCompaction.
 				if false {
@@ -1311,7 +1339,7 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 		pc := pickAutoLPositive(env, p.opts, p.vers, *info, p.baseLevel, p.levelMaxBytes)
 		// Fail-safe to protect against compacting the same sstable concurrently.
 		if pc != nil && !inputRangeAlreadyCompacting(env, pc) {
-			p.addScoresToPickedCompactionMetrics(pc, scores)
+			p.addScoresToPickedCompactionMetrics(pc, p.levelScores)
 			pc.score = info.score
 			// TODO(bananabrick): Create an EventListener for logCompaction.
 			if false {

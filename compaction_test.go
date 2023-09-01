@@ -46,12 +46,12 @@ func newVersion(opts *Options, files [numLevels][]*fileMetadata) *version {
 }
 
 type compactionPickerForTesting struct {
-	score         float64
-	level         int
-	baseLevel     int
-	opts          *Options
-	vers          *manifest.Version
-	maxLevelBytes [7]int64
+	score float64
+	level int
+	opts  *Options
+	vers  *manifest.Version
+	pickerStatistics
+	preferredLSMShape
 }
 
 var _ compactionPicker = &compactionPickerForTesting{}
@@ -60,8 +60,10 @@ func (p *compactionPickerForTesting) getScores([]compactionInfo) [numLevels]floa
 	return [numLevels]float64{}
 }
 
-func (p *compactionPickerForTesting) getBaseLevel() int {
-	return p.baseLevel
+func (p *compactionPickerForTesting) getBaseLevel() int { return p.baseLevel }
+
+func (p *compactionPickerForTesting) getStatistics() pickerStatistics {
+	return p.pickerStatistics
 }
 
 func (p *compactionPickerForTesting) estimatedCompactionDebt(l0ExtraSize uint64) uint64 {
@@ -88,7 +90,7 @@ func (p *compactionPickerForTesting) pickAuto(env compactionEnv) (pc *pickedComp
 	if cInfo.level == 0 {
 		return pickL0(env, p.opts, p.vers, p.baseLevel)
 	}
-	return pickAutoLPositive(env, p.opts, p.vers, cInfo, p.baseLevel, p.maxLevelBytes)
+	return pickAutoLPositive(env, p.opts, p.vers, cInfo, p.baseLevel, p.preferredLSMShape.levelMaxBytes)
 }
 
 func (p *compactionPickerForTesting) pickElisionOnlyCompaction(
@@ -164,9 +166,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     0,
-				baseLevel: 1,
+				score:             99,
+				level:             0,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "100  ",
 		},
@@ -190,9 +192,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     0,
-				baseLevel: 1,
+				score:             99,
+				level:             0,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "100,110  ",
 		},
@@ -216,9 +218,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     0,
-				baseLevel: 1,
+				score:             99,
+				level:             0,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "100,110  ",
 		},
@@ -242,9 +244,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     0,
-				baseLevel: 1,
+				score:             99,
+				level:             0,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "100,110  ",
 		},
@@ -276,9 +278,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     0,
-				baseLevel: 1,
+				score:             99,
+				level:             0,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "100  ",
 		},
@@ -336,9 +338,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     0,
-				baseLevel: 1,
+				score:             99,
+				level:             0,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "100 210 310,320,330",
 		},
@@ -388,9 +390,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     1,
-				baseLevel: 1,
+				score:             99,
+				level:             1,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want:      "200,210,220 300  ",
 			wantMulti: true,
@@ -441,9 +443,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     1,
-				baseLevel: 1,
+				score:             99,
+				level:             1,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want:      "200 300  ",
 			wantMulti: true,
@@ -494,9 +496,9 @@ func TestPickCompaction(t *testing.T) {
 				},
 			}),
 			picker: compactionPickerForTesting{
-				score:     99,
-				level:     1,
-				baseLevel: 1,
+				score:             99,
+				level:             1,
+				preferredLSMShape: preferredLSMShape{baseLevel: 1},
 			},
 			want: "200 300 ",
 		},

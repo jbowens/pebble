@@ -1906,7 +1906,11 @@ func (d *DB) Metrics() *Metrics {
 	d.mu.Lock()
 	vers := d.mu.versions.currentVersion()
 	*metrics = d.mu.versions.metrics
-	metrics.Compact.EstimatedDebt = d.mu.versions.picker.estimatedCompactionDebt(0)
+	lsmStats := d.mu.versions.picker.getStatistics()
+	for _, l := range lsmStats.levelScores {
+		metrics.Levels[l.level].Score = l.score
+	}
+	metrics.Compact.EstimatedDebt = lsmStats.estimatedDebt
 	metrics.Compact.InProgressBytes = d.mu.versions.atomicInProgressBytes.Load()
 	metrics.Compact.NumInProgress = int64(d.mu.compact.compactingCount)
 	metrics.Compact.MarkedFiles = vers.Stats.MarkedForCompaction
@@ -1950,12 +1954,6 @@ func (d *DB) Metrics() *Metrics {
 		metrics.WAL.Size += d.mu.mem.queue[i].logSize
 	}
 	metrics.WAL.BytesWritten = metrics.Levels[0].BytesIn + metrics.WAL.Size
-	if p := d.mu.versions.picker; p != nil {
-		compactions := d.getInProgressCompactionInfoLocked(nil)
-		for level, score := range p.getScores(compactions) {
-			metrics.Levels[level].Score = score
-		}
-	}
 	metrics.Table.ZombieCount = int64(len(d.mu.versions.zombieTables))
 	for _, size := range d.mu.versions.zombieTables {
 		metrics.Table.ZombieSize += size

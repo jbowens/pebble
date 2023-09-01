@@ -124,6 +124,20 @@ func loadVersion(t *testing.T, d *datadriven.TestData) (*version, *Options, stri
 	return vers, opts, ""
 }
 
+func (s *preferredLSMShape) String() string {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "baseLevel: %d, estimated debt: %d", s.baseLevel, s.estimatedDebt)
+	fmt.Fprintf(&buf, ", level max bytes: (")
+	for i := 0; i < numLevels; i++ {
+		if i > 0 {
+			fmt.Fprint(&buf, ", ")
+		}
+		fmt.Fprintf(&buf, "L%d: %d", i, s.levelMaxBytes[i])
+	}
+	fmt.Fprintln(&buf)
+	return buf.String()
+}
+
 func TestCompactionPickerByScoreLevelMaxBytes(t *testing.T) {
 	datadriven.RunTest(t, "testdata/compaction_picker_level_max_bytes",
 		func(t *testing.T, d *datadriven.TestData) string {
@@ -134,8 +148,7 @@ func TestCompactionPickerByScoreLevelMaxBytes(t *testing.T) {
 					return errMsg
 				}
 
-				p, ok := newCompactionPicker(vers, opts, nil).(*compactionPickerByScore)
-				require.True(t, ok)
+				p := newCompactionPicker(vers, opts, nil)
 				var buf bytes.Buffer
 				for level := p.getBaseLevel(); level < numLevels; level++ {
 					fmt.Fprintf(&buf, "%d: %d\n", level, p.levelMaxBytes[level])
@@ -217,10 +230,7 @@ func TestCompactionPickerTargetLevel(t *testing.T) {
 					}
 				}
 
-				p := newCompactionPicker(vers, opts, inProgress)
-				var ok bool
-				pickerByScore, ok = p.(*compactionPickerByScore)
-				require.True(t, ok)
+				pickerByScore = newCompactionPicker(vers, opts, inProgress)
 				return fmt.Sprintf("base: %d", pickerByScore.baseLevel)
 			case "queue":
 				var b strings.Builder
@@ -355,10 +365,8 @@ func TestCompactionPickerEstimatedCompactionDebt(t *testing.T) {
 					return errMsg
 				}
 				opts.MemTableSize = 1000
-
 				p := newCompactionPicker(vers, opts, nil)
-				return fmt.Sprintf("%d\n", p.estimatedCompactionDebt(0))
-
+				return fmt.Sprintf("%d\n", p.preferredLSMShape.estimatedDebt)
 			default:
 				return fmt.Sprintf("unknown command: %s", d.Cmd)
 			}
@@ -508,12 +516,14 @@ func TestCompactionPickerL0(t *testing.T) {
 			vs.versions.Init(nil)
 			vs.append(version)
 			picker = &compactionPickerByScore{
-				opts:      opts,
-				vers:      version,
-				baseLevel: baseLevel,
+				opts: opts,
+				vers: version,
+				preferredLSMShape: preferredLSMShape{
+					baseLevel: baseLevel,
+				},
 			}
+			picker.preferredLSMShape = calculatePreferredLSMShape(version, opts, inProgressCompactions)
 			vs.picker = picker
-			picker.initLevelMaxBytes(inProgressCompactions)
 
 			var buf bytes.Buffer
 			fmt.Fprint(&buf, version.String())
@@ -731,8 +741,7 @@ func TestCompactionPickerConcurrency(t *testing.T) {
 			}
 			vs.versions.Init(nil)
 			vs.append(version)
-
-			picker = newCompactionPicker(version, opts, inProgressCompactions).(*compactionPickerByScore)
+			picker = newCompactionPicker(version, opts, inProgressCompactions)
 			vs.picker = picker
 
 			var buf bytes.Buffer
@@ -850,7 +859,7 @@ func TestCompactionPickerPickReadTriggered(t *testing.T) {
 			vs.versions.Init(nil)
 			vs.append(vers)
 			var inProgressCompactions []compactionInfo
-			picker = newCompactionPicker(vers, opts, inProgressCompactions).(*compactionPickerByScore)
+			picker = newCompactionPicker(vers, opts, inProgressCompactions)
 			vs.picker = picker
 
 			var buf bytes.Buffer
@@ -1259,7 +1268,7 @@ func TestCompactionOutputFileSize(t *testing.T) {
 			vs.versions.Init(nil)
 			vs.append(vers)
 			var inProgressCompactions []compactionInfo
-			picker = newCompactionPicker(vers, opts, inProgressCompactions).(*compactionPickerByScore)
+			picker = newCompactionPicker(vers, opts, inProgressCompactions)
 			vs.picker = picker
 
 			var buf bytes.Buffer

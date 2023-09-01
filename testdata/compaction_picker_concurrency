@@ -1,6 +1,6 @@
 # Test a file L1.000203 that would be a candidate for a move compaction into
 # L2, except that it's bordered by two files participating in the same
-# compaction. This is possible if 000203 created by a L0->L1 compaction that
+# compaction. This is possible if 000203 was created by a L0->L1 compaction that
 # completed after the compaction of 000201 and 000202 began.
 #
 # The in-progress compaction of 000201 and 000202  will write an output table
