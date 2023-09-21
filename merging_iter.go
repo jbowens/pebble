@@ -1044,6 +1044,10 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) {
 		}
 
 		l := &m.levels[level]
+		if flags.TrySeekUsingNext() && (l.iterKey == nil || m.heap.cmp(l.iterKey.UserKey, key) >= 0) {
+			continue
+		}
+
 		if m.prefix != nil {
 			l.iterKey, l.iterValue = l.iter.SeekPrefixGE(m.prefix, key, flags)
 		} else {
