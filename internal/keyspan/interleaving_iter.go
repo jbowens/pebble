@@ -149,6 +149,9 @@ type InterleavingIter struct {
 	// maskSpanChangedCalled records whether or not the last call to
 	// SpanMask.SpanChanged provided the current span (i.span) or not.
 	maskSpanChangedCalled bool
+	// interleaveEndBounds configures whether or not to yield keyspan end
+	// boundaries to the caller.
+	interleaveEndBounds bool
 	// dir indicates the direction of iteration: forward (+1) or backward (-1)
 	dir int8
 }
@@ -176,6 +179,12 @@ var _ base.InternalIterator = &InterleavingIter{}
 type InterleavingIterOpts struct {
 	Mask                   SpanMask
 	LowerBound, UpperBound []byte
+	// InterleaveEndBounds configures the interleaving iterator to interleave
+	// not just keyspan start bounds but end boundaries as well. This may be
+	// used by a caller to signal when the iterator has stepped beyond a span's
+	// bounds, or to ensure keyspan iterators are kept open as long as a merging
+	// iterator is positioned within its bounds.
+	InterleaveEndBounds bool
 }
 
 // Init initializes the InterleavingIter to interleave point keys from pointIter
@@ -190,13 +199,14 @@ func (i *InterleavingIter) Init(
 	opts InterleavingIterOpts,
 ) {
 	*i = InterleavingIter{
-		cmp:         comparer.Compare,
-		comparer:    comparer,
-		pointIter:   pointIter,
-		keyspanIter: keyspanIter,
-		mask:        opts.Mask,
-		lower:       opts.LowerBound,
-		upper:       opts.UpperBound,
+		cmp:                 comparer.Compare,
+		comparer:            comparer,
+		pointIter:           pointIter,
+		keyspanIter:         keyspanIter,
+		mask:                opts.Mask,
+		lower:               opts.LowerBound,
+		upper:               opts.UpperBound,
+		interleaveEndBounds: opts.InterleaveEndBounds,
 	}
 }
 
@@ -742,16 +752,19 @@ func (i *InterleavingIter) yieldPosition(
 			}
 			return i.yieldPointKey()
 		case posKeyspanEnd:
-			// Don't interleave end keys; just advance.
-			advance()
-			continue
+			if i.span.Empty() || !i.interleaveEndBounds {
+				// Don't interleave end keys; just advance.
+				advance()
+				continue
+			}
+			return i.yieldSyntheticSpanBound(lowerBound, i.span.End)
 		case posKeyspanStart:
 			// Don't interleave an empty span.
 			if i.span.Empty() {
 				advance()
 				continue
 			}
-			return i.yieldSyntheticSpanMarker(lowerBound)
+			return i.yieldSyntheticSpanBound(lowerBound, i.startKey())
 		default:
 			panic(fmt.Sprintf("unexpected interleavePos=%d", i.pos))
 		}
@@ -886,17 +899,17 @@ func (i *InterleavingIter) yieldPointKey() (*base.InternalKey, base.LazyValue) {
 	return i.verify(i.pointKey, i.pointVal)
 }
 
-func (i *InterleavingIter) yieldSyntheticSpanMarker(
-	lowerBound []byte,
+func (i *InterleavingIter) yieldSyntheticSpanBound(
+	lowerBound []byte, boundKey []byte,
 ) (*base.InternalKey, base.LazyValue) {
-	i.spanMarker.UserKey = i.startKey()
+	i.spanMarker.UserKey = boundKey
 	i.spanMarker.Trailer = base.MakeTrailer(base.InternalKeySeqNumMax, i.span.Keys[0].Kind())
 
 	// Truncate the key we return to our lower bound if we have one. Note that
 	// we use the lowerBound function parameter, not i.lower. The lowerBound
 	// argument is guaranteed to be ≥ i.lower. It may be equal to the SetBounds
 	// lower bound, or it could come from a SeekGE or SeekPrefixGE search key.
-	if lowerBound != nil && i.cmp(lowerBound, i.startKey()) > 0 {
+	if lowerBound != nil && i.cmp(lowerBound, boundKey) > 0 {
 		// Truncating to the lower bound may violate the upper bound if
 		// lowerBound == i.upper. For example, a SeekGE(k) uses k as a lower
 		// bound for truncating a span. The span a-z will be truncated to [k,

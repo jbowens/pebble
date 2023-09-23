@@ -109,8 +109,6 @@ func runInterleavingIterTest(t *testing.T, filename string) {
 			}
 			keyspanIter.Init(cmp, noopTransform, new(MergingBuffers), NewIter(cmp, spans))
 			hooks.maskSuffix = nil
-			iter.Init(testkeys.Comparer, &pointIter, &keyspanIter,
-				InterleavingIterOpts{Mask: &hooks})
 			return "OK"
 		case "define-pointkeys":
 			var points []base.InternalKey
@@ -120,10 +118,11 @@ func runInterleavingIterTest(t *testing.T, filename string) {
 			}
 			pointIter = pointIterator{cmp: cmp, keys: points}
 			hooks.maskSuffix = nil
-			iter.Init(testkeys.Comparer, &pointIter, &keyspanIter,
-				InterleavingIterOpts{Mask: &hooks})
 			return "OK"
 		case "iter":
+			opts := InterleavingIterOpts{Mask: &hooks}
+			td.MaybeScanArgs(t, "interleave-end", &opts.InterleaveEndBounds)
+			iter.Init(testkeys.Comparer, &pointIter, &keyspanIter, opts)
 			buf.Reset()
 			// Clear any previous bounds.
 			iter.SetBounds(nil, nil)
