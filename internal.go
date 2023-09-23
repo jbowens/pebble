@@ -4,7 +4,12 @@
 
 package pebble
 
-import "github.com/cockroachdb/pebble/internal/base"
+import (
+	"sync"
+
+	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/keyspan"
+)
 
 // InternalKeyKind exports the base.InternalKeyKind type.
 type InternalKeyKind = base.InternalKeyKind
@@ -49,3 +54,35 @@ type ShortAttribute = base.ShortAttribute
 // LazyValue.Clone requires a pointer to a LazyFetcher struct to avoid
 // allocations. No code outside Pebble needs to peer into a LazyFetcher.
 type LazyFetcher = base.LazyFetcher
+
+func maybeCombineIterators(
+	comparer *base.Comparer, pointIter internalIterator, rangeDelIter keyspan.FragmentIterator,
+) (internalIterator, func() *keyspan.Span) {
+	if rangeDelIter == nil {
+		return pointIter, getTombstoneNil
+	}
+	ii := interleavingIterPool.Get().(*interleavingIter)
+	ii.Init(comparer, pointIter, rangeDelIter, keyspan.InterleavingIterOpts{
+		InterleaveEndBounds: true,
+	})
+	return ii, ii.Span
+}
+
+type interleavingIter struct {
+	keyspan.InterleavingIter
+}
+
+func (i *interleavingIter) Close() error {
+	err := i.InterleavingIter.Close()
+	*i = interleavingIter{}
+	interleavingIterPool.Put(i)
+	return err
+}
+
+var interleavingIterPool = sync.Pool{
+	New: func() any {
+		return new(interleavingIter)
+	},
+}
+
+func getTombstoneNil() *keyspan.Span { return nil }

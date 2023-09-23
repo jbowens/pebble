@@ -29,25 +29,6 @@ import (
 var emptyIter = &errorIter{err: nil}
 var emptyKeyspanIter = &errorKeyspanIter{err: nil}
 
-// filteredAll is a singleton internalIterator implementation used when an
-// sstable does contain point keys, but all the keys are filtered by the active
-// PointKeyFilters set in the iterator's IterOptions.
-//
-// filteredAll implements filteredIter, ensuring the level iterator recognizes
-// when it may need to return file boundaries to keep the rangeDelIter open
-// during mergingIter operation.
-var filteredAll = &filteredAllKeysIter{errorIter: errorIter{err: nil}}
-
-var _ filteredIter = filteredAll
-
-type filteredAllKeysIter struct {
-	errorIter
-}
-
-func (s *filteredAllKeysIter) MaybeFilteredKeys() bool {
-	return true
-}
-
 var tableCacheLabels = pprof.Labels("pebble", "table-cache")
 
 // tableCacheOpts contains the db specific fields
@@ -475,11 +456,7 @@ func (c *tableCacheShard) newIters(
 		// block property filters exclude all the file's point keys. The range
 		// deletions may still delete keys lower in the LSM in files that DO
 		// match the active filters.
-		//
-		// The point iterator returned must implement the filteredIter
-		// interface, so that the level iterator surfaces file boundaries when
-		// range deletions are present.
-		return filteredAll, rangeDelIter, err
+		return emptyIter, rangeDelIter, err
 	}
 
 	var iter sstable.Iterator

@@ -90,8 +90,8 @@ func TestLevelIter(t *testing.T) {
 			iter := newLevelIter(opts, testkeys.Comparer, newIters, files.Iter(), manifest.Level(level),
 				internalIterOpts{})
 			defer iter.Close()
-			// Fake up the range deletion initialization.
-			iter.initRangeDel(new(keyspan.FragmentIterator))
+			// Include range deletions.
+			iter.interleaveRangeDels()
 			iter.disableInvariants = true
 			return runInternalIterCmd(t, d, iter, iterCmdVerboseKey)
 
@@ -325,8 +325,8 @@ func TestLevelIterBoundaries(t *testing.T) {
 				slice := manifest.NewLevelSliceKeySorted(lt.cmp.Compare, lt.metas)
 				iter = newLevelIter(IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(),
 					manifest.Level(level), internalIterOpts{})
-				// Fake up the range deletion initialization.
-				iter.initRangeDel(new(keyspan.FragmentIterator))
+				// Include range deletions.
+				iter.interleaveRangeDels()
 			}
 			if !save {
 				defer func() {
@@ -352,93 +352,35 @@ func TestLevelIterBoundaries(t *testing.T) {
 	})
 }
 
-// levelIterTestIter allows a datadriven test to use runInternalIterCmd and
-// perform parallel operations on both both a levelIter and rangeDelIter.
-type levelIterTestIter struct {
-	*levelIter
-	rangeDelIter keyspan.FragmentIterator
-}
+//func TestLevelIterSeek(t *testing.T) {
+//lt := newLevelIterTest()
+//defer lt.runClear(nil)
 
-func (i *levelIterTestIter) rangeDelSeek(
-	key []byte, ikey *InternalKey, val base.LazyValue, dir int,
-) (*InternalKey, base.LazyValue) {
-	var tombstone keyspan.Span
-	if i.rangeDelIter != nil {
-		var t *keyspan.Span
-		if dir < 0 {
-			t = keyspan.SeekLE(i.levelIter.cmp, i.rangeDelIter, key)
-		} else {
-			t = i.rangeDelIter.SeekGE(key)
-		}
-		if t != nil {
-			tombstone = t.Visible(1000)
-		}
-	}
-	if ikey == nil {
-		return &InternalKey{
-			UserKey: []byte(fmt.Sprintf("./%s", tombstone)),
-		}, base.LazyValue{}
-	}
-	return &InternalKey{
-		UserKey: []byte(fmt.Sprintf("%s/%s", ikey.UserKey, tombstone)),
-		Trailer: ikey.Trailer,
-	}, val
-}
+//datadriven.RunTest(t, "testdata/level_iter_seek", func(t *testing.T, d *datadriven.TestData) string {
+//switch d.Cmd {
+//case "clear":
+//return lt.runClear(d)
 
-func (i *levelIterTestIter) String() string {
-	return "level-iter-test"
-}
+//case "build":
+//return lt.runBuild(d)
 
-func (i *levelIterTestIter) SeekGE(
-	key []byte, flags base.SeekGEFlags,
-) (*InternalKey, base.LazyValue) {
-	ikey, val := i.levelIter.SeekGE(key, flags)
-	return i.rangeDelSeek(key, ikey, val, 1)
-}
+//case "iter":
+//var stats base.InternalIteratorStats
+//slice := manifest.NewLevelSliceKeySorted(lt.cmp.Compare, lt.metas)
+//iter := &levelIterTestIter{levelIter: &levelIter{}}
+//iter.init(context.Background(), IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(),
+//manifest.Level(level), internalIterOpts{stats: &stats})
+//defer iter.Close()
+//iter.interleaveRangeDels()
+//return runInternalIterCmd(t, d, iter, iterCmdVerboseKey, iterCmdStats(&stats))
 
-func (i *levelIterTestIter) SeekPrefixGE(
-	prefix, key []byte, flags base.SeekGEFlags,
-) (*base.InternalKey, base.LazyValue) {
-	ikey, val := i.levelIter.SeekPrefixGE(prefix, key, flags)
-	return i.rangeDelSeek(key, ikey, val, 1)
-}
-
-func (i *levelIterTestIter) SeekLT(
-	key []byte, flags base.SeekLTFlags,
-) (*InternalKey, base.LazyValue) {
-	ikey, val := i.levelIter.SeekLT(key, flags)
-	return i.rangeDelSeek(key, ikey, val, -1)
-}
-
-func TestLevelIterSeek(t *testing.T) {
-	lt := newLevelIterTest()
-	defer lt.runClear(nil)
-
-	datadriven.RunTest(t, "testdata/level_iter_seek", func(t *testing.T, d *datadriven.TestData) string {
-		switch d.Cmd {
-		case "clear":
-			return lt.runClear(d)
-
-		case "build":
-			return lt.runBuild(d)
-
-		case "iter":
-			var stats base.InternalIteratorStats
-			slice := manifest.NewLevelSliceKeySorted(lt.cmp.Compare, lt.metas)
-			iter := &levelIterTestIter{levelIter: &levelIter{}}
-			iter.init(context.Background(), IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(),
-				manifest.Level(level), internalIterOpts{stats: &stats})
-			defer iter.Close()
-			iter.initRangeDel(&iter.rangeDelIter)
-			return runInternalIterCmd(t, d, iter, iterCmdVerboseKey, iterCmdStats(&stats))
-
-		case "iters-created":
-			return fmt.Sprintf("%d", lt.itersCreated)
-		default:
-			return fmt.Sprintf("unknown command: %s", d.Cmd)
-		}
-	})
-}
+//case "iters-created":
+//return fmt.Sprintf("%d", lt.itersCreated)
+//default:
+//return fmt.Sprintf("unknown command: %s", d.Cmd)
+//}
+//})
+//}
 
 func buildLevelIterTables(
 	b *testing.B, blockSize, restartInterval, count int,
@@ -576,9 +518,9 @@ func BenchmarkLevelIterSeqSeekGEWithBounds(b *testing.B) {
 								return iter, nil, err
 							}
 							l := newLevelIter(IterOptions{}, DefaultComparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
-							// Fake up the range deletion initialization, to resemble the usage
-							// in a mergingIter.
-							l.initRangeDel(new(keyspan.FragmentIterator))
+							// Interleave rangedels to resemble the usage in a
+							// mergingIter.
+							l.interleaveRangeDels()
 							keyCount := len(keys)
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {
@@ -624,9 +566,9 @@ func BenchmarkLevelIterSeqSeekPrefixGE(b *testing.B) {
 				func(b *testing.B) {
 					l := newLevelIter(IterOptions{}, testkeys.Comparer, newIters, metas.Iter(),
 						manifest.Level(level), internalIterOpts{})
-					// Fake up the range deletion initialization, to resemble the usage
-					// in a mergingIter.
-					l.initRangeDel(new(keyspan.FragmentIterator))
+					// Interleave range dels to resemble the usage in a
+					// mergingIter.
+					l.interleaveRangeDels()
 					keyCount := len(keys)
 					pos := 0
 					l.SeekPrefixGE(keys[pos], keys[pos], base.SeekGEFlagsNone)

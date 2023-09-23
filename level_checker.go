@@ -47,8 +47,8 @@ import (
 
 // The per-level structure used by simpleMergingIter.
 type simpleMergingIterLevel struct {
-	iter         internalIterator
-	rangeDelIter keyspan.FragmentIterator
+	iter        internalIterator
+	getRangeDel func() *keyspan.Span
 	levelIterBoundaryContext
 
 	iterKey   *InternalKey
@@ -104,20 +104,6 @@ func (m *simpleMergingIter) init(
 
 	if m.heap.len() == 0 {
 		return
-	}
-	m.positionRangeDels()
-}
-
-// Positions all the rangedel iterators at or past the current top of the
-// heap, using SeekGE().
-func (m *simpleMergingIter) positionRangeDels() {
-	item := &m.heap.items[0]
-	for i := range m.levels {
-		l := &m.levels[i]
-		if l.rangeDelIter == nil {
-			continue
-		}
-		l.tombstone = l.rangeDelIter.SeekGE(item.key.UserKey)
 	}
 }
 
@@ -207,7 +193,7 @@ func (m *simpleMergingIter) step() bool {
 		// this tombstone should be ignored.
 		for level := item.index + 1; level < len(m.levels); level++ {
 			lvl := &m.levels[level]
-			if lvl.rangeDelIter == nil || lvl.tombstone.Empty() {
+			if lvl.tombstone = lvl.getRangeDel(); lvl.tombstone == nil || lvl.tombstone.Empty() {
 				continue
 			}
 			if (lvl.smallestUserKey == nil || m.heap.cmp(lvl.smallestUserKey, item.key.UserKey) <= 0) &&
@@ -269,7 +255,6 @@ func (m *simpleMergingIter) step() bool {
 		}
 		return false
 	}
-	m.positionRangeDels()
 	return true
 }
 
@@ -601,19 +586,16 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 				err = firstError(err, l.iter.Close())
 				l.iter = nil
 			}
-			if l.rangeDelIter != nil {
-				err = firstError(err, l.rangeDelIter.Close())
-				l.rangeDelIter = nil
-			}
 		}
 	}()
 
 	memtables := c.readState.memtables
 	for i := len(memtables) - 1; i >= 0; i-- {
 		mem := memtables[i]
+		iter, getRangeDel := maybeCombineIterators(c.comparer, mem.newIter(nil), mem.newRangeDelIter(nil))
 		mlevels = append(mlevels, simpleMergingIterLevel{
-			iter:         mem.newIter(nil),
-			rangeDelIter: mem.newRangeDelIter(nil),
+			iter:        iter,
+			getRangeDel: getRangeDel,
 		})
 	}
 
@@ -644,7 +626,7 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 		li := &levelIter{}
 		li.init(context.Background(), iterOpts, c.comparer, c.newIters, manifestIter,
 			manifest.L0Sublevel(sublevel), internalIterOpts{})
-		li.initRangeDel(&mlevelAlloc[0].rangeDelIter)
+		li.interleaveRangeDels()
 		li.initBoundaryContext(&mlevelAlloc[0].levelIterBoundaryContext)
 		mlevelAlloc[0].iter = li
 		mlevelAlloc = mlevelAlloc[1:]
@@ -658,7 +640,7 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 		li := &levelIter{}
 		li.init(context.Background(), iterOpts, c.comparer, c.newIters,
 			current.Levels[level].Iter(), manifest.Level(level), internalIterOpts{})
-		li.initRangeDel(&mlevelAlloc[0].rangeDelIter)
+		li.interleaveRangeDels()
 		li.initBoundaryContext(&mlevelAlloc[0].levelIterBoundaryContext)
 		mlevelAlloc[0].iter = li
 		mlevelAlloc = mlevelAlloc[1:]

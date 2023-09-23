@@ -631,7 +631,7 @@ func ingestMemtableOverlaps(cmp Compare, mem flushable, keyRanges []internalKeyR
 	}
 
 	for _, kr := range keyRanges {
-		if overlapWithIterator(iter, &rangeDelIter, rkeyIter, kr, cmp) {
+		if overlapWithIterator(iter, rkeyIter, kr, cmp) {
 			closeIters()
 			return true
 		}
@@ -714,11 +714,7 @@ type internalKeyRange struct {
 }
 
 func overlapWithIterator(
-	iter internalIterator,
-	rangeDelIter *keyspan.FragmentIterator,
-	rkeyIter keyspan.FragmentIterator,
-	keyRange internalKeyRange,
-	cmp Compare,
+	iter internalIterator, rkeyIter keyspan.FragmentIterator, keyRange internalKeyRange, cmp Compare,
 ) bool {
 	// Check overlap with point operations.
 	//
@@ -789,12 +785,7 @@ func overlapWithIterator(
 			return true
 		}
 	}
-
-	// Check overlap with range deletions.
-	if rangeDelIter == nil || *rangeDelIter == nil {
-		return false
-	}
-	return computeOverlapWithSpans(*rangeDelIter)
+	return false
 }
 
 func ingestTargetLevel(
@@ -876,11 +867,7 @@ func ingestTargetLevel(
 	for subLevel := 0; subLevel < len(v.L0SublevelFiles); subLevel++ {
 		iter := newLevelIter(iterOps, comparer, newIters,
 			v.L0Sublevels.Levels[subLevel].Iter(), manifest.Level(0), internalIterOpts{})
-
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		iter.initRangeDel(&rangeDelIter)
+		iter.interleaveRangeDels()
 
 		levelIter := keyspan.LevelIter{}
 		levelIter.Init(
@@ -892,7 +879,7 @@ func ingestTargetLevel(
 			smallest: meta.Smallest,
 			largest:  meta.Largest,
 		}
-		overlap := overlapWithIterator(iter, &rangeDelIter, &levelIter, kr, comparer.Compare)
+		overlap := overlapWithIterator(iter, &levelIter, kr, comparer.Compare)
 		err := iter.Close() // Closes range del iter as well.
 		err = firstError(err, levelIter.Close())
 		if err != nil {
@@ -907,10 +894,7 @@ func ingestTargetLevel(
 	for ; level < numLevels; level++ {
 		levelIter := newLevelIter(iterOps, comparer, newIters,
 			v.Levels[level].Iter(), manifest.Level(level), internalIterOpts{})
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		levelIter.initRangeDel(&rangeDelIter)
+		levelIter.interleaveRangeDels()
 
 		rkeyLevelIter := &keyspan.LevelIter{}
 		rkeyLevelIter.Init(
@@ -922,7 +906,7 @@ func ingestTargetLevel(
 			smallest: meta.Smallest,
 			largest:  meta.Largest,
 		}
-		overlap := overlapWithIterator(levelIter, &rangeDelIter, rkeyLevelIter, kr, comparer.Compare)
+		overlap := overlapWithIterator(levelIter, rkeyLevelIter, kr, comparer.Compare)
 		err := levelIter.Close() // Closes range del iter as well.
 		err = firstError(err, rkeyLevelIter.Close())
 		if err != nil {
@@ -1315,8 +1299,7 @@ func (d *DB) ingest(
 
 		for i := len(d.mu.mem.queue) - 1; i >= 0; i-- {
 			m := d.mu.mem.queue[i]
-			iter := m.newIter(nil)
-			rangeDelIter := m.newRangeDelIter(nil)
+			iter, _ := maybeCombineIterators(d.opts.Comparer, m.newIter(nil), m.newRangeDelIter(nil))
 			rkeyIter := m.newRangeKeyIter(nil)
 
 			checkForOverlap := func(i int, meta *fileMetadata) {
@@ -1328,7 +1311,7 @@ func (d *DB) ingest(
 					smallest: meta.Smallest,
 					largest:  meta.Largest,
 				}
-				if overlapWithIterator(iter, &rangeDelIter, rkeyIter, kr, d.cmp) {
+				if overlapWithIterator(iter, rkeyIter, kr, d.cmp) {
 					// If this is the first table to overlap a flushable, save
 					// the flushable. This ingest must be ingested or flushed
 					// after it.
@@ -1352,16 +1335,13 @@ func (d *DB) ingest(
 					smallest: base.MakeInternalKey(exciseSpan.Start, InternalKeySeqNumMax, InternalKeyKindMax),
 					largest:  base.MakeExclusiveSentinelKey(InternalKeyKindRangeDelete, exciseSpan.End),
 				}
-				if overlapWithIterator(iter, &rangeDelIter, rkeyIter, kr, d.cmp) {
+				if overlapWithIterator(iter, rkeyIter, kr, d.cmp) {
 					if mem == nil {
 						mem = m
 					}
 				}
 			}
 			err := iter.Close()
-			if rangeDelIter != nil {
-				err = firstError(err, rangeDelIter.Close())
-			}
 			if rkeyIter != nil {
 				err = firstError(err, rkeyIter.Close())
 			}

@@ -1376,8 +1376,7 @@ func (i *Iterator) constructPointIter(
 			// This isn't an indexed batch. Include an error iterator so that
 			// the resulting iterator correctly surfaces ErrIndexed.
 			mlevels = append(mlevels, mergingIterLevel{
-				iter:         newErrorIter(ErrNotIndexed),
-				rangeDelIter: newErrorKeyspanIter(ErrNotIndexed),
+				iter: newErrorIter(ErrNotIndexed),
 			})
 		} else {
 			i.batch.initInternalIter(&i.opts, &i.batchPointIter)
@@ -1387,13 +1386,14 @@ func (i *Iterator) constructPointIter(
 			// written to the batch and the view of the batch is refreshed
 			// during a call to SetOptions—in this case, we need to reconstruct
 			// the point iterator to add the batch rangedel iterator.
-			var rangeDelIter keyspan.FragmentIterator
+			var iter internalIterator = &i.batchPointIter
+			var getRangeDel func() *keyspan.Span = getTombstoneNil
 			if i.batchRangeDelIter.Count() > 0 {
-				rangeDelIter = &i.batchRangeDelIter
+				iter, getRangeDel = maybeCombineIterators(&i.comparer, iter, &i.batchRangeDelIter)
 			}
 			mlevels = append(mlevels, mergingIterLevel{
-				iter:         &i.batchPointIter,
-				rangeDelIter: rangeDelIter,
+				iter:        iter,
+				getRangeDel: getRangeDel,
 			})
 		}
 	}
@@ -1401,9 +1401,10 @@ func (i *Iterator) constructPointIter(
 	// Next are the memtables.
 	for j := len(memtables) - 1; j >= 0; j-- {
 		mem := memtables[j]
+		iter, getRangeDel := maybeCombineIterators(&i.comparer, mem.newIter(&i.opts), mem.newRangeDelIter(&i.opts))
 		mlevels = append(mlevels, mergingIterLevel{
-			iter:         mem.newIter(&i.opts),
-			rangeDelIter: mem.newRangeDelIter(&i.opts),
+			iter:        iter,
+			getRangeDel: getRangeDel,
 		})
 	}
 
@@ -1417,11 +1418,12 @@ func (i *Iterator) constructPointIter(
 		li := &levels[levelsIndex]
 
 		li.init(ctx, i.opts, &i.comparer, i.newIters, files, level, internalOpts)
-		li.initRangeDel(&mlevels[mlevelsIndex].rangeDelIter)
+		li.interleaveRangeDels()
 		li.initBoundaryContext(&mlevels[mlevelsIndex].levelIterBoundaryContext)
 		li.initCombinedIterState(&i.lazyCombinedIter.combinedIterState)
 		mlevels[mlevelsIndex].levelIter = li
 		mlevels[mlevelsIndex].iter = invalidating.MaybeWrapIfInvariants(li)
+		mlevels[mlevelsIndex].getRangeDel = li.getRangeDel
 
 		levelsIndex++
 		mlevelsIndex++
