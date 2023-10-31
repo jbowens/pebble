@@ -262,7 +262,7 @@ func init() {
 	}
 	dslPredicateParser.DefineFunc("PathMatch",
 		func(p *dsl.Parser[dsl.Predicate[Op]], s *dsl.Scanner) dsl.Predicate[Op] {
-			pattern := mustUnquote(s.Consume(token.STRING).Lit)
+			pattern := s.ConsumeString()
 			s.Consume(token.RPAREN)
 			return PathMatch(pattern)
 		})
@@ -274,14 +274,6 @@ func init() {
 		func(p *dsl.Parser[dsl.Predicate[Op]], s *dsl.Scanner) dsl.Predicate[Op] {
 			return parseRandomly(s)
 		})
-}
-
-func mustUnquote(lit string) string {
-	s, err := strconv.Unquote(lit)
-	if err != nil {
-		panic(errors.Newf("errorfs: unquoting %q: %v", lit, err))
-	}
-	return s
 }
 
 func parseFileReadAtOp(s *dsl.Scanner) *opFileReadAt {

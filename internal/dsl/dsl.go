@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"go/scanner"
 	"go/token"
+	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/errors"
@@ -125,6 +126,18 @@ func (s *Scanner) Consume(expect token.Token) Token {
 	t := s.Scan()
 	assertTok(t, expect)
 	return t
+}
+
+// ConsumeString scans the next token. It panics if the next token is not a
+// string, or if unable to unquote the string. It returns the unquoted string
+// contents.
+func (s *Scanner) ConsumeString() string {
+	lit := s.Consume(token.STRING).Lit
+	str, err := strconv.Unquote(lit)
+	if err != nil {
+		panic(errors.Newf("dsl: unquoting %q: %v", lit, err))
+	}
+	return str
 }
 
 // Token is a lexical token scanned from an input text.
