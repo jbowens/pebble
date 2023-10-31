@@ -15,12 +15,12 @@ last
 prev
 prev
 ----
-first     a-d:{(#1,RANGEKEYSET,@3,bananas)}
-next      d-e:{(#4,RANGEKEYSET,@3,bananas) (#4,RANGEKEYSET,@1,pineapple)}
-next      .
-last      d-e:{(#4,RANGEKEYSET,@3,bananas) (#4,RANGEKEYSET,@1,pineapple)}
-prev      a-d:{(#4,RANGEKEYSET,@3,bananas)}
-prev      .
+a-d:{(#1,RANGEKEYSET,@3,bananas)}
+d-e:{(#4,RANGEKEYSET,@3,bananas) (#4,RANGEKEYSET,@1,pineapple)}
+<nil>
+d-e:{(#4,RANGEKEYSET,@3,bananas) (#4,RANGEKEYSET,@1,pineapple)}
+a-d:{(#4,RANGEKEYSET,@3,bananas)}
+<nil>
 
 # Test defragmenting in both directions at seek keys.
 
@@ -41,23 +41,23 @@ next
 seeklt d
 prev
 ----
-seekge b  a-t:{(#1,RANGEKEYSET,@3,bananas)}
-prev      .
-seekge b  a-t:{(#1,RANGEKEYSET,@3,bananas)}
-next      .
-seeklt d  a-t:{(#3,RANGEKEYSET,@3,bananas)}
-next      .
-seeklt d  a-t:{(#3,RANGEKEYSET,@3,bananas)}
-prev      .
+a-t:{(#1,RANGEKEYSET,@3,bananas)}
+<nil>
+a-t:{(#1,RANGEKEYSET,@3,bananas)}
+<nil>
+a-t:{(#3,RANGEKEYSET,@3,bananas)}
+<nil>
+a-t:{(#3,RANGEKEYSET,@3,bananas)}
+<nil>
 
 iter
 seeklt d
 next
 prev
 ----
-seeklt d  a-t:{(#3,RANGEKEYSET,@3,bananas)}
-next      .
-prev      a-t:{(#3,RANGEKEYSET,@3,bananas)}
+a-t:{(#3,RANGEKEYSET,@3,bananas)}
+<nil>
+a-t:{(#3,RANGEKEYSET,@3,bananas)}
 
 # Test next-ing and prev-ing around seek keys.
 
@@ -75,7 +75,7 @@ prev
 next
 next
 ----
-seekge r  a-t:{(#1,RANGEKEYSET,@3,bananas)}
-prev      .
-next      a-t:{(#1,RANGEKEYSET,@3,bananas)}
-next      t-z:{(#4,RANGEKEYSET,@2,oranges)}
+a-t:{(#1,RANGEKEYSET,@3,bananas)}
+<nil>
+a-t:{(#1,RANGEKEYSET,@3,bananas)}
+t-z:{(#4,RANGEKEYSET,@2,oranges)}

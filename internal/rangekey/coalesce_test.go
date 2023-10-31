@@ -7,7 +7,6 @@ package rangekey
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/itertest"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/pmezard/go-difflib/difflib"
@@ -91,39 +91,7 @@ func TestIter(t *testing.T) {
 			iter.Init(cmp, transform, new(keyspan.MergingBuffers), keyspan.NewIter(cmp, spans))
 			return "OK"
 		case "iter":
-			buf.Reset()
-			lines := strings.Split(strings.TrimSpace(td.Input), "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				i := strings.IndexByte(line, ' ')
-				iterCmd := line
-				if i > 0 {
-					iterCmd = string(line[:i])
-				}
-				var s *keyspan.Span
-				switch iterCmd {
-				case "first":
-					s = iter.First()
-				case "last":
-					s = iter.Last()
-				case "next":
-					s = iter.Next()
-				case "prev":
-					s = iter.Prev()
-				case "seek-ge":
-					s = iter.SeekGE([]byte(strings.TrimSpace(line[i:])))
-				case "seek-lt":
-					s = iter.SeekLT([]byte(strings.TrimSpace(line[i:])))
-				default:
-					return fmt.Sprintf("unrecognized iter command %q", iterCmd)
-				}
-				require.NoError(t, iter.Error())
-				fmt.Fprint(&buf, s)
-				if buf.Len() > 0 {
-					fmt.Fprintln(&buf)
-				}
-			}
-			return buf.String()
+			return itertest.RunKeyspanIterCmd(t, td, &iter)
 		default:
 			return fmt.Sprintf("unrecognized command %q", td.Cmd)
 		}
@@ -154,7 +122,8 @@ func TestDefragmenting(t *testing.T) {
 				&hasPrefix, &prefix, true /* onlySets */, new(Buffers),
 				keyspan.NewIter(cmp, spans))
 			for _, line := range strings.Split(td.Input, "\n") {
-				runIterOp(&buf, iter, line)
+				itertest.RunKeyspanIterOp(&buf, iter, line)
+				fmt.Fprintln(&buf)
 			}
 			return strings.TrimSpace(buf.String())
 		default:
@@ -280,8 +249,10 @@ func testDefragmentingIteRandomizedOnce(t *testing.T, seed int64) {
 			}
 		}
 		op := ops[opIndex].fn()
-		runIterOp(&referenceHistory, referenceIter, op)
-		runIterOp(&fragmentedHistory, fragmentedIter, op)
+		itertest.RunKeyspanIterOp(&referenceHistory, referenceIter, op)
+		itertest.RunKeyspanIterOp(&fragmentedHistory, fragmentedIter, op)
+		fmt.Fprintln(&referenceHistory)
+		fmt.Fprintln(&fragmentedHistory)
 		if !bytes.Equal(referenceHistory.Bytes(), fragmentedHistory.Bytes()) {
 			t.Fatal(debugContext(cmp, formatKey, original, fragmented,
 				referenceHistory.String(), fragmentedHistory.String()))
@@ -334,35 +305,6 @@ func debugContext(
 	}
 	fmt.Fprintln(&buf, diff)
 	return buf.String()
-}
-
-var iterDelim = map[rune]bool{',': true, ' ': true, '(': true, ')': true, '"': true}
-
-func runIterOp(w io.Writer, it keyspan.FragmentIterator, op string) {
-	fields := strings.FieldsFunc(op, func(r rune) bool { return iterDelim[r] })
-	var s *keyspan.Span
-	switch strings.ToLower(fields[0]) {
-	case "first":
-		s = it.First()
-	case "last":
-		s = it.Last()
-	case "seekge":
-		s = it.SeekGE([]byte(fields[1]))
-	case "seeklt":
-		s = it.SeekLT([]byte(fields[1]))
-	case "next":
-		s = it.Next()
-	case "prev":
-		s = it.Prev()
-	default:
-		panic(fmt.Sprintf("unrecognized iter op %q", fields[0]))
-	}
-	fmt.Fprintf(w, "%-10s", op)
-	if s == nil {
-		fmt.Fprintln(w, ".")
-		return
-	}
-	fmt.Fprintln(w, s)
 }
 
 func BenchmarkTransform(b *testing.B) {
