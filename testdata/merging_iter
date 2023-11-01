@@ -590,3 +590,27 @@ f#21,1:21
 {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:6 ValueBytes:10 PointCount:6 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 .
 {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:6 ValueBytes:10 PointCount:6 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
+
+# Test that the merging iterator propagates errors on seeks when there's only
+# one level.
+
+define
+L
+a.SET.30 g.RANGEDEL.72057594037927935
+a.SET.30:a b.SET.50:b
+----
+1:
+  000027:[a#30,SET-g#inf,RANGEDEL]
+
+iter probe=(L1,ErrInjected)
+first
+last
+seek-ge a
+seek-lt b
+seek-prefix-ge a
+----
+err=injected error
+err=injected error
+err=injected error
+err=injected error
+err=injected error

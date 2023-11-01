@@ -7,6 +7,7 @@ package pebble
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/bloom"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/itertest"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/rangedel"
@@ -253,6 +255,24 @@ func TestMergingIterCornerCases(t *testing.T) {
 			v = newVersion(opts, files)
 			return v.String()
 		case "iter":
+			var probes [numLevels]itertest.Probe
+			for _, cmdArg := range d.CmdArgs {
+				switch cmdArg.Key {
+				case "probe":
+					// Format: (Level,ProbeDSL)
+					// eg, (L1,ErrInjected)
+					l, err := strconv.Atoi(cmdArg.Vals[0][1:])
+					require.NoError(t, err)
+					probe, err := itertest.NewParser().Parse(cmdArg.Vals[1])
+					if err != nil {
+						return fmt.Sprintf("parsing probe: %s", err)
+					}
+					probes[l] = probe
+				default:
+					return fmt.Sprintf("unknown arg: %q", cmdArg)
+				}
+			}
+
 			levelIters := make([]mergingIterLevel, 0, len(v.Levels))
 			var stats base.InternalIteratorStats
 			for i, l := range v.Levels {
@@ -263,8 +283,14 @@ func TestMergingIterCornerCases(t *testing.T) {
 				li := &levelIter{}
 				li.init(context.Background(), IterOptions{}, testkeys.Comparer,
 					newIters, slice.Iter(), manifest.Level(i), internalIterOpts{stats: &stats})
+				mil := mergingIterLevel{iter: li}
+				if probes[i] != nil {
+					mil.iter = itertest.Attach(mil.iter, itertest.ProbeState{
+						testkeys.Comparer,
+					}, probes[i])
+				}
 				i := len(levelIters)
-				levelIters = append(levelIters, mergingIterLevel{iter: li})
+				levelIters = append(levelIters, mil)
 				li.initRangeDel(&levelIters[i].rangeDelIter)
 				li.initBoundaryContext(&levelIters[i].levelIterBoundaryContext)
 			}
