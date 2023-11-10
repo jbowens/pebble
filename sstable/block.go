@@ -1732,7 +1732,7 @@ func (i *fragmentBlockIter) gatherBackward(k *InternalKey, lazyValue base.LazyVa
 	// span.
 
 	// Backwards iteration encounters internal keys in the wrong order.
-	keyspan.SortKeysByTrailer(&i.span.Keys)
+	keyspan.SortKeysByTrailer(i.span.Keys)
 
 	if i.elideSameSeqnum && len(i.span.Keys) > 0 {
 		i.elideKeysOfSameSeqNum()

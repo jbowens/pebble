@@ -5,7 +5,9 @@
 package keyspan
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/cockroachdb/pebble/internal/base"
@@ -38,15 +40,11 @@ func (v *spansByEndKey) Swap(i, j int) {
 	v.buf[i], v.buf[j] = v.buf[j], v.buf[i]
 }
 
-// keysBySeqNumKind sorts spans by the start key's sequence number in
-// descending order. If two spans have equal sequence number, they're compared
+// compareByTrailer defines an order over Keys by keys' sequence numbers in
+// descending order. If two spans have equal sequence numbers, they're compared
 // by key kind in descending order. This ordering matches the ordering of
 // base.InternalCompare among keys with matching user keys.
-type keysBySeqNumKind []Key
-
-func (v *keysBySeqNumKind) Len() int           { return len(*v) }
-func (v *keysBySeqNumKind) Less(i, j int) bool { return (*v)[i].Trailer > (*v)[j].Trailer }
-func (v *keysBySeqNumKind) Swap(i, j int)      { (*v)[i], (*v)[j] = (*v)[j], (*v)[i] }
+func compareByTrailer(a, b Key) int { return cmp.Compare(b.Trailer, a.Trailer) }
 
 // Sort the spans by start key. This is the ordering required by the
 // Fragmenter. Usually spans are naturally sorted by their start key,
@@ -83,7 +81,7 @@ type Fragmenter struct {
 	// sortBuf is used to sort fragments by end key when flushing.
 	sortBuf spansByEndKey
 	// flushBuf is used to sort keys by (seqnum,kind) before emitting.
-	flushBuf keysBySeqNumKind
+	flushBuf []Key
 	// flushedKey is the key that fragments have been flushed up to. Any
 	// additional spans added to the fragmenter must have a start key >=
 	// flushedKey. A nil value indicates flushedKey has not been set.
@@ -439,7 +437,7 @@ func (f *Fragmenter) flush(buf []Span, lastKey []byte) {
 			f.flushBuf = append(f.flushBuf, buf[i].Keys...)
 		}
 
-		sort.Sort(&f.flushBuf)
+		slices.SortFunc(f.flushBuf, compareByTrailer)
 
 		f.Emit(Span{
 			Start: buf[0].Start,

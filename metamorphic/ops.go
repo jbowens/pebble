@@ -590,7 +590,7 @@ func (o *ingestOp) build(t *test, h historyRecorder, b *pebble.Batch, i int) (st
 				zeroedSpan.Keys[i] = span.Keys[i]
 				zeroedSpan.Keys[i].Trailer = base.MakeTrailer(0, span.Keys[i].Kind())
 			}
-			keyspan.SortKeysByTrailer(&zeroedSpan.Keys)
+			keyspan.SortKeysByTrailer(zeroedSpan.Keys)
 			if err := rangekey.Encode(zeroedSpan, w.AddRangeKey); err != nil {
 				return "", err
 			}

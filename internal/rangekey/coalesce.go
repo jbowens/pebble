@@ -7,7 +7,6 @@ package rangekey
 import (
 	"bytes"
 	"math"
-	"sort"
 
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
@@ -68,7 +67,7 @@ type UserIteratorConfig struct {
 type Buffers struct {
 	merging       keyspan.MergingBuffers
 	defragmenting keyspan.DefragmentingBuffers
-	sortBuf       keyspan.KeysBySuffix
+	sortBuf       keyspan.KeysSorter
 }
 
 // PrepareForReuse discards any excessively large buffers.
@@ -141,7 +140,7 @@ func (ui *UserIteratorConfig) Transform(cmp base.Compare, s keyspan.Span, dst *k
 	// Apply shadowing of keys.
 	dst.Start = s.Start
 	dst.End = s.End
-	ui.bufs.sortBuf = keyspan.KeysBySuffix{
+	ui.bufs.sortBuf = keyspan.KeysSorter{
 		Cmp:  cmp,
 		Keys: ui.bufs.sortBuf.Keys[:0],
 	}
@@ -270,7 +269,7 @@ func (ui *UserIteratorConfig) ShouldDefragment(equal base.Equal, a, b *keyspan.S
 func Coalesce(cmp base.Compare, eq base.Equal, keys []keyspan.Key, dst *[]keyspan.Key) error {
 	// TODO(jackson): Currently, Coalesce doesn't actually perform the sequence
 	// number promotion described in the comment above.
-	keysBySuffix := keyspan.KeysBySuffix{
+	keysBySuffix := keyspan.KeysSorter{
 		Cmp:  cmp,
 		Keys: (*dst)[:0],
 	}
@@ -280,12 +279,12 @@ func Coalesce(cmp base.Compare, eq base.Equal, keys []keyspan.Key, dst *[]keyspa
 	// Update the span with the (potentially reduced) keys slice. coalesce left
 	// the keys in *dst sorted by suffix. Re-sort them by trailer.
 	*dst = keysBySuffix.Keys
-	keyspan.SortKeysByTrailer(dst)
+	keyspan.SortKeysByTrailer(*dst)
 	return nil
 }
 
 func coalesce(
-	equal base.Equal, keysBySuffix *keyspan.KeysBySuffix, snapshot uint64, keys []keyspan.Key,
+	equal base.Equal, keysSorter *keyspan.KeysSorter, snapshot uint64, keys []keyspan.Key,
 ) error {
 	// First, enforce visibility and RangeKeyDelete mechanics. We only need to
 	// consider the prefix of keys before and including the first
@@ -306,14 +305,14 @@ func coalesce(
 		}
 		// Once a RangeKeyDelete is observed, we know it shadows all subsequent
 		// keys and we can break early. We don't add the RangeKeyDelete key to
-		// keysBySuffix.keys yet, because we don't want a suffix-less key
+		// keysSorter.keys yet, because we don't want a suffix-less key
 		// that appeared earlier in the slice to elide it. It'll be added back
 		// in at the end.
 		if keys[i].Kind() == base.InternalKeyKindRangeKeyDelete {
 			deleteIdx = i
 			break
 		}
-		keysBySuffix.Keys = append(keysBySuffix.Keys, keys[i])
+		keysSorter.Keys = append(keysSorter.Keys, keys[i])
 	}
 
 	// Sort the accumulated keys by suffix. There may be duplicates within a
@@ -322,12 +321,12 @@ func coalesce(
 	// We use a stable sort so that the first key with a given suffix is the one
 	// that with the highest Trailer (because the input `keys` was sorted by
 	// trailer descending).
-	sort.Stable(keysBySuffix)
+	keysSorter.SortStableBySuffix()
 
 	// Grab a handle of the full sorted slice, before reslicing
-	// keysBySuffix.keys to accumulate the final coalesced keys.
-	sorted := keysBySuffix.Keys
-	keysBySuffix.Keys = keysBySuffix.Keys[:0]
+	// keysSorter.keys to accumulate the final coalesced keys.
+	sorted := keysSorter.Keys
+	keysSorter.Keys = keysSorter.Keys[:0]
 
 	var (
 		// prevSuffix is updated on each iteration of the below loop, and
@@ -336,7 +335,7 @@ func coalesce(
 		prevSuffix []byte
 		// shadowing is set to true once any Key is shadowed by another key.
 		// When it's set to true—or after the loop if no keys are shadowed—the
-		// keysBySuffix.keys slice is resliced to contain the prefix of
+		// keysSorter.keys slice is resliced to contain the prefix of
 		// unshadowed keys. This avoids copying them incrementally in the common
 		// case of no shadowing.
 		shadowing bool
@@ -345,27 +344,27 @@ func coalesce(
 		if i > 0 && equal(prevSuffix, sorted[i].Suffix) {
 			// Skip; this key is shadowed by the predecessor that had a larger
 			// Trailer. If this is the first shadowed key, set shadowing=true
-			// and reslice keysBySuffix.keys to hold the entire unshadowed
+			// and reslice keysSorter.keys to hold the entire unshadowed
 			// prefix.
 			if !shadowing {
-				keysBySuffix.Keys = keysBySuffix.Keys[:i]
+				keysSorter.Keys = keysSorter.Keys[:i]
 				shadowing = true
 			}
 			continue
 		}
 		prevSuffix = sorted[i].Suffix
 		if shadowing {
-			keysBySuffix.Keys = append(keysBySuffix.Keys, sorted[i])
+			keysSorter.Keys = append(keysSorter.Keys, sorted[i])
 		}
 	}
-	// If there was no shadowing, keysBySuffix.keys is untouched. We can simply
-	// set it to the existing `sorted` slice (also backed by keysBySuffix.keys).
+	// If there was no shadowing, keysSorter.keys is untouched. We can simply
+	// set it to the existing `sorted` slice (also backed by keysSorter.keys).
 	if !shadowing {
-		keysBySuffix.Keys = sorted
+		keysSorter.Keys = sorted
 	}
 	// If the original input `keys` slice contained a RangeKeyDelete, add it.
 	if deleteIdx >= 0 {
-		keysBySuffix.Keys = append(keysBySuffix.Keys, keys[deleteIdx])
+		keysSorter.Keys = append(keysSorter.Keys, keys[deleteIdx])
 	}
 	return nil
 }

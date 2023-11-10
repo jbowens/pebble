@@ -7,7 +7,7 @@ package keyspan
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
@@ -208,7 +208,7 @@ type MergingBuffers struct {
 	//
 	// Each element points into a child iterator's memory, so the keys may not
 	// be directly modified.
-	keys keysBySeqNumKind
+	keys []Key
 	// levels holds levels allocated by MergingIter.init. The MergingIter will
 	// prefer use of its `manifest.NumLevels+3` array, so this slice will be
 	// longer if set.
@@ -999,7 +999,7 @@ func (m *MergingIter) synthesizeKeys(dir int8) (bool, *Span) {
 	// guarantee that we'll return keys in the order of the levels they're from.
 	// With careful iterator construction, this would  guarantee that they're
 	// sorted by trailer descending for the range key iteration use case.
-	sort.Sort(&m.keys)
+	slices.SortFunc(m.keys, compareByTrailer)
 
 	// Apply the configured transform. See VisibleTransform.
 	m.span = Span{

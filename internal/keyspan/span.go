@@ -7,7 +7,7 @@ package keyspan // import "github.com/cockroachdb/pebble/internal/keyspan"
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -400,23 +400,25 @@ func (s prettySpan) Format(fs fmt.State, c rune) {
 }
 
 // SortKeysByTrailer sorts a keys slice by trailer.
-func SortKeysByTrailer(keys *[]Key) {
-	// NB: keys is a pointer to a slice instead of a slice to avoid `sorted`
-	// escaping to the heap.
-	sorted := (*keysBySeqNumKind)(keys)
-	sort.Sort(sorted)
+func SortKeysByTrailer(keys []Key) {
+	slices.SortFunc(keys, compareByTrailer)
 }
 
-// KeysBySuffix implements sort.Interface, sorting its member Keys slice to by
-// Suffix in the order dictated by Cmp.
-type KeysBySuffix struct {
+// KeysSorter holds a slice of Keys and a Comparer, providing the ability to
+// sort Keys by suffixes.
+type KeysSorter struct {
 	Cmp  base.Compare
 	Keys []Key
 }
 
-func (s *KeysBySuffix) Len() int           { return len(s.Keys) }
-func (s *KeysBySuffix) Less(i, j int) bool { return s.Cmp(s.Keys[i].Suffix, s.Keys[j].Suffix) < 0 }
-func (s *KeysBySuffix) Swap(i, j int)      { s.Keys[i], s.Keys[j] = s.Keys[j], s.Keys[i] }
+// SortBySuffix sorts s.Keys by suffix, using Cmp to compare suffixes.
+func (s *KeysSorter) SortBySuffix() { slices.SortFunc(s.Keys, s.compareSuffixes) }
+
+// SortStableBySuffix sorts s.Keys by suffix while keeping the order of equal
+// elements, using Cmp compare suffixes.
+func (s *KeysSorter) SortStableBySuffix() { slices.SortStableFunc(s.Keys, s.compareSuffixes) }
+
+func (s *KeysSorter) compareSuffixes(a, b Key) int { return s.Cmp(a.Suffix, b.Suffix) }
 
 // ParseSpan parses the string representation of a Span. It's intended for
 // tests. ParseSpan panics if passed a malformed span representation.
