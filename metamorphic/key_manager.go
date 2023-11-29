@@ -106,15 +106,8 @@ func (m *keyMeta) mergeInto(keyManager *keyManager, other *keyMeta) {
 	// to the DB, since we only use key updates to determine if an iterator
 	// can read a key in the DB. We could extend the timestamp system to add
 	// support for iterators created on batches.
-	if other.del || other.singleDel {
-		other.updateOps = append(
-			other.updateOps, keyUpdate{true, keyManager.nextMetaTimestamp()},
-		)
-	} else {
-		other.updateOps = append(
-			other.updateOps, keyUpdate{false, keyManager.nextMetaTimestamp()},
-		)
-	}
+	other.updateOps = append(other.updateOps,
+		keyUpdate{other.del || other.singleDel, keyManager.nextMetaTimestamp()})
 }
 
 // keyManager tracks the write operations performed on keys in the generation
@@ -257,12 +250,6 @@ func (k *keyManager) getOrInit(id objID, key []byte) *keyMeta {
 	// Add to the id-to-metas slide.
 	k.byObj[o.id] = append(k.byObj[o.id], m)
 	return m
-}
-
-// contains returns true if the (objID, key) pair is tracked by the keyManager.
-func (k *keyManager) contains(id objID, key []byte) bool {
-	_, ok := k.byObjKey[makeObjKey(id, key).String()]
-	return ok
 }
 
 // mergeKeysInto merges all metadata for all keys associated with the "from" ID
