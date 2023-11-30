@@ -286,3 +286,54 @@ write keys: "foo"
 singledel keys: (none)
 [db1.Set("foo", "foo")]
 singledel keys: "foo"
+
+# Test an ingestion of batches that overlap in keyspace. Such an ingestion fails
+# because ingested sstables are required to be non-overlapping in keyspace. The
+# key manager should infer that the ingestion will fail and act as if the
+# batches do not exist.
+
+reset
+----
+
+run
+add-new-key bar
+add-new-key foo
+add-new-key moo
+op db1.Set("foo", "foo")
+op batch1.Set("bar", "bar")
+op batch1.SingleDelete("foo", false)
+write-keys
+singledel-keys db1 db1
+singledel-keys batch1 db1
+singledel-keys batch2 db1
+op batch2.Delete("bar")
+write-keys
+singledel-keys db1 db1
+singledel-keys batch1 db1
+singledel-keys batch2 db1
+op db1.Ingest(batch1, batch2)
+write-keys
+singledel-keys db1 db1
+singledel-keys batch1 db1
+singledel-keys batch2 db1
+----
+"bar" is new
+"foo" is new
+"moo" is new
+[db1.Set("foo", "foo")]
+[batch1.Set("bar", "bar")]
+[batch1.SingleDelete("foo", false /* maybeReplaceDelete */)]
+write keys: "bar", "moo"
+singledel keys: (none)
+singledel keys: "bar"
+singledel keys: (none)
+[batch2.Delete("bar")]
+write keys: "bar", "moo"
+singledel keys: (none)
+singledel keys: (none)
+singledel keys: (none)
+[db1.Ingest(batch1, batch2)]
+write keys: "bar", "moo"
+singledel keys: (none)
+singledel keys: (none)
+singledel keys: (none)

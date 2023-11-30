@@ -1402,34 +1402,22 @@ func (g *generator) writerIngest() {
 		return
 	}
 
-	// TODO(nicktrav): this is resulting in too many single batch ingests.
-	// Consider alternatives. One possibility would be to pass through whether
-	// we can tolerate failure or not, and if the ingestOp encounters a
-	// failure, it would retry after splitting into single batch ingests.
-
 	dbID := g.dbs.rand(g.rng)
 	// Ingest between 1 and 3 batches.
 	batchIDs := make([]objID, 0, 1+g.rng.Intn(3))
-	canFail := cap(batchIDs) > 1
 	for i := 0; i < cap(batchIDs); i++ {
 		batchID := g.liveBatches.rand(g.rng)
-		if canFail && !g.keyManager.canTolerateApplyFailure(batchID) {
-			continue
-		}
 		// After the ingest runs, it either succeeds and the keys are in the
 		// DB, or it fails and these keys never make it to the DB.
+		//
+		// TODO(jackson): If the ingest will fail (which is known at generation
+		// time because it's a function of the batches), we could randomly
+		// choose to continue to generate operations against the batch.
 		g.removeBatchFromGenerator(batchID)
 		batchIDs = append(batchIDs, batchID)
 		if len(g.liveBatches) == 0 {
 			break
 		}
-	}
-	if len(batchIDs) == 0 && len(g.liveBatches) > 0 {
-		// Unable to find multiple batches because of the
-		// canTolerateApplyFailure call above, so just pick one batch.
-		batchID := g.liveBatches.rand(g.rng)
-		g.removeBatchFromGenerator(batchID)
-		batchIDs = append(batchIDs, batchID)
 	}
 	derivedDBIDs := make([]objID, len(batchIDs))
 	for i := range batchIDs {

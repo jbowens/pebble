@@ -110,6 +110,12 @@ func (m *keyMeta) mergeInto(keyManager *keyManager, other *keyMeta) {
 		keyUpdate{other.del || other.singleDel, keyManager.nextMetaTimestamp()})
 }
 
+type bounds struct {
+	smallest    []byte
+	largest     []byte
+	largestExcl bool
+}
+
 // keyManager tracks the write operations performed on keys in the generation
 // phase of the metamorphic test. It makes the assumption that write
 // operations do not fail, since that can cause the keyManager state to be not
@@ -137,6 +143,10 @@ type keyManager struct {
 	// List of keys per writer, and what has happened to it in that writer.
 	// Will be transferred when needed.
 	byObj map[objID][]*keyMeta
+	// objBounds tracks the smallest and largest bounds of the keys written to a
+	// writer. Tracking these bounds allow us to infer at generation time which
+	// multi-sstable ingestions will fail due to overlapping sstables.
+	objBounds map[objID]*bounds
 
 	// globalKeys represents all the keys that have been generated so far. Not
 	// all these keys have been written to. globalKeys is sorted.
@@ -208,6 +218,7 @@ func newKeyManager(numInstances int) *keyManager {
 		comparer:             testkeys.Comparer,
 		byObjKey:             make(map[string]*keyMeta),
 		byObj:                make(map[objID][]*keyMeta),
+		objBounds:            make(map[objID]*bounds),
 		globalKeysMap:        make(map[string]*keyMeta),
 		globalKeyPrefixesMap: make(map[string]struct{}),
 	}
@@ -249,11 +260,57 @@ func (k *keyManager) getOrInit(id objID, key []byte) *keyMeta {
 	k.byObjKey[o.String()] = m
 	// Add to the id-to-metas slide.
 	k.byObj[o.id] = append(k.byObj[o.id], m)
+
+	// Update our current bounds for keys written to this object.
+	k.growBounds(id, bounds{smallest: key, largest: key})
 	return m
+}
+
+// boundsOverlap takes a slice of object IDs and returns a boolean indicating
+// whether the objects written keys' keyspaces overlap.
+func (k *keyManager) boundsOverlap(objIDs ...objID) bool {
+	bnds := make([]bounds, 0, len(objIDs))
+	for i := range objIDs {
+		if b, ok := k.objBounds[objIDs[i]]; ok {
+			bnds = append(bnds, *b)
+		}
+	}
+	slices.SortFunc(bnds, func(a, b bounds) int {
+		return k.comparer.Compare(a.smallest, b.smallest)
+	})
+	for i := 0; i < len(bnds)-1; i++ {
+		if v := k.comparer.Compare(bnds[i].largest, bnds[i+1].smallest); v > 0 || v == 0 && !bnds[i].largestExcl {
+			return true
+		}
+	}
+	return false
+}
+
+// growBounds grows the named object's bounds to be as least as broad as to
+// encompass the provided bounds.
+func (k *keyManager) growBounds(o objID, b bounds) {
+	e, eOk := k.objBounds[o]
+	if !eOk {
+		// No bounds for this object yet. Just adopt the incoming bounds.
+		k.objBounds[o] = &b
+		return
+	}
+	if k.comparer.Compare(e.smallest, b.smallest) > 0 {
+		e.smallest = b.smallest
+	}
+	if v := k.comparer.Compare(e.largest, b.largest); v < 0 {
+		e.largest = b.largest
+		e.largestExcl = b.largestExcl
+	} else if v == 0 && !b.largestExcl {
+		e.largestExcl = false
+	}
 }
 
 // mergeKeysInto merges all metadata for all keys associated with the "from" ID
 // with the metadata for keys associated with the "to" ID.
+//
+// It updates the bounds for the destination object and removes the bounds for
+// the source object.
 func (k *keyManager) mergeKeysInto(from, to objID) {
 	msFrom, ok := k.byObj[from]
 	if !ok {
@@ -305,8 +362,31 @@ func (k *keyManager) mergeKeysInto(from, to objID) {
 		iTo++
 	}
 
+	// Merge the bounds.
+	if fromBounds, fromOk := k.objBounds[from]; fromOk {
+		k.growBounds(to, *fromBounds)
+	}
+
 	k.byObj[to] = msNew   // Update "to".
 	delete(k.byObj, from) // Unlink "from".
+	delete(k.objBounds, from)
+}
+
+func (k *keyManager) discardKeys(o objID) {
+	for _, meta := range k.byObj[o] {
+		globalMeta := k.globalKeysMap[string(meta.key)]
+		globalMeta.sets -= meta.sets
+		globalMeta.dels -= meta.dels
+		globalMeta.merges -= meta.merges
+		if meta.singleDel {
+			if !globalMeta.singleDel {
+				panic("inconsistency with globalMeta")
+			}
+			globalMeta.singleDel = false
+		}
+	}
+	delete(k.byObj, o)
+	delete(k.objBounds, o)
 }
 
 func (k *keyManager) checkForDelOrSingleDelTransition(dbMeta *keyMeta, globalMeta *keyMeta) {
@@ -375,6 +455,16 @@ func (k *keyManager) update(o op) {
 		if s.writerID.tag() == dbTag {
 			k.checkForDelOrSingleDelTransition(meta, globalMeta)
 		}
+	case *deleteRangeOp:
+		// Update the object's bounds.
+		k.growBounds(s.writerID, bounds{
+			smallest:    s.start,
+			largest:     s.end,
+			largestExcl: true,
+		})
+
+		// TODO(jackson): Apply as a delete operation to all keys within the
+		// bounds so that range deletes "clear" deleted keys.
 	case *singleDeleteOp:
 		if !k.globalStateIndicatesEligibleForSingleDelete(s.key) {
 			panic("key ineligible for SingleDelete")
@@ -388,9 +478,16 @@ func (k *keyManager) update(o op) {
 			k.checkForDelOrSingleDelTransition(meta, globalMeta)
 		}
 	case *ingestOp:
-		// For each batch, merge all keys with the keys in the DB.
-		for _, batchID := range s.batchIDs {
-			k.mergeKeysInto(batchID, s.dbID)
+		// Ingestion operations can fail if the ingested sstables overlap each
+		// other in keyspace. If they fail, none of the mutations are applied to
+		// the DB. To account for this, we examine the bounds of the batches
+		// being applied. If the bounds overlap, we skip merging keys.
+		if !k.boundsOverlap(s.batchIDs...) {
+			// For each batch, merge all keys with the keys in the DB.
+			for _, batchID := range s.batchIDs {
+				k.mergeKeysInto(batchID, s.dbID)
+			}
+			k.checkForDelOrSingleDelTransitionInDB(s.dbID)
 		}
 		k.checkForDelOrSingleDelTransitionInDB(s.dbID)
 	case *ingestAndExciseOp:
@@ -407,6 +504,24 @@ func (k *keyManager) update(o op) {
 		// Merge the keys from the batch with the keys from the DB.
 		k.mergeKeysInto(s.batchID, s.dbID)
 		k.checkForDelOrSingleDelTransitionInDB(s.dbID)
+	case *rangeKeySetOp:
+		k.growBounds(s.writerID, bounds{
+			smallest:    s.start,
+			largest:     s.end,
+			largestExcl: true,
+		})
+	case *rangeKeyUnsetOp:
+		k.growBounds(s.writerID, bounds{
+			smallest:    s.start,
+			largest:     s.end,
+			largestExcl: true,
+		})
+	case *rangeKeyDeleteOp:
+		k.growBounds(s.writerID, bounds{
+			smallest:    s.start,
+			largest:     s.end,
+			largestExcl: true,
+		})
 	}
 }
 
@@ -473,24 +588,6 @@ func (k *keyManager) eligibleSingleDeleteKeys(id, dbID objID) (keys [][]byte) {
 func (k *keyManager) globalStateIndicatesEligibleForSingleDelete(key []byte) bool {
 	m := k.globalKeysMap[string(key)]
 	return m.merges == 0 && m.sets == 1 && m.dels == 0 && !m.singleDel
-}
-
-// canTolerateApplyFailure is called with a batch ID and returns true iff a
-// failure to apply this batch to the DB can be tolerated.
-func (k *keyManager) canTolerateApplyFailure(id objID) bool {
-	if id.tag() != batchTag {
-		panic("called with an objID that is not a batch")
-	}
-	ms, ok := k.byObj[id]
-	if !ok {
-		return true
-	}
-	for _, m := range ms {
-		if m.singleDel || m.del {
-			return false
-		}
-	}
-	return true
 }
 
 func opWrittenKeys(untypedOp op) [][]byte {
