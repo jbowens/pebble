@@ -262,8 +262,9 @@ type compactionIter struct {
 	elideRangeTombstone func(start, end []byte) bool
 	// The on-disk format major version. This informs the types of keys that
 	// may be written to disk during a compaction.
-	formatVersion FormatMajorVersion
-	stats         struct {
+	formatVersion                    FormatMajorVersion
+	prohibitIneffectualSingleDeletes bool
+	stats                            struct {
 		// count of DELSIZED keys that were missized.
 		countMissizedDels uint64
 	}
@@ -284,17 +285,18 @@ func newCompactionIter(
 	formatVersion FormatMajorVersion,
 ) *compactionIter {
 	i := &compactionIter{
-		equal:               equal,
-		merge:               merge,
-		iter:                iter,
-		snapshots:           snapshots,
-		frontiers:           frontiers{cmp: cmp},
-		rangeDelFrag:        rangeDelFrag,
-		rangeKeyFrag:        rangeKeyFrag,
-		allowZeroSeqNum:     allowZeroSeqNum,
-		elideTombstone:      elideTombstone,
-		elideRangeTombstone: elideRangeTombstone,
-		formatVersion:       formatVersion,
+		equal:                            equal,
+		merge:                            merge,
+		iter:                             iter,
+		snapshots:                        snapshots,
+		frontiers:                        frontiers{cmp: cmp},
+		rangeDelFrag:                     rangeDelFrag,
+		rangeKeyFrag:                     rangeKeyFrag,
+		allowZeroSeqNum:                  allowZeroSeqNum,
+		elideTombstone:                   elideTombstone,
+		elideRangeTombstone:              elideRangeTombstone,
+		formatVersion:                    formatVersion,
+		prohibitIneffectualSingleDeletes: true,
 	}
 	i.rangeDelFrag.Cmp = cmp
 	i.rangeDelFrag.Format = formatKey
@@ -451,7 +453,13 @@ func (i *compactionIter) Next() (*InternalKey, []byte) {
 					// If we're at the last snapshot stripe and the tombstone
 					// can be elided skip skippable keys in the same stripe.
 					i.saveKey()
-					i.skipInStripe()
+
+					if i.key.Kind() == InternalKeyKindSingleDelete {
+						i.skipAfterElidingSingleDeletion()
+					} else {
+						i.skipInStripe()
+					}
+
 					if i.iterStripeChange == newStripeSameKey {
 						panic(errors.AssertionFailedf("pebble: skipInStripe in last stripe found a new stripe within the same key"))
 					}
@@ -965,6 +973,66 @@ func (i *compactionIter) singleDeleteNext() bool {
 			return false
 		}
 	}
+}
+
+func (i *compactionIter) skipAfterElidingSingleDeletion() {
+	stripeChange := i.nextInStripe()
+	if i.err != nil {
+		panic(i.err)
+	}
+	switch stripeChange {
+	case newStripeNewKey:
+		// The single delete is only now being elided, meaning it did not elide
+		// any keys earlier in its descent down the LSM. We stepped onto a new
+		// user key, meaning that even now at its moment of elision, it still
+		// hasn't elided any other keys. The single delete was ineffectual (a
+		// no-op). This can be an indication of an invariant violation within
+		// Pebble or within the client if the user expects that single deleted
+		// keys have been set EXACTLY once.
+		//
+		// Some clients may only maintain a looser invariant that the key has
+		// been set AT MOST once, so this assertion is opt-in.
+		if i.iterKey != nil && i.prohibitIneffectualSingleDeletes {
+			panic(errors.AssertionFailedf("eliding single delete that never deleted"))
+		}
+		i.skip = false
+		return
+	case newStripeSameKey:
+		// This should be impossible. If we're eliding a single delete, we
+		// determined that the tombstone is in the final snapshot stripe, but we
+		// stepped into a new stripe of the same key.
+		panic(errors.AssertionFailedf("eliding single delete followed by same key in new stripe"))
+	case sameStripeNonSkippable:
+		// There's a key that we cannot skip. There's two possible cases:
+		//   a. The key is invalid.
+		//   b. The key is a range deletion.
+		// The second case is also an ineffectual single delete. The single
+		// delete can't delete anything beneath the range delete.
+		if i.prohibitIneffectualSingleDeletes && i.iterKey.Kind() == InternalKeyKindRangeDelete {
+			panic(errors.AssertionFailedf("eliding single delete that never deleted"))
+		}
+		i.skip = true
+		return
+	case sameStripeSkippable:
+		i.skip = true
+		// Fallthrough to the outer scope.
+	default:
+		panic("unreachable")
+	}
+
+	// stripeChange == sameStripeSkippable
+	//
+	// i.iterKey is about to be elided. The SINGLEDEL was effectual as long as
+	// it deleted a SET/SETWITHDEL that was not also deleted by a range
+	// deletion.
+	if i.prohibitIneffectualSingleDeletes {
+		if cover := i.rangeDelFrag.Covers(*i.iterKey, i.curSnapshotSeqNum); cover == keyspan.CoversVisibly {
+			panic(errors.AssertionFailedf("eliding single delete that never deleted"))
+		} else if kind := i.iterKey.Kind(); kind != InternalKeyKindSet && kind != InternalKeyKindSetWithDelete {
+			panic(errors.AssertionFailedf("eliding single delete that never deleted"))
+		}
+	}
+	i.skipInStripe()
 }
 
 // deleteSizedNext processes a DELSIZED point tombstone. Unlike ordinary DELs,
