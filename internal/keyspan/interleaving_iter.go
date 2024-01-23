@@ -680,14 +680,11 @@ func (i *InterleavingIter) nextPos() {
 			}
 		}
 	case posKeyspanStart:
-		//fmt.Printf("At start key; advancing\n")
 		// Either a point key or the span's end key comes next.
 		if i.pointKey != nil && i.cmp(i.pointKey.UserKey, i.span.End) < 0 {
 			i.pos = posPointKey
-			//fmt.Printf("advanced to point key\n")
 		} else {
 			i.pos = posKeyspanEnd
-			//fmt.Printf("advanced to keyspan end\n")
 		}
 	case posKeyspanEnd:
 		i.saveSpanForward(i.keyspanIter.Next())
@@ -740,7 +737,7 @@ func (i *InterleavingIter) prevPos() {
 		case i.span == nil:
 			panic("withinSpan=true, but i.span == nil")
 		case i.pointKey == nil:
-			i.pos = posKeyspanEnd
+			i.pos = posKeyspanStart
 		default:
 			// i.withinSpan && i.pointKey != nil && i.span != nil
 			if i.cmp(i.span.Start, i.pointKey.UserKey) > 0 {
@@ -817,11 +814,9 @@ func (i *InterleavingIter) yieldPosition(
 		case posKeyspanEnd:
 			// Don't interleave an empty span, or end keys if not configured to.
 			if i.span.Empty() || !i.interleaveEndKeys {
-				//fmt.Printf("skipping end span marker for %q\n", i.span.End)
 				advance()
 				continue
 			}
-			//fmt.Printf("returning end span marker for %q\n", i.span.End)
 			return i.yieldSyntheticSpanMarker(i.span.End)
 		case posKeyspanStart:
 			// Don't interleave an empty span.
