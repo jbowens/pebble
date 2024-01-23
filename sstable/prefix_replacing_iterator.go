@@ -172,10 +172,6 @@ func (p *prefixReplacingIterator) SetBounds(lower, upper []byte) {
 	p.i.SetBounds(lower, upper)
 }
 
-func (p *prefixReplacingIterator) MaybeFilteredKeys() bool {
-	return p.i.MaybeFilteredKeys()
-}
-
 // String implements the Iterator interface.
 func (p *prefixReplacingIterator) String() string {
 	return fmt.Sprintf("%s [%s->%s]", p.i.String(), hex.EncodeToString(p.src), hex.EncodeToString(p.dst))

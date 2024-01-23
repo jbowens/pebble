@@ -25,8 +25,7 @@ type getIter struct {
 	snapshot     uint64
 	key          []byte
 	iter         internalIterator
-	rangeDelIter keyspan.FragmentIterator
-	tombstone    *keyspan.Span
+	getTombstone func() *keyspan.Span
 	levelIter    levelIter
 	level        int
 	batch        *Batch
@@ -35,6 +34,7 @@ type getIter struct {
 	version      *version
 	iterKey      *InternalKey
 	iterValue    base.LazyValue
+	tombstone    *keyspan.Span
 	err          error
 }
 
@@ -81,18 +81,12 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 
 	for {
 		if g.iter != nil {
-			// We have to check rangeDelIter on each iteration because a single
-			// user-key can be spread across multiple tables in a level. A range
-			// tombstone will appear in the table corresponding to its start
-			// key. Every call to levelIter.Next() potentially switches to a new
-			// table and thus reinitializes rangeDelIter.
-			if g.rangeDelIter != nil {
-				g.tombstone, g.err = keyspan.Get(g.comparer.Compare, g.rangeDelIter, g.key)
-				g.err = firstError(g.err, g.rangeDelIter.Close())
-				if g.err != nil {
-					return nil, base.LazyValue{}
-				}
-				g.rangeDelIter = nil
+
+			if g.iterKey != nil && g.iterKey.IsExclusiveSentinel() {
+				g.tombstone = g.getTombstone()
+				// `key` is the marker for the start of the range del. Next
+				// to see if there's a coincident key.
+				g.iterKey, g.iterValue = g.iter.Next()
 			}
 
 			if g.iterKey != nil {
@@ -130,13 +124,16 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 				g.iterKey, g.iterValue = nil, base.LazyValue{}
 				return nil, base.LazyValue{}
 			}
-			g.iter = g.batch.newInternalIter(nil)
-			g.rangeDelIter = g.batch.newRangeDelIter(
-				nil,
-				// Get always reads the entirety of the batch's history, so no
-				// batch keys should be filtered.
-				base.InternalKeySeqNumMax,
-			)
+
+			g.iter, g.getTombstone = maybeInterleaveRangeDels(
+				g.comparer,
+				g.batch.newInternalIter(nil),
+				g.batch.newRangeDelIter(
+					nil,
+					// Get always reads the entirety of the batch's history, so no
+					// batch keys should be filtered.
+					base.InternalKeySeqNumMax,
+				))
 			g.iterKey, g.iterValue = g.iter.SeekGE(g.key, base.SeekGEFlagsNone)
 			if err := g.iter.Error(); err != nil {
 				g.err = err
@@ -155,8 +152,11 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		// Create iterators from memtables from newest to oldest.
 		if n := len(g.mem); n > 0 {
 			m := g.mem[n-1]
-			g.iter = m.newIter(nil)
-			g.rangeDelIter = m.newRangeDelIter(nil)
+			g.iter, g.getTombstone = maybeInterleaveRangeDels(
+				g.comparer,
+				m.newIter(nil),
+				m.newRangeDelIter(nil))
+
 			g.mem = g.mem[:n-1]
 			g.iterKey, g.iterValue = g.iter.SeekGE(g.key, base.SeekGEFlagsNone)
 			if err := g.iter.Error(); err != nil {
@@ -181,10 +181,10 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 					snapshotForHideObsoletePoints: g.snapshot}
 				g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
 					files, manifest.L0Sublevel(n), internalIterOpts{})
-				g.levelIter.initRangeDel(&g.rangeDelIter)
 				bc := levelIterBoundaryContext{}
 				g.levelIter.initBoundaryContext(&bc)
 				g.iter = &g.levelIter
+				g.getTombstone = g.levelIter.Span
 
 				// Compute the key prefix for bloom filtering if split function is
 				// specified, or use the user key as default.
@@ -197,8 +197,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 					g.err = err
 					return nil, base.LazyValue{}
 				}
-
-				if bc.isSyntheticIterBoundsKey || bc.isIgnorableBoundaryKey {
+				if bc.isSyntheticIterBoundsKey {
 					g.iterKey = nil
 					g.iterValue = base.LazyValue{}
 				}
@@ -223,11 +222,11 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			}, logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 		g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
 			g.version.Levels[g.level].Iter(), manifest.Level(g.level), internalIterOpts{})
-		g.levelIter.initRangeDel(&g.rangeDelIter)
 		bc := levelIterBoundaryContext{}
 		g.levelIter.initBoundaryContext(&bc)
 		g.level++
 		g.iter = &g.levelIter
+		g.getTombstone = g.levelIter.Span
 
 		// Compute the key prefix for bloom filtering if split function is
 		// specified, or use the user key as default.
@@ -240,7 +239,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			g.err = err
 			return nil, base.LazyValue{}
 		}
-		if bc.isSyntheticIterBoundsKey || bc.isIgnorableBoundaryKey {
+		if bc.isSyntheticIterBoundsKey {
 			g.iterKey = nil
 			g.iterValue = base.LazyValue{}
 		}

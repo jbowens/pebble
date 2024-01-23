@@ -713,6 +713,94 @@ type internalKeyRange struct {
 	smallest, largest InternalKey
 }
 
+type internalIteratorSpan interface {
+	internalIterator
+	Span() *keyspan.Span
+}
+
+func overlapWithIteratorWithSpans(
+	iter internalIteratorSpan,
+	rkeyIter keyspan.FragmentIterator,
+	keyRange internalKeyRange,
+	cmp Compare,
+) bool {
+	// Check overlap with point operations.
+	//
+	// When using levelIter, it seeks to the SST whose boundaries
+	// contain keyRange.smallest.UserKey(S).
+	// It then tries to find a point in that SST that is >= S.
+	// If there's no such point it means the SST ends in a tombstone in which case
+	// levelIter.SeekGE generates a boundary range del sentinel.
+	// The comparison of this boundary with keyRange.largest(L) below
+	// is subtle but maintains correctness.
+	// 1) boundary < L,
+	//    since boundary is also > S (initial seek),
+	//    whatever the boundary's start key may be, we're always overlapping.
+	// 2) boundary > L,
+	//    overlap with boundary cannot be determined since we don't know boundary's start key.
+	//    We require checking for overlap with rangeDelIter.
+	// 3) boundary == L and L is not sentinel,
+	//    means boundary < L and hence is similar to 1).
+	// 4) boundary == L and L is sentinel,
+	//    we'll always overlap since for any values of i,j ranges [i, k) and [j, k) always overlap.
+	key, _ := iter.SeekGE(keyRange.smallest.UserKey, base.SeekGEFlagsNone)
+	if key != nil {
+		c := sstableKeyCompare(cmp, *key, keyRange.largest)
+		if c <= 0 {
+			return true
+		}
+	}
+	// Assume overlap if iterator errored.
+	if err := iter.Error(); err != nil {
+		return true
+	}
+
+	computeOverlapWithSpans := func(rIter keyspan.FragmentIterator) (bool, error) {
+		// NB: The spans surfaced by the fragment iterator are non-overlapping.
+		span, err := rIter.SeekLT(keyRange.smallest.UserKey)
+		if err != nil {
+			return false, err
+		} else if span == nil {
+			span, err = rIter.Next()
+			if err != nil {
+				return false, err
+			}
+		}
+		for ; span != nil; span, err = rIter.Next() {
+			if span.Empty() {
+				continue
+			}
+			key := span.SmallestKey()
+			c := sstableKeyCompare(cmp, key, keyRange.largest)
+			if c > 0 {
+				// The start of the span is after the largest key in the
+				// ingested table.
+				return false, nil
+			}
+			if cmp(span.End, keyRange.smallest.UserKey) > 0 {
+				// The end of the span is greater than the smallest in the
+				// table. Note that the span end key is exclusive, thus ">0"
+				// instead of ">=0".
+				return true, nil
+			}
+		}
+		if err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	// rkeyIter is either a range key level iter, or a range key iterator
+	// over a single file.
+	if rkeyIter != nil {
+		// If an error occurs, assume overlap.
+		if overlap, err := computeOverlapWithSpans(rkeyIter); overlap || err != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func overlapWithIterator(
 	iter internalIterator,
 	rangeDelIter *keyspan.FragmentIterator,
@@ -899,11 +987,6 @@ func ingestTargetLevel(
 		iter := newLevelIter(context.Background(),
 			iterOps, comparer, newIters, v.L0Sublevels.Levels[subLevel].Iter(), manifest.Level(0), internalIterOpts{})
 
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		iter.initRangeDel(&rangeDelIter)
-
 		levelIter := keyspan.LevelIter{}
 		levelIter.Init(
 			keyspan.SpanIterOptions{}, comparer.Compare, newRangeKeyIter,
@@ -914,7 +997,7 @@ func ingestTargetLevel(
 			smallest: meta.Smallest,
 			largest:  meta.Largest,
 		}
-		overlap := overlapWithIterator(iter, &rangeDelIter, &levelIter, kr, comparer.Compare)
+		overlap := overlapWithIteratorWithSpans(iter, &levelIter, kr, comparer.Compare)
 		err := iter.Close() // Closes range del iter as well.
 		err = firstError(err, levelIter.Close())
 		if err != nil {
@@ -929,11 +1012,6 @@ func ingestTargetLevel(
 	for ; level < numLevels; level++ {
 		levelIter := newLevelIter(context.Background(),
 			iterOps, comparer, newIters, v.Levels[level].Iter(), manifest.Level(level), internalIterOpts{})
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		levelIter.initRangeDel(&rangeDelIter)
-
 		rkeyLevelIter := &keyspan.LevelIter{}
 		rkeyLevelIter.Init(
 			keyspan.SpanIterOptions{}, comparer.Compare, newRangeKeyIter,
@@ -944,7 +1022,7 @@ func ingestTargetLevel(
 			smallest: meta.Smallest,
 			largest:  meta.Largest,
 		}
-		overlap := overlapWithIterator(levelIter, &rangeDelIter, rkeyLevelIter, kr, comparer.Compare)
+		overlap := overlapWithIteratorWithSpans(levelIter, rkeyLevelIter, kr, comparer.Compare)
 		err := levelIter.Close() // Closes range del iter as well.
 		err = firstError(err, rkeyLevelIter.Close())
 		if err != nil {

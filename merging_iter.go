@@ -20,14 +20,13 @@ import (
 type mergingIterLevel struct {
 	index int
 	iter  internalIterator
-	// rangeDelIter is set to the range-deletion iterator for the level. When
-	// configured with a levelIter, this pointer changes as sstable boundaries
-	// are crossed. See levelIter.initRangeDel and the Range Deletions comment
-	// below.
-	rangeDelIter keyspan.FragmentIterator
 	// iterKey and iterValue cache the current key and value iter are pointed at.
 	iterKey   *InternalKey
 	iterValue base.LazyValue
+	tombstone *keyspan.Span
+	// getTombstone() returns the range deletion tombstone at the iterator's
+	// current position, if any.
+	getTombstone func() *keyspan.Span
 	// levelIter is non-nil if this level's iter is ultimately backed by a
 	// *levelIter. The handle in iter may have wrapped the levelIter with
 	// intermediary internalIterator implementations.
@@ -37,14 +36,6 @@ type mergingIterLevel struct {
 	// to surface sstable boundary keys and file-level context. See levelIter
 	// comment and the Range Deletions comment below.
 	levelIterBoundaryContext
-
-	// tombstone caches the tombstone rangeDelIter is currently pointed at. If
-	// tombstone is nil, there are no further tombstones within the
-	// current sstable in the current iterator direction. The cached tombstone is
-	// only valid for the levels in the range [0,heap[0].index]. This avoids
-	// positioning tombstones at lower levels which cannot possibly shadow the
-	// current key.
-	tombstone *keyspan.Span
 }
 
 type levelIterBoundaryContext struct {
@@ -55,14 +46,6 @@ type levelIterBoundaryContext struct {
 	// the only range deletions exposed by this mergingIter should be those with
 	// `isSyntheticIterBoundsKey || isIgnorableBoundaryKey`.
 	isSyntheticIterBoundsKey bool
-	// isIgnorableBoundaryKey is set to true iff the key returned by the level
-	// iterator is a file boundary key that should be ignored when returning to
-	// the parent iterator. File boundary keys are used by the level iter to
-	// keep a levelIter file's range deletion iterator open as long as other
-	// levels within the merging iterator require it. When used with a user-facing
-	// Iterator, the only range deletions exposed by this mergingIter should be
-	// those with `isSyntheticIterBoundsKey || isIgnorableBoundaryKey`.
-	isIgnorableBoundaryKey bool
 }
 
 // mergingIter provides a merged view of multiple iterators from different
@@ -341,69 +324,16 @@ func (m *mergingIter) initHeap() {
 	m.heap.init()
 }
 
-func (m *mergingIter) initMinHeap() error {
+func (m *mergingIter) initMinHeap() {
 	m.dir = 1
 	m.heap.reverse = false
 	m.initHeap()
-	return m.initMinRangeDelIters(-1)
 }
 
-// The level of the previous top element was oldTopLevel. Note that all range delete
-// iterators < oldTopLevel are positioned past the key of the previous top element and
-// the range delete iterator == oldTopLevel is positioned at or past the key of the
-// previous top element. We need to position the range delete iterators from oldTopLevel + 1
-// to the level of the current top element.
-func (m *mergingIter) initMinRangeDelIters(oldTopLevel int) error {
-	if m.heap.len() == 0 {
-		return nil
-	}
-
-	// Position the range-del iterators at levels <= m.heap.items[0].index.
-	item := m.heap.items[0]
-	for level := oldTopLevel + 1; level <= item.index; level++ {
-		l := &m.levels[level]
-		if l.rangeDelIter == nil {
-			continue
-		}
-		var err error
-		l.tombstone, err = l.rangeDelIter.SeekGE(item.iterKey.UserKey)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (m *mergingIter) initMaxHeap() error {
+func (m *mergingIter) initMaxHeap() {
 	m.dir = -1
 	m.heap.reverse = true
 	m.initHeap()
-	return m.initMaxRangeDelIters(-1)
-}
-
-// The level of the previous top element was oldTopLevel. Note that all range delete
-// iterators < oldTopLevel are positioned before the key of the previous top element and
-// the range delete iterator == oldTopLevel is positioned at or before the key of the
-// previous top element. We need to position the range delete iterators from oldTopLevel + 1
-// to the level of the current top element.
-func (m *mergingIter) initMaxRangeDelIters(oldTopLevel int) error {
-	if m.heap.len() == 0 {
-		return nil
-	}
-	// Position the range-del iterators at levels <= m.heap.items[0].index.
-	item := m.heap.items[0]
-	for level := oldTopLevel + 1; level <= item.index; level++ {
-		l := &m.levels[level]
-		if l.rangeDelIter == nil {
-			continue
-		}
-		tomb, err := keyspan.SeekLE(m.heap.cmp, l.rangeDelIter, item.iterKey.UserKey)
-		if err != nil {
-			return err
-		}
-		l.tombstone = tomb
-	}
-	return nil
 }
 
 func (m *mergingIter) switchToMinHeap() error {
@@ -502,7 +432,8 @@ func (m *mergingIter) switchToMinHeap() error {
 			return err
 		}
 	}
-	return m.initMinHeap()
+	m.initMinHeap()
+	return nil
 }
 
 func (m *mergingIter) switchToMaxHeap() error {
@@ -600,7 +531,8 @@ func (m *mergingIter) switchToMaxHeap() error {
 			return err
 		}
 	}
-	return m.initMaxHeap()
+	m.initMaxHeap()
+	return nil
 }
 
 // maybeNextEntryWithinPrefix steps to the next entry, as long as the iteration
@@ -656,9 +588,6 @@ func (m *mergingIter) nextEntry(l *mergingIterLevel, succKey []byte) error {
 		}
 	}
 
-	oldTopLevel := l.index
-	oldRangeDelIter := l.rangeDelIter
-
 	if succKey == nil {
 		l.iterKey, l.iterValue = l.iter.Next()
 	} else {
@@ -669,22 +598,13 @@ func (m *mergingIter) nextEntry(l *mergingIterLevel, succKey []byte) error {
 		if m.heap.len() > 1 {
 			m.heap.fix(0)
 		}
-		if l.rangeDelIter != oldRangeDelIter {
-			// The rangeDelIter changed which indicates that the l.iter moved to the
-			// next sstable. We have to update the tombstone for oldTopLevel as well.
-			oldTopLevel--
-		}
 	} else {
 		if err := l.iter.Error(); err != nil {
 			return err
 		}
 		m.heap.pop()
 	}
-
-	// The cached tombstones are only valid for the levels
-	// [0,oldTopLevel]. Updated the cached tombstones for any levels in the range
-	// [oldTopLevel+1,heap[0].index].
-	return m.initMinRangeDelIters(oldTopLevel)
+	return nil
 }
 
 // isNextEntryDeleted starts from the current entry (as the next entry) and if
@@ -704,27 +624,7 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterLevel) (bool, error) {
 	// entry.
 	for level := 0; level <= item.index; level++ {
 		l := &m.levels[level]
-		if l.rangeDelIter == nil || l.tombstone == nil {
-			// If l.tombstone is nil, there are no further tombstones
-			// in the current sstable in the current (forward) iteration
-			// direction.
-			continue
-		}
-		if m.heap.cmp(l.tombstone.End, item.iterKey.UserKey) <= 0 {
-			// The current key is at or past the tombstone end key.
-			//
-			// NB: for the case that this l.rangeDelIter is provided by a levelIter we know that
-			// the levelIter must be positioned at a key >= item.iterKey. So it is sufficient to seek the
-			// current l.rangeDelIter (since any range del iterators that will be provided by the
-			// levelIter in the future cannot contain item.iterKey). Also, it is possible that we
-			// will encounter parts of the range delete that should be ignored -- we handle that
-			// below.
-			var err error
-			l.tombstone, err = l.rangeDelIter.SeekGE(item.iterKey.UserKey)
-			if err != nil {
-				return false, err
-			}
-		}
+		//fmt.Printf("level %d: l.tombstone = %s\n", level, l.tombstone)
 		if l.tombstone == nil {
 			continue
 		}
@@ -785,9 +685,7 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterLevel) (bool, error) {
 						// item in the mergingIterLevel, and then swapping that item in the
 						// heap with the last-positioned heap item, and shrinking the heap by
 						// one.
-						if err := m.initMinHeap(); err != nil {
-							return false, err
-						}
+						m.initMinHeap()
 						return true, nil
 					}
 				}
@@ -820,26 +718,36 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterLevel) (bool, error) {
 func (m *mergingIter) findNextEntry() (*InternalKey, base.LazyValue) {
 	for m.heap.len() > 0 && m.err == nil {
 		item := m.heap.items[0]
+
+		//fmt.Printf("[index=%d]: %s\n", item.index, item.iterKey)
 		if m.levels[item.index].isSyntheticIterBoundsKey {
 			break
 		}
 
-		m.addItemStats(item)
-
-		// Skip ignorable boundary keys. These are not real keys and exist to
-		// keep sstables open until we've surpassed their end boundaries so that
-		// their range deletions are visible.
-		if m.levels[item.index].isIgnorableBoundaryKey {
+		// Range deletion boundaries are interleaved among the internal
+		// iterator keys. If this is one, it doesn't represent a real key that
+		// we need to surface to the caller.
+		if item.iterKey.IsExclusiveSentinel() {
+			if m.levels[item.index].getTombstone != nil {
+				m.levels[item.index].tombstone = m.levels[item.index].getTombstone()
+				//fmt.Printf("setting [index=%d] tombstone = %s\n", item.index, m.levels[item.index].tombstone)
+			}
+			// TODO(jackson): If we stepped into a tombstone, we could seek
+			// levels lower than it to the end key. During a seekGE/seekLT,
+			// this has already happened, so we'd need a refactor.
 			if m.prefix == nil {
 				m.err = m.nextEntry(item, nil /* succKey */)
 			} else {
 				m.err = m.maybeNextEntryWithinPrefix(item)
 			}
+			//fmt.Printf("after advancing [index=%d] tombstone = %s\n", item.index, m.levels[item.index].tombstone)
 			if m.err != nil {
 				return nil, base.LazyValue{}
 			}
 			continue
 		}
+
+		m.addItemStats(item)
 
 		// Check if the heap root key is deleted by a range tombstone in a
 		// higher level. If it is, isNextEntryDeleted will advance the iterator
@@ -875,17 +783,9 @@ func (m *mergingIter) findNextEntry() (*InternalKey, base.LazyValue) {
 
 // Steps to the prev entry. item is the current top item in the heap.
 func (m *mergingIter) prevEntry(l *mergingIterLevel) error {
-	oldTopLevel := l.index
-	oldRangeDelIter := l.rangeDelIter
 	if l.iterKey, l.iterValue = l.iter.Prev(); l.iterKey != nil {
 		if m.heap.len() > 1 {
 			m.heap.fix(0)
-		}
-		if l.rangeDelIter != oldRangeDelIter && l.rangeDelIter != nil {
-			// The rangeDelIter changed which indicates that the l.iter moved to the
-			// previous sstable. We have to update the tombstone for oldTopLevel as
-			// well.
-			oldTopLevel--
 		}
 	} else {
 		if err := l.iter.Error(); err != nil {
@@ -893,11 +793,7 @@ func (m *mergingIter) prevEntry(l *mergingIterLevel) error {
 		}
 		m.heap.pop()
 	}
-
-	// The cached tombstones are only valid for the levels
-	// [0,oldTopLevel]. Updated the cached tombstones for any levels in the range
-	// [oldTopLevel+1,heap[0].index].
-	return m.initMaxRangeDelIters(oldTopLevel)
+	return nil
 }
 
 // isPrevEntryDeleted() starts from the current entry (as the prev entry) and if it is deleted,
@@ -912,28 +808,6 @@ func (m *mergingIter) isPrevEntryDeleted(item *mergingIterLevel) (bool, error) {
 	// entry.
 	for level := 0; level <= item.index; level++ {
 		l := &m.levels[level]
-		if l.rangeDelIter == nil || l.tombstone == nil {
-			// If l.tombstone is nil, there are no further tombstones
-			// in the current sstable in the current (reverse) iteration
-			// direction.
-			continue
-		}
-		if m.heap.cmp(item.iterKey.UserKey, l.tombstone.Start) < 0 {
-			// The current key is before the tombstone start key.
-			//
-			// NB: for the case that this l.rangeDelIter is provided by a levelIter we know that
-			// the levelIter must be positioned at a key < item.iterKey. So it is sufficient to seek the
-			// current l.rangeDelIter (since any range del iterators that will be provided by the
-			// levelIter in the future cannot contain item.iterKey). Also, it is it is possible that we
-			// will encounter parts of the range delete that should be ignored -- we handle that
-			// below.
-
-			tomb, err := keyspan.SeekLE(m.heap.cmp, l.rangeDelIter, item.iterKey.UserKey)
-			if err != nil {
-				return false, err
-			}
-			l.tombstone = tomb
-		}
 		if l.tombstone == nil {
 			continue
 		}
@@ -983,6 +857,23 @@ func (m *mergingIter) findPrevEntry() (*InternalKey, base.LazyValue) {
 		if m.levels[item.index].isSyntheticIterBoundsKey {
 			break
 		}
+
+		// Range deletion boundaries are interleaved among the internal
+		// iterator keys. If this is one, it doesn't represent a real key that
+		// we need to surface to the caller.
+		if item.iterKey.IsExclusiveSentinel() {
+			if m.levels[item.index].getTombstone != nil {
+				m.levels[item.index].tombstone = m.levels[item.index].getTombstone()
+			}
+			// TODO(jackson): If we stepped into a tombstone, we could seek
+			// levels lower than it to the start key. During a seekGE/seekLT,
+			// this has already happened, so we'd need a refactor.
+			if m.err = m.prevEntry(item); m.err != nil {
+				return nil, base.LazyValue{}
+			}
+			continue
+		}
+
 		m.addItemStats(item)
 		if isDeleted, err := m.isPrevEntryDeleted(item); err != nil {
 			m.err = err
@@ -991,8 +882,7 @@ func (m *mergingIter) findPrevEntry() (*InternalKey, base.LazyValue) {
 			m.stats.PointsCoveredByRangeTombstones++
 			continue
 		}
-		if item.iterKey.Visible(m.snapshot, m.batchSnapshot) &&
-			(!m.levels[item.index].isIgnorableBoundaryKey) {
+		if item.iterKey.Visible(m.snapshot, m.batchSnapshot) {
 			return item.iterKey, item.iterValue
 		}
 		m.err = m.prevEntry(item)
@@ -1071,6 +961,8 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) erro
 			if err := l.iter.Error(); err != nil {
 				return err
 			}
+		} else if l.iterKey.IsExclusiveSentinel() && l.getTombstone != nil {
+			l.tombstone = l.getTombstone()
 		}
 
 		// If this level contains overlapping range tombstones, alter the seek
@@ -1079,29 +971,20 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) erro
 		// keys, and there might exist live range keys within the range
 		// tombstone's span that need to be observed to trigger a switch to
 		// combined iteration.
-		if rangeDelIter := l.rangeDelIter; rangeDelIter != nil &&
-			(m.combinedIterState == nil || m.combinedIterState.initialized) {
-			// The level has a range-del iterator. Find the tombstone containing
-			// the search key.
-			var err error
-			l.tombstone, err = rangeDelIter.SeekGE(key)
-			if err != nil {
-				return err
-			}
-			if l.tombstone != nil && l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) {
-				// Based on the containment condition tombstone.End > key, so
-				// the assignment to key results in a monotonically
-				// non-decreasing key across iterations of this loop.
+		if l.tombstone != nil && (m.combinedIterState == nil || m.combinedIterState.initialized) {
+			if l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) {
+				// The level has a range del overlapping the seek key.
 				//
-				// The adjustment of key here can only move it to a larger key.
-				// Since the caller of seekGE guaranteed that the original key
-				// was greater than or equal to m.lower, the new key will
-				// continue to be greater than or equal to m.lower.
+				// The adjustment of key here can only move it to a larger key. Since
+				// the caller of seekGE guaranteed that the original key was greater
+				// than or equal to m.lower, the new key will continue to be greater
+				// than or equal to m.lower.
 				key = l.tombstone.End
 			}
 		}
 	}
-	return m.initMinHeap()
+	m.initMinHeap()
+	return nil
 }
 
 func (m *mergingIter) String() string {
@@ -1150,6 +1033,8 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 			if err := l.iter.Error(); err != nil {
 				return err
 			}
+		} else if l.iterKey.IsExclusiveSentinel() && l.getTombstone != nil {
+			l.tombstone = l.getTombstone()
 		}
 
 		// If this level contains overlapping range tombstones, alter the seek
@@ -1158,32 +1043,26 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 		// keys, and there might exist live range keys within the range
 		// tombstone's span that need to be observed to trigger a switch to
 		// combined iteration.
-		if rangeDelIter := l.rangeDelIter; rangeDelIter != nil &&
-			(m.combinedIterState == nil || m.combinedIterState.initialized) {
-			// The level has a range-del iterator. Find the tombstone containing
-			// the search key.
-			tomb, err := keyspan.SeekLE(m.heap.cmp, rangeDelIter, key)
-			if err != nil {
-				return err
-			}
-			l.tombstone = tomb
-			if l.tombstone != nil && l.tombstone.VisibleAt(m.snapshot) &&
-				l.tombstone.Contains(m.heap.cmp, key) {
+		if l.tombstone != nil && (m.combinedIterState == nil || m.combinedIterState.initialized) {
+			if l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) {
+				// The level has a range deletion overlapping the seek key.
+				//
 				// NB: Based on the containment condition
 				// tombstone.Start.UserKey <= key, so the assignment to key
 				// results in a monotonically non-increasing key across
 				// iterations of this loop.
 				//
-				// The adjustment of key here can only move it to a smaller key.
-				// Since the caller of seekLT guaranteed that the original key
-				// was less than or equal to m.upper, the new key will continue
-				// to be less than or equal to m.upper.
+				// The adjustment of key here can only move it to a smaller key. Since
+				// the caller of seekLT guaranteed that the original key was less than
+				// or equal to m.upper, the new key will continue to be less than or
+				// equal to m.upper.
 				key = l.tombstone.Start
 			}
 		}
 	}
 
-	return m.initMaxHeap()
+	m.initMaxHeap()
+	return nil
 }
 
 // SeekLT implements base.InternalIterator.SeekLT. Note that SeekLT only checks
@@ -1208,15 +1087,16 @@ func (m *mergingIter) First() (*InternalKey, base.LazyValue) {
 	for i := range m.levels {
 		l := &m.levels[i]
 		l.iterKey, l.iterValue = l.iter.First()
+		//fmt.Printf("[index=%d]: l.iter.First() = %s\n", i, l.iterKey)
 		if l.iterKey == nil {
 			if m.err = l.iter.Error(); m.err != nil {
 				return nil, base.LazyValue{}
 			}
+		} else if l.iterKey.IsExclusiveSentinel() && l.getTombstone != nil {
+			l.tombstone = l.getTombstone()
 		}
 	}
-	if m.err = m.initMinHeap(); m.err != nil {
-		return nil, base.LazyValue{}
-	}
+	m.initMinHeap()
 	return m.findNextEntry()
 }
 
@@ -1233,11 +1113,11 @@ func (m *mergingIter) Last() (*InternalKey, base.LazyValue) {
 			if m.err = l.iter.Error(); m.err != nil {
 				return nil, base.LazyValue{}
 			}
+		} else if l.iterKey.IsExclusiveSentinel() && l.getTombstone != nil {
+			l.tombstone = l.getTombstone()
 		}
 	}
-	if m.err = m.initMaxHeap(); m.err != nil {
-		return nil, base.LazyValue{}
-	}
+	m.initMaxHeap()
 	return m.findPrevEntry()
 }
 
@@ -1357,11 +1237,6 @@ func (m *mergingIter) Close() error {
 		if err := iter.Close(); err != nil && m.err == nil {
 			m.err = err
 		}
-		if rangeDelIter := m.levels[i].rangeDelIter; rangeDelIter != nil {
-			if err := rangeDelIter.Close(); err != nil && m.err == nil {
-				m.err = err
-			}
-		}
 	}
 	m.levels = nil
 	m.heap.items = m.heap.items[:0]
@@ -1394,9 +1269,9 @@ func (m *mergingIter) DebugString() string {
 	}
 	var err error
 	if m.dir == 1 {
-		err = m.initMinHeap()
+		m.initMinHeap()
 	} else {
-		err = m.initMaxHeap()
+		m.initMaxHeap()
 	}
 	if err != nil {
 		fmt.Fprintf(&buf, "err=<%s>", err)
@@ -1418,6 +1293,14 @@ func (m *mergingIter) addItemStats(l *mergingIterLevel) {
 	m.stats.PointCount++
 	m.stats.KeyBytes += uint64(len(l.iterKey.UserKey))
 	m.stats.ValueBytes += uint64(len(l.iterValue.ValueOrHandle))
+}
+
+func makeMergingIterLevel(
+	comparer *base.Comparer, iter internalIterator, rangeDelIter keyspan.FragmentIterator,
+) mergingIterLevel {
+	mil := mergingIterLevel{}
+	mil.iter, mil.getTombstone = maybeInterleaveRangeDels(comparer, iter, rangeDelIter)
+	return mil
 }
 
 var _ internalIterator = &mergingIter{}

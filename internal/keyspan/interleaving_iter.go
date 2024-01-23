@@ -101,7 +101,8 @@ type InterleavingIter struct {
 	mask        SpanMask
 
 	// lower and upper hold the iteration bounds set through SetBounds.
-	lower, upper []byte
+	lower, upper      []byte
+	interleaveEndKeys bool
 	// keyBuf is used to copy SeekGE or SeekPrefixGE arguments when they're used
 	// to truncate a span. The byte slices backing a SeekGE/SeekPrefixGE search
 	// keys can come directly from the end user, so they're copied into keyBuf
@@ -194,6 +195,10 @@ var _ base.InternalIterator = &InterleavingIter{}
 type InterleavingIterOpts struct {
 	Mask                   SpanMask
 	LowerBound, UpperBound []byte
+	// InterleaveEndKeys configures the interleaving iterator to interleave the
+	// end keys of spans (in addition to the start keys, which are always
+	// interleaved).
+	InterleaveEndKeys bool
 }
 
 // Init initializes the InterleavingIter to interleave point keys from pointIter
@@ -211,13 +216,14 @@ func (i *InterleavingIter) Init(
 	// To debug:
 	// keyspanIter = InjectLogging(keyspanIter, base.DefaultLogger)
 	*i = InterleavingIter{
-		cmp:         comparer.Compare,
-		comparer:    comparer,
-		pointIter:   pointIter,
-		keyspanIter: keyspanIter,
-		mask:        opts.Mask,
-		lower:       opts.LowerBound,
-		upper:       opts.UpperBound,
+		cmp:               comparer.Compare,
+		comparer:          comparer,
+		pointIter:         pointIter,
+		keyspanIter:       keyspanIter,
+		mask:              opts.Mask,
+		lower:             opts.LowerBound,
+		upper:             opts.UpperBound,
+		interleaveEndKeys: opts.InterleaveEndKeys,
 	}
 }
 
@@ -674,11 +680,14 @@ func (i *InterleavingIter) nextPos() {
 			}
 		}
 	case posKeyspanStart:
+		//fmt.Printf("At start key; advancing\n")
 		// Either a point key or the span's end key comes next.
 		if i.pointKey != nil && i.cmp(i.pointKey.UserKey, i.span.End) < 0 {
 			i.pos = posPointKey
+			//fmt.Printf("advanced to point key\n")
 		} else {
 			i.pos = posKeyspanEnd
+			//fmt.Printf("advanced to keyspan end\n")
 		}
 	case posKeyspanEnd:
 		i.saveSpanForward(i.keyspanIter.Next())
@@ -806,9 +815,14 @@ func (i *InterleavingIter) yieldPosition(
 			}
 			return i.yieldPointKey()
 		case posKeyspanEnd:
-			// Don't interleave end keys; just advance.
-			advance()
-			continue
+			// Don't interleave an empty span, or end keys if not configured to.
+			if i.span.Empty() || !i.interleaveEndKeys {
+				//fmt.Printf("skipping end span marker for %q\n", i.span.End)
+				advance()
+				continue
+			}
+			//fmt.Printf("returning end span marker for %q\n", i.span.End)
+			return i.yieldSyntheticSpanMarker(i.span.End)
 		case posKeyspanStart:
 			// Don't interleave an empty span.
 			if i.span.Empty() {
@@ -1118,8 +1132,16 @@ func (i *InterleavingIter) Error() error {
 
 // Close implements (base.InternalIterator).Close.
 func (i *InterleavingIter) Close() error {
+	// Ensure Close is idempotent. This isn't required by the InternalIterator
+	// interface, but higher levels currently depend on it in some scenarios.
+	// TODO(jackson): Fix the higher levels.
+	if i.pointIter == nil {
+		return nil
+	}
 	perr := i.pointIter.Close()
 	rerr := i.keyspanIter.Close()
+	i.pointIter = nil
+	i.keyspanIter = nil
 	return firstError(perr, rerr)
 }
 

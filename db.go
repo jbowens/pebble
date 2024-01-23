@@ -1441,10 +1441,7 @@ func (i *Iterator) constructPointIter(
 			if i.batchRangeDelIter.Count() > 0 {
 				rangeDelIter = &i.batchRangeDelIter
 			}
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         &i.batchPointIter,
-				rangeDelIter: rangeDelIter,
-			})
+			mlevels = append(mlevels, makeMergingIterLevel(&i.comparer, &i.batchPointIter, rangeDelIter))
 		}
 	}
 
@@ -1452,10 +1449,8 @@ func (i *Iterator) constructPointIter(
 		// Next are the memtables.
 		for j := len(memtables) - 1; j >= 0; j-- {
 			mem := memtables[j]
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         mem.newIter(&i.opts),
-				rangeDelIter: mem.newRangeDelIter(&i.opts),
-			})
+
+			mlevels = append(mlevels, makeMergingIterLevel(&i.comparer, mem.newIter(&i.opts), mem.newRangeDelIter(&i.opts)))
 		}
 
 		// Next are the file levels: L0 sub-levels followed by lower levels.
@@ -1466,14 +1461,11 @@ func (i *Iterator) constructPointIter(
 		i.opts.snapshotForHideObsoletePoints = buf.dbi.seqNum
 		addLevelIterForFiles := func(files manifest.LevelIterator, level manifest.Level) {
 			li := &levels[levelsIndex]
-
 			li.init(ctx, i.opts, &i.comparer, i.newIters, files, level, internalOpts)
-			li.initRangeDel(&mlevels[mlevelsIndex].rangeDelIter)
-			li.initBoundaryContext(&mlevels[mlevelsIndex].levelIterBoundaryContext)
 			li.initCombinedIterState(&i.lazyCombinedIter.combinedIterState)
 			mlevels[mlevelsIndex].levelIter = li
 			mlevels[mlevelsIndex].iter = invalidating.MaybeWrapIfInvariants(li)
-
+			mlevels[mlevelsIndex].getTombstone = li.Span
 			levelsIndex++
 			mlevelsIndex++
 		}
@@ -3160,4 +3152,17 @@ func (d *DB) checkVirtualBounds(m *fileMetadata) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func maybeInterleaveRangeDels(
+	comparer *base.Comparer, iter internalIterator, rangeDelIter keyspan.FragmentIterator,
+) (internalIterator, func() *keyspan.Span) {
+	if rangeDelIter == nil {
+		return iter, nil
+	}
+	ii := new(keyspan.InterleavingIter)
+	ii.Init(comparer, iter, rangeDelIter, keyspan.InterleavingIterOpts{
+		InterleaveEndKeys: true,
+	})
+	return ii, ii.Span
 }

@@ -231,35 +231,18 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (internalIterato
 				combinedIters = append(combinedIters, pointIter)
 				continue
 			}
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         pointIter,
-				rangeDelIter: rangeDelIter,
-			})
+			mlevels = append(mlevels, makeMergingIterLevel(&it.comparer, pointIter, rangeDelIter))
 		}
 		if len(combinedIters) == 1 {
-			mlevels = append(mlevels, mergingIterLevel{
-				iter: combinedIters[0],
-			})
+			mlevels = append(mlevels, mergingIterLevel{iter: combinedIters[0]})
 		} else if len(combinedIters) > 1 {
 			sli := &simpleLevelIter{
 				cmp:   it.cmp,
 				iters: combinedIters,
 			}
 			sli.init(it.opts)
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         sli,
-				rangeDelIter: nil,
-			})
+			mlevels = append(mlevels, mergingIterLevel{iter: sli})
 		}
-	}
-	if len(mlevels) == 1 && mlevels[0].rangeDelIter == nil {
-		// Set closePointIterOnce to true. This is because we're bypassing the
-		// merging iter, which turns Close()s on it idempotent for any child
-		// iterators. The outer Iterator could call Close() on a point iter twice,
-		// which sstable iterators do not support (as they release themselves to
-		// a pool).
-		it.closePointIterOnce = true
-		return mlevels[0].iter, nil
 	}
 
 	it.alloc.merging.init(&it.opts, &it.stats.InternalStats, it.comparer.Compare, it.comparer.Split, mlevels...)

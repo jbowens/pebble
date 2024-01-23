@@ -40,7 +40,7 @@ c#27,1:27
 e#10,1:10
 g#20,1:20
 .
-{BlockBytes:116 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:5 ValueBytes:8 PointCount:5 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
+{BlockBytes:116 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:4 ValueBytes:8 PointCount:4 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:0 ValueBytes:0 PointCount:0 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 
 # seekGE() should not allow the rangedel to act on points in the lower sstable that are after it.
@@ -57,12 +57,18 @@ iter probe-rangedels=(000000,(Log "#  000000.rangeDelIter.")) probe-rangedels=(0
 seek-ge d
 next
 ----
+<<<<<<< HEAD
 #  000000.rangeDelIter.opSpanSeekGE("d") = a-e:{(#8,RANGEDEL)}
 #  000001.rangeDelIter.opSpanSeekGE("e") = e-g:{(#8,RANGEDEL)}
 #  000000.rangeDelIter.opSpanSeekGE("e") = nil
 #  000000.rangeDelIter.opSpanClose() = nil
 #  000001.rangeDelIter.opSpanSeekGE("e") = e-g:{(#8,RANGEDEL)}
+=======
+#  000000.rangeDelIter.opSpanSeekGE("d") = a-f:{(#8,RANGEDEL)}
+#  000001.rangeDelIter.opSpanSeekGE("e") = e-f:{(#8,RANGEDEL)}
+>>>>>>> 0e2faea1 (wip)
 e#10,1:10
+#  000000.rangeDelIter.opSpanClose() = nil
 #  000001.rangeDelIter.opSpanSeekGE("g") = nil <err="injected error">
 err=injected error
 

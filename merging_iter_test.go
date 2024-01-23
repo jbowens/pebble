@@ -301,7 +301,6 @@ func TestMergingIterCornerCases(t *testing.T) {
 
 				i := len(levelIters)
 				levelIters = append(levelIters, mergingIterLevel{iter: li})
-				li.initRangeDel(&levelIters[i].rangeDelIter)
 				li.initBoundaryContext(&levelIters[i].levelIterBoundaryContext)
 			}
 			miter := &mergingIter{}
@@ -673,7 +672,6 @@ func buildMergingIter(readers [][]*sstable.Reader, levelSlices []manifest.LevelS
 		l := newLevelIter(
 			context.Background(), IterOptions{}, testkeys.Comparer, newIters, levelSlices[i].Iter(),
 			manifest.Level(level), internalIterOpts{})
-		l.initRangeDel(&mils[level].rangeDelIter)
 		l.initBoundaryContext(&mils[level].levelIterBoundaryContext)
 		mils[level].iter = l
 	}
