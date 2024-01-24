@@ -961,9 +961,9 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) erro
 			if err := l.iter.Error(); err != nil {
 				return err
 			}
-		} else if l.iterKey.IsExclusiveSentinel() && l.getTombstone != nil {
-			l.tombstone = l.getTombstone()
+			continue
 		}
+		// l.iterKey != nil
 
 		// If this level contains overlapping range tombstones, alter the seek
 		// key accordingly. Caveat: If we're performing lazy-combined iteration,
@@ -971,16 +971,20 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) erro
 		// keys, and there might exist live range keys within the range
 		// tombstone's span that need to be observed to trigger a switch to
 		// combined iteration.
-		if l.tombstone != nil && (m.combinedIterState == nil || m.combinedIterState.initialized) {
-			if l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) {
-				// The level has a range del overlapping the seek key.
-				//
-				// The adjustment of key here can only move it to a larger key. Since
-				// the caller of seekGE guaranteed that the original key was greater
-				// than or equal to m.lower, the new key will continue to be greater
-				// than or equal to m.lower.
-				key = l.tombstone.End
-			}
+		if l.getTombstone == nil || (m.combinedIterState != nil && !m.combinedIterState.initialized) {
+			continue
+		} else if !l.iterKey.IsExclusiveSentinel() {
+			// Not a range tombstone.
+			continue
+		}
+		if t := l.getTombstone(); t.VisibleAt(m.snapshot) && m.heap.cmp(t.Start, key) <= 0 {
+			// The level has a range del overlapping the seek key.
+			//
+			// The adjustment of key here can only move it to a larger key. Since
+			// the caller of seekGE guaranteed that the original key was greater
+			// than or equal to m.lower, the new key will continue to be greater
+			// than or equal to m.lower.
+			key = t.End
 		}
 	}
 	m.initMinHeap()
@@ -1033,9 +1037,9 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 			if err := l.iter.Error(); err != nil {
 				return err
 			}
-		} else if l.iterKey.IsExclusiveSentinel() && l.getTombstone != nil {
-			l.tombstone = l.getTombstone()
+			continue
 		}
+		// l.iterKey != nil
 
 		// If this level contains overlapping range tombstones, alter the seek
 		// key accordingly. Caveat: If we're performing lazy-combined iteration,
@@ -1043,21 +1047,21 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 		// keys, and there might exist live range keys within the range
 		// tombstone's span that need to be observed to trigger a switch to
 		// combined iteration.
-		if l.tombstone != nil && (m.combinedIterState == nil || m.combinedIterState.initialized) {
-			if l.tombstone.VisibleAt(m.snapshot) && l.tombstone.Contains(m.heap.cmp, key) {
-				// The level has a range deletion overlapping the seek key.
-				//
-				// NB: Based on the containment condition
-				// tombstone.Start.UserKey <= key, so the assignment to key
-				// results in a monotonically non-increasing key across
-				// iterations of this loop.
-				//
-				// The adjustment of key here can only move it to a smaller key. Since
-				// the caller of seekLT guaranteed that the original key was less than
-				// or equal to m.upper, the new key will continue to be less than or
-				// equal to m.upper.
-				key = l.tombstone.Start
-			}
+		if l.getTombstone == nil || (m.combinedIterState != nil && !m.combinedIterState.initialized) {
+			continue
+		} else if !l.iterKey.IsExclusiveSentinel() {
+			// Not a range tombstone.
+			continue
+		}
+		if t := l.getTombstone(); t.VisibleAt(m.snapshot) && m.heap.cmp(t.End, key) > 0 {
+			// The level has a range deletion overlapping the seek key.
+			//
+			//
+			// The adjustment of key here can only move it to a smaller key. Since
+			// the caller of seekLT guaranteed that the original key was less than
+			// or equal to m.upper, the new key will continue to be less than or
+			// equal to m.upper.
+			key = t.Start
 		}
 	}
 

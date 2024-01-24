@@ -348,12 +348,6 @@ func TestLevelIterBoundaries(t *testing.T) {
 	})
 }
 
-func must(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
 func TestLevelIterSeek(t *testing.T) {
 	lt := newLevelIterTest()
 	defer lt.runClear(nil)

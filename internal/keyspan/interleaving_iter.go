@@ -817,7 +817,7 @@ func (i *InterleavingIter) yieldPosition(
 				advance()
 				continue
 			}
-			return i.yieldSyntheticSpanMarker(i.span.End)
+			return i.yieldSyntheticSpanMarker(nil)
 		case posKeyspanStart:
 			// Don't interleave an empty span.
 			if i.span.Empty() {
