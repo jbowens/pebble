@@ -135,19 +135,9 @@ type levelIter struct {
 	// levelIterBoundaryContext.isIgnorableBoundaryKey.
 	filteredIter filteredIter
 	newIters     tableNewIters
-	// When rangeDelIterPtr != nil, the caller requires that *rangeDelIterPtr must
-	// point to a range del iterator corresponding to the current file. When this
-	// iterator returns nil, *rangeDelIterPtr should also be set to nil. Whenever
-	// a non-nil internalIterator is placed in rangeDelIterPtr, a copy is placed
-	// in rangeDelIterCopy. This is done for the following special case:
-	// when this iterator returns nil because of exceeding the bounds, we don't
-	// close iter and *rangeDelIterPtr since we could reuse it in the next seek. But
-	// we need to set *rangeDelIterPtr to nil because of the aforementioned contract.
-	// This copy is used to revive the *rangeDelIterPtr in the case of reuse.
-	rangeDelIterPtr  *keyspan.FragmentIterator
-	rangeDelIterCopy keyspan.FragmentIterator
-	files            manifest.LevelIterator
-	err              error
+	interleaving keyspan.InterleavingIter
+	files        manifest.LevelIterator
+	err          error
 
 	// Pointer into this level's entry in `mergingIterLevel::levelIterBoundaryContext`.
 	// We populate it with the corresponding bounds for the currently opened file. It is used for
@@ -285,10 +275,6 @@ func (l *levelIter) init(
 	l.newIters = newIters
 	l.files = files
 	l.internalOpts = internalOpts
-}
-
-func (l *levelIter) initRangeDel(rangeDelIter *keyspan.FragmentIterator) {
-	l.rangeDelIterPtr = rangeDelIter
 }
 
 func (l *levelIter) initBoundaryContext(context *levelIterBoundaryContext) {
@@ -718,6 +704,10 @@ func (l *levelIter) verify(key *InternalKey, val base.LazyValue) (*InternalKey, 
 		}
 	}
 	return key, val
+}
+
+func (l *levelIter) getTombstone() *keyspan.Span {
+	return l.interleaving.Span()
 }
 
 func (l *levelIter) SeekGE(key []byte, flags base.SeekGEFlags) (*InternalKey, base.LazyValue) {

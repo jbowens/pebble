@@ -23,6 +23,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/manual"
+	"github.com/cockroachdb/pebble/internal/rangedel"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/remote"
 	"github.com/cockroachdb/pebble/rangekey"
@@ -1436,14 +1437,11 @@ func (i *Iterator) constructPointIter(
 			// written to the batch and the view of the batch is refreshed
 			// during a call to SetOptions—in this case, we need to reconstruct
 			// the point iterator to add the batch rangedel iterator.
-			var rangeDelIter keyspan.FragmentIterator
+			ml := mergingIterLevel{iter: &i.batchPointIter}
 			if i.batchRangeDelIter.Count() > 0 {
-				rangeDelIter = &i.batchRangeDelIter
+				ml.iter, ml.getTombstone = rangedel.Interleave(&i.comparer, &i.batchPointIter, &i.batchRangeDelIter)
 			}
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         &i.batchPointIter,
-				rangeDelIter: rangeDelIter,
-			})
+			mlevels = append(mlevels, ml)
 		}
 	}
 
@@ -1451,10 +1449,11 @@ func (i *Iterator) constructPointIter(
 		// Next are the memtables.
 		for j := len(memtables) - 1; j >= 0; j-- {
 			mem := memtables[j]
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         mem.newIter(&i.opts),
-				rangeDelIter: mem.newRangeDelIter(&i.opts),
-			})
+			ml := mergingIterLevel{iter: mem.newIter(&i.opts)}
+			if rangeDelIter := mem.newRangeDelIter(&i.opts); rangeDelIter != nil {
+				ml.iter, ml.getTombstone = rangedel.Interleave(&i.comparer, ml.iter, rangeDelIter)
+			}
+			mlevels = append(mlevels, ml)
 		}
 
 		// Next are the file levels: L0 sub-levels followed by lower levels.
@@ -1467,11 +1466,11 @@ func (i *Iterator) constructPointIter(
 			li := &levels[levelsIndex]
 
 			li.init(ctx, i.opts, &i.comparer, i.newIters, files, level, internalOpts)
-			li.initRangeDel(&mlevels[mlevelsIndex].rangeDelIter)
 			li.initBoundaryContext(&mlevels[mlevelsIndex].levelIterBoundaryContext)
 			li.initCombinedIterState(&i.lazyCombinedIter.combinedIterState)
 			mlevels[mlevelsIndex].levelIter = li
 			mlevels[mlevelsIndex].iter = invalidating.MaybeWrapIfInvariants(li)
+			mlevels[mlevelsIndex].getTombstone = li.getTombstone
 
 			levelsIndex++
 			mlevelsIndex++

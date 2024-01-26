@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
+	"github.com/cockroachdb/pebble/internal/rangedel"
 	"github.com/cockroachdb/pebble/sstable"
 )
 
@@ -232,10 +233,11 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (internalIterato
 				combinedIters = append(combinedIters, pointIter)
 				continue
 			}
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         pointIter,
-				rangeDelIter: rangeDelIter,
-			})
+			ml := mergingIterLevel{iter: pointIter}
+			if rangeDelIter != nil {
+				ml.iter, ml.getTombstone = rangedel.Interleave(&it.comparer, pointIter, rangeDelIter)
+			}
+			mlevels = append(mlevels, ml)
 		}
 		if len(combinedIters) == 1 {
 			mlevels = append(mlevels, mergingIterLevel{
@@ -248,12 +250,11 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (internalIterato
 			}
 			sli.init(it.opts)
 			mlevels = append(mlevels, mergingIterLevel{
-				iter:         sli,
-				rangeDelIter: nil,
+				iter: sli,
 			})
 		}
 	}
-	if len(mlevels) == 1 && mlevels[0].rangeDelIter == nil {
+	if len(mlevels) == 1 && mlevels[0].getTombstone == nil {
 		// Set closePointIterOnce to true. This is because we're bypassing the
 		// merging iter, which turns Close()s on it idempotent for any child
 		// iterators. The outer Iterator could call Close() on a point iter twice,

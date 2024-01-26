@@ -169,7 +169,6 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 					snapshotForHideObsoletePoints: g.snapshot}
 				g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
 					files, manifest.L0Sublevel(n), internalIterOpts{})
-				g.levelIter.initRangeDel(&g.rangeDelIter)
 				bc := levelIterBoundaryContext{}
 				g.levelIter.initBoundaryContext(&bc)
 				g.iter = &g.levelIter
@@ -206,7 +205,6 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			}, logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 		g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
 			g.version.Levels[g.level].Iter(), manifest.Level(g.level), internalIterOpts{})
-		g.levelIter.initRangeDel(&g.rangeDelIter)
 		bc := levelIterBoundaryContext{}
 		g.levelIter.initBoundaryContext(&bc)
 		g.level++

@@ -18,13 +18,9 @@ import (
 )
 
 type mergingIterLevel struct {
-	index int
-	iter  internalIterator
-	// rangeDelIter is set to the range-deletion iterator for the level. When
-	// configured with a levelIter, this pointer changes as sstable boundaries
-	// are crossed. See levelIter.initRangeDel and the Range Deletions comment
-	// below.
-	rangeDelIter keyspan.FragmentIterator
+	index        int
+	iter         internalIterator
+	getTombstone func() *keyspan.Span
 	// iterKey and iterValue cache the current key and value iter are pointed at.
 	iterKey   *InternalKey
 	iterValue base.LazyValue
