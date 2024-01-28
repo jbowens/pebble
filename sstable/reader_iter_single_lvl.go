@@ -164,6 +164,7 @@ type singleLevelIterator struct {
 	useFilter              bool
 	lastBloomFilterMatched bool
 
+	indexInitialized   bool
 	hideObsoletePoints bool
 }
 
@@ -194,15 +195,11 @@ func (i *singleLevelIterator) init(
 		return r.err
 	}
 	i.iterStats.init(categoryAndQoS, statsCollector)
-	indexH, err := r.readIndex(ctx, stats, &i.iterStats)
-	if err != nil {
-		return err
-	}
+
 	if v != nil {
 		i.vState = v
 		i.endKeyInclusive, lower, upper = v.constrainBounds(lower, upper, false /* endInclusive */)
 	}
-
 	i.ctx = ctx
 	i.lower = lower
 	i.upper = upper
@@ -213,12 +210,6 @@ func (i *singleLevelIterator) init(
 	i.stats = stats
 	i.hideObsoletePoints = hideObsoletePoints
 	i.bufferPool = bufferPool
-	err = i.index.initHandle(i.cmp, indexH, r.Properties.GlobalSeqNum, false)
-	if err != nil {
-		// blockIter.Close releases indexH and always returns a nil error
-		_ = i.index.Close()
-		return err
-	}
 	i.dataRH = objstorageprovider.UsePreallocatedReadHandle(ctx, r.readable, &i.dataRHPrealloc)
 	if r.tableFormat >= TableFormatPebblev3 {
 		if r.Properties.NumValueBlocks > 0 {
@@ -241,6 +232,23 @@ func (i *singleLevelIterator) init(
 			i.vbRH = objstorageprovider.UsePreallocatedReadHandle(ctx, r.readable, &i.vbRHPrealloc)
 		}
 		i.data.lazyValueHandling.hasValuePrefix = true
+	}
+	return nil
+}
+
+func (i *singleLevelIterator) maybeInitIndex() error {
+	if !i.indexInitialized {
+		indexH, err := i.reader.readIndex(i.ctx, i.stats, &i.iterStats)
+		if err != nil {
+			return err
+		}
+		err = i.index.initHandle(i.cmp, indexH, i.reader.Properties.GlobalSeqNum, false)
+		if err != nil {
+			// blockIter.Close releases indexH and always returns a nil error
+			_ = i.index.Close()
+			return err
+		}
+		i.indexInitialized = true
 	}
 	return nil
 }
@@ -661,6 +669,9 @@ func (i *singleLevelIterator) SeekGE(
 func (i *singleLevelIterator) seekGEHelper(
 	key []byte, boundsCmp int, flags base.SeekGEFlags,
 ) (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	// Invariant: trySeekUsingNext => !i.data.isDataInvalidated() && i.exhaustedBounds != +1
 
 	// SeekGE performs various step-instead-of-seeking optimizations: eg enabled
@@ -881,6 +892,9 @@ func (i *singleLevelIterator) virtualLast() (*InternalKey, base.LazyValue) {
 // virtualLast. Consider generalizing this into a SeekLE() if there are other
 // uses of this method in the future.
 func (i *singleLevelIterator) virtualLastSeekLE(key []byte) (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	// Callers of SeekLE don't know about virtual sstable bounds, so we may
 	// have to internally restrict the bounds.
 	//
@@ -955,6 +969,9 @@ func (i *singleLevelIterator) SeekLT(
 			// Return the last key in the virtual sstable.
 			return i.virtualLast()
 		}
+	}
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
 	}
 
 	i.exhaustedBounds = 0
@@ -1060,6 +1077,9 @@ func (i *singleLevelIterator) SeekLT(
 // to ensure that key is greater than or equal to the lower bound (e.g. via a
 // call to SeekGE(lower)).
 func (i *singleLevelIterator) First() (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	// If the iterator was created on a virtual sstable, we will SeekGE to the
 	// lower bound instead of using First, because First does not respect
 	// bounds.
@@ -1132,6 +1152,9 @@ func (i *singleLevelIterator) firstInternal() (*InternalKey, base.LazyValue) {
 // to ensure that key is less than the upper bound (e.g. via a call to
 // SeekLT(upper))
 func (i *singleLevelIterator) Last() (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	if i.vState != nil {
 		return i.virtualLast()
 	}

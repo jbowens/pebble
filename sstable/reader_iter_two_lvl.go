@@ -155,10 +155,6 @@ func (i *twoLevelIterator) init(
 		return r.err
 	}
 	i.iterStats.init(categoryAndQoS, statsCollector)
-	topLevelIndexH, err := r.readIndex(ctx, stats, &i.iterStats)
-	if err != nil {
-		return err
-	}
 	if v != nil {
 		i.vState = v
 		// Note that upper is exclusive here.
@@ -175,12 +171,7 @@ func (i *twoLevelIterator) init(
 	i.stats = stats
 	i.hideObsoletePoints = hideObsoletePoints
 	i.bufferPool = bufferPool
-	err = i.topLevelIndex.initHandle(i.cmp, topLevelIndexH, r.Properties.GlobalSeqNum, false)
-	if err != nil {
-		// blockIter.Close releases topLevelIndexH and always returns a nil error
-		_ = i.topLevelIndex.Close()
-		return err
-	}
+
 	i.dataRH = r.readable.NewReadHandle(ctx)
 	if r.tableFormat >= TableFormatPebblev3 {
 		if r.Properties.NumValueBlocks > 0 {
@@ -194,6 +185,23 @@ func (i *twoLevelIterator) init(
 			i.vbRH = r.readable.NewReadHandle(ctx)
 		}
 		i.data.lazyValueHandling.hasValuePrefix = true
+	}
+	return nil
+}
+
+func (i *twoLevelIterator) maybeInitIndex() error {
+	if !i.indexInitialized {
+		topLevelIndexH, err := i.reader.readIndex(i.ctx, i.stats, &i.iterStats)
+		if err != nil {
+			return err
+		}
+		err = i.topLevelIndex.initHandle(i.cmp, topLevelIndexH, i.reader.Properties.GlobalSeqNum, false)
+		if err != nil {
+			// blockIter.Close releases topLevelIndexH and always returns a nil error
+			_ = i.topLevelIndex.Close()
+			return err
+		}
+		i.indexInitialized = true
 	}
 	return nil
 }
@@ -226,6 +234,9 @@ func (i *twoLevelIterator) MaybeFilteredKeys() bool {
 func (i *twoLevelIterator) SeekGE(
 	key []byte, flags base.SeekGEFlags,
 ) (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	if i.vState != nil {
 		// Callers of SeekGE don't know about virtual sstable bounds, so we may
 		// have to internally restrict the bounds.
@@ -444,6 +455,9 @@ func (i *twoLevelIterator) SeekPrefixGE(
 	}
 
 	// Bloom filter matches.
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 
 	// SeekPrefixGE performs various step-instead-of-seeking optimizations: eg
 	// enabled by trySeekUsingNext, or by monotonically increasing bounds
@@ -632,6 +646,9 @@ func (i *twoLevelIterator) virtualLastSeekLE(key []byte) (*InternalKey, base.Laz
 func (i *twoLevelIterator) SeekLT(
 	key []byte, flags base.SeekLTFlags,
 ) (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	if i.vState != nil {
 		// Might have to fix upper bound since virtual sstable bounds are not
 		// known to callers of SeekLT.
@@ -715,6 +732,9 @@ func (i *twoLevelIterator) SeekLT(
 // to ensure that key is greater than or equal to the lower bound (e.g. via a
 // call to SeekGE(lower)).
 func (i *twoLevelIterator) First() (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	// If the iterator was created on a virtual sstable, we will SeekGE to the
 	// lower bound instead of using First, because First does not respect
 	// bounds.
@@ -768,6 +788,9 @@ func (i *twoLevelIterator) First() (*InternalKey, base.LazyValue) {
 // to ensure that key is less than the upper bound (e.g. via a call to
 // SeekLT(upper))
 func (i *twoLevelIterator) Last() (*InternalKey, base.LazyValue) {
+	if i.err = i.maybeInitIndex(); i.err != nil {
+		return nil, base.LazyValue{}
+	}
 	if i.vState != nil {
 		if i.endKeyInclusive {
 			return i.virtualLast()
