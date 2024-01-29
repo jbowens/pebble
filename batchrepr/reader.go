@@ -12,12 +12,17 @@ import (
 	"fmt"
 	"unsafe"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
-	"github.com/pkg/errors"
+	"github.com/cockroachdb/pebble/internal/humanize"
 )
 
-// ErrInvalidBatch indicates that a batch is invalid or otherwise corrupted.
-var ErrInvalidBatch = base.MarkCorruptionError(errors.New("pebble: invalid batch"))
+var (
+	// ErrInvalidBatch indicates that a batch is invalid or otherwise corrupted.
+	ErrInvalidBatch = base.MarkCorruptionError(errors.New("pebble: invalid batch"))
+	// ErrBatchTooLarge indicates that a batch is invalid or otherwise corrupted.
+	ErrBatchTooLarge = base.MarkCorruptionError(errors.Newf("pebble: batch too large: >= %s", humanize.Bytes.Uint64(MaxBatchSize)))
+)
 
 const (
 	// HeaderLen is the length of the batch header in bytes.
@@ -63,6 +68,9 @@ func (h Header) String() string {
 // performance sensitive code paths that should not necessarily read the rest of
 // the header as well.
 func ReadSeqNum(repr []byte) uint64 {
+	if len(repr) < HeaderLen {
+		return 0
+	}
 	return binary.LittleEndian.Uint64(repr[:countOffset])
 }
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/datadriven"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriter(t *testing.T) {
@@ -82,4 +83,18 @@ func prettyBinaryRepr(repr []byte) string {
 		}
 	}
 	return buf.String()
+}
+
+func TestBatchTooLarge(t *testing.T) {
+	var w Writer
+	var result interface{}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				result = r
+			}
+		}()
+		w.grow(MaxBatchSize)
+	}()
+	require.EqualValues(t, ErrBatchTooLarge, result)
 }

@@ -39,16 +39,6 @@ import (
 const (
 	initialMemTableSize = 256 << 10 // 256 KB
 
-	// The max batch size is limited by the uint32 offsets stored in
-	// internal/batchskl.node, DeferredBatchOp, and flushableBatchEntry.
-	//
-	// We limit the size to MaxUint32 (just short of 4GB) so that the exclusive
-	// end of an allocation fits in uint32.
-	//
-	// On 32-bit systems, slices are naturally limited to MaxInt (just short of
-	// 2GB).
-	maxBatchSize = constants.MaxUint32OrInt
-
 	// The max memtable size is limited by the uint32 offsets stored in
 	// internal/arenaskl.node, DeferredBatchOp, and flushableBatchEntry.
 	//

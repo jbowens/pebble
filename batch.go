@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/pebble/batchrepr"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/batchskl"
-	"github.com/cockroachdb/pebble/internal/humanize"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/private"
@@ -30,10 +29,8 @@ import (
 )
 
 const (
-	batchInitialSize     = 1 << 10 // 1 KB
 	batchMaxRetainedSize = 1 << 20 // 1 MB
 	invalidBatchCount    = 1<<32 - 1
-	maxVarintLen32       = 5
 )
 
 // ErrNotIndexed means that a read operation on a batch failed because the
@@ -44,7 +41,7 @@ var ErrNotIndexed = errors.New("pebble: batch not indexed")
 var ErrInvalidBatch = batchrepr.ErrInvalidBatch
 
 // ErrBatchTooLarge indicates that a batch is invalid or otherwise corrupted.
-var ErrBatchTooLarge = base.MarkCorruptionError(errors.Newf("pebble: batch too large: >= %s", humanize.Bytes.Uint64(maxBatchSize)))
+var ErrBatchTooLarge = batchrepr.ErrBatchTooLarge
 
 // DeferredBatchOp represents a batch operation (eg. set, merge, delete) that is
 // being inserted into the batch. Indexing is not performed on the specified key
@@ -205,7 +202,7 @@ type batchInternal struct {
 	// batches. Large batches will set the data field to nil when committed as
 	// the data has been moved to a flushableBatch and inserted into the queue of
 	// memtables.
-	data           []byte
+	data           batchrepr.Writer
 	cmp            Compare
 	formatKey      base.FormatKey
 	abbreviatedKey AbbreviatedKey
@@ -399,7 +396,7 @@ func newIndexedBatch(db *DB, comparer *Comparer) *Batch {
 	i.batch.abbreviatedKey = comparer.AbbreviatedKey
 	i.batch.db = db
 	i.batch.index = &i.index
-	i.batch.index.Init(&i.batch.data, i.batch.cmp, i.batch.abbreviatedKey)
+	i.batch.index.Init((*[]byte)(&i.batch.data), i.batch.cmp, i.batch.abbreviatedKey)
 	return &i.batch
 }
 
@@ -501,13 +498,7 @@ func (b *Batch) Apply(batch *Batch, _ *WriteOptions) error {
 		return ErrInvalidBatch
 	}
 
-	offset := len(b.data)
-	if offset == 0 {
-		b.init(offset)
-		offset = batchrepr.HeaderLen
-	}
-	b.data = append(b.data, batch.data[batchrepr.HeaderLen:]...)
-
+	offset := b.data.Append(batch.data)
 	b.setCount(b.Count() + batch.Count())
 
 	if b.db != nil || b.index != nil {
@@ -537,14 +528,14 @@ func (b *Batch) Apply(batch *Batch, _ *WriteOptions) error {
 					b.tombstones = nil
 					b.tombstonesSeqNum = 0
 					if b.rangeDelIndex == nil {
-						b.rangeDelIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
+						b.rangeDelIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 					}
 					err = b.rangeDelIndex.Add(uint32(offset))
 				case InternalKeyKindRangeKeySet, InternalKeyKindRangeKeyUnset, InternalKeyKindRangeKeyDelete:
 					b.rangeKeys = nil
 					b.rangeKeysSeqNum = 0
 					if b.rangeKeyIndex == nil {
-						b.rangeKeyIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
+						b.rangeKeyIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 					}
 					err = b.rangeKeyIndex.Add(uint32(offset))
 				default:
@@ -578,89 +569,19 @@ func (b *Batch) prepareDeferredKeyValueRecord(keyLen, valueLen int, kind Interna
 	if b.committing {
 		panic("pebble: batch already committing")
 	}
-	if len(b.data) == 0 {
-		b.init(keyLen + valueLen + 2*binary.MaxVarintLen64 + batchrepr.HeaderLen)
-	}
 	b.count++
 	b.memTableSize += memTableEntrySize(keyLen, valueLen)
-
-	pos := len(b.data)
-	b.deferredOp.offset = uint32(pos)
-	b.grow(1 + 2*maxVarintLen32 + keyLen + valueLen)
-	b.data[pos] = byte(kind)
-	pos++
-
-	{
-		// TODO(peter): Manually inlined version binary.PutUvarint(). This is 20%
-		// faster on BenchmarkBatchSet on go1.13. Remove if go1.14 or future
-		// versions show this to not be a performance win.
-		x := uint32(keyLen)
-		for x >= 0x80 {
-			b.data[pos] = byte(x) | 0x80
-			x >>= 7
-			pos++
-		}
-		b.data[pos] = byte(x)
-		pos++
-	}
-
-	b.deferredOp.Key = b.data[pos : pos+keyLen]
-	pos += keyLen
-
-	{
-		// TODO(peter): Manually inlined version binary.PutUvarint(). This is 20%
-		// faster on BenchmarkBatchSet on go1.13. Remove if go1.14 or future
-		// versions show this to not be a performance win.
-		x := uint32(valueLen)
-		for x >= 0x80 {
-			b.data[pos] = byte(x) | 0x80
-			x >>= 7
-			pos++
-		}
-		b.data[pos] = byte(x)
-		pos++
-	}
-
-	b.deferredOp.Value = b.data[pos : pos+valueLen]
-	// Shrink data since varints may be shorter than the upper bound.
-	b.data = b.data[:pos+valueLen]
+	b.deferredOp.offset, b.deferredOp.Key, b.deferredOp.Value = b.data.PrepareKeyValueRecord(keyLen, valueLen, kind)
 }
 
 func (b *Batch) prepareDeferredKeyRecord(keyLen int, kind InternalKeyKind) {
 	if b.committing {
 		panic("pebble: batch already committing")
 	}
-	if len(b.data) == 0 {
-		b.init(keyLen + binary.MaxVarintLen64 + batchrepr.HeaderLen)
-	}
 	b.count++
 	b.memTableSize += memTableEntrySize(keyLen, 0)
-
-	pos := len(b.data)
-	b.deferredOp.offset = uint32(pos)
-	b.grow(1 + maxVarintLen32 + keyLen)
-	b.data[pos] = byte(kind)
-	pos++
-
-	{
-		// TODO(peter): Manually inlined version binary.PutUvarint(). Remove if
-		// go1.13 or future versions show this to not be a performance win. See
-		// BenchmarkBatchSet.
-		x := uint32(keyLen)
-		for x >= 0x80 {
-			b.data[pos] = byte(x) | 0x80
-			x >>= 7
-			pos++
-		}
-		b.data[pos] = byte(x)
-		pos++
-	}
-
-	b.deferredOp.Key = b.data[pos : pos+keyLen]
+	b.deferredOp.offset, b.deferredOp.Key = b.data.PrepareKeyRecord(keyLen, kind)
 	b.deferredOp.Value = nil
-
-	// Shrink data since varint may be shorter than the upper bound.
-	b.data = b.data[:pos+keyLen]
 }
 
 // AddInternalKey allows the caller to add an internal key of point key or range
@@ -709,13 +630,16 @@ func (b *Batch) AddInternalKey(key *base.InternalKey, value []byte, _ *WriteOpti
 //
 // It is safe to modify the contents of the arguments after Set returns.
 func (b *Batch) Set(key, value []byte, _ *WriteOptions) error {
-	deferredOp := b.SetDeferred(len(key), len(value))
-	copy(deferredOp.Key, key)
-	copy(deferredOp.Value, value)
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
-	// in go1.13 will remove the need for this.
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+	b.count++
+	b.memTableSize += memTableEntrySize(len(key), len(value))
+	off, keyDst, valDst := b.data.PrepareKeyValueRecord(len(key), len(value), InternalKeyKindSet)
+	copy(keyDst, key)
+	copy(valDst, value)
 	if b.index != nil {
-		if err := b.index.Add(deferredOp.offset); err != nil {
+		if err := b.index.Add(off); err != nil {
 			return err
 		}
 	}
@@ -765,12 +689,15 @@ func (b *Batch) MergeDeferred(keyLen, valueLen int) *DeferredBatchOp {
 //
 // It is safe to modify the contents of the arguments after Delete returns.
 func (b *Batch) Delete(key []byte, _ *WriteOptions) error {
-	deferredOp := b.DeleteDeferred(len(key))
-	copy(deferredOp.Key, key)
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
-	// in go1.13 will remove the need for this.
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+	b.count++
+	b.memTableSize += memTableEntrySize(len(key), 0)
+	off, keyDst := b.data.PrepareKeyRecord(len(key), InternalKeyKindDelete)
+	copy(keyDst, key)
 	if b.index != nil {
-		if err := b.index.Add(deferredOp.offset); err != nil {
+		if err := b.index.Add(off); err != nil {
 			return err
 		}
 	}
@@ -847,7 +774,12 @@ func (b *Batch) DeleteSizedDeferred(keyLen int, deletedValueSize uint32) *Deferr
 	// will never exceed 128 bytes. This unnecessary extra byte and wrapping is
 	// preserved to avoid special casing across the database, and in particular
 	// in sstable block decoding which is performance sensitive.
-	b.prepareDeferredKeyValueRecord(keyLen, n, InternalKeyKindDeleteSized)
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+	b.count++
+	b.memTableSize += memTableEntrySize(keyLen, n)
+	b.deferredOp.offset, b.deferredOp.Key, b.deferredOp.Value = b.data.PrepareKeyValueRecord(keyLen, n, InternalKeyKindDeleteSized)
 	b.deferredOp.index = b.index
 	copy(b.deferredOp.Value, buf[:n])
 	return &b.deferredOp
@@ -914,7 +846,7 @@ func (b *Batch) DeleteRangeDeferred(startLen, endLen int) *DeferredBatchOp {
 		b.tombstonesSeqNum = 0
 		// Range deletions are rare, so we lazily allocate the index for them.
 		if b.rangeDelIndex == nil {
-			b.rangeDelIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
+			b.rangeDelIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 		}
 		b.deferredOp.index = b.rangeDelIndex
 	}
@@ -969,7 +901,7 @@ func (b *Batch) incrementRangeKeysCount() {
 		b.rangeKeysSeqNum = 0
 		// Range keys are rare, so we lazily allocate the index for them.
 		if b.rangeKeyIndex == nil {
-			b.rangeKeyIndex = batchskl.NewSkiplist(&b.data, b.cmp, b.abbreviatedKey)
+			b.rangeKeyIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 		}
 		b.deferredOp.index = b.rangeKeyIndex
 	}
@@ -1112,11 +1044,7 @@ func (b *Batch) Len() int {
 // the contents. Reset() will not change the contents of the returned value,
 // though any other mutation operation may do so.
 func (b *Batch) Repr() []byte {
-	if len(b.data) == 0 {
-		b.init(batchrepr.HeaderLen)
-	}
-	batchrepr.SetCount(b.data, b.Count())
-	return b.data
+	return b.data.Repr(b.Count())
 }
 
 // SetRepr sets the underlying batch representation. The batch takes ownership
@@ -1380,20 +1308,6 @@ func (b *Batch) Indexed() bool {
 	return b.index != nil
 }
 
-// init ensures that the batch data slice is initialized to meet the
-// minimum required size and allocates space for the batch header.
-func (b *Batch) init(size int) {
-	n := batchInitialSize
-	for n < size {
-		n *= 2
-	}
-	if cap(b.data) < n {
-		b.data = rawalloc.New(batchrepr.HeaderLen, n)
-	}
-	b.data = b.data[:batchrepr.HeaderLen]
-	clear(b.data) // Zero the sequence number in the header
-}
-
 // Reset resets the batch for reuse. The underlying byte slice (that is
 // returned by Repr()) may not be modified. It is only necessary to call this
 // method if a batch is explicitly being reused. Close automatically takes are
@@ -1425,25 +1339,8 @@ func (b *Batch) Reset() {
 		}
 	}
 	if b.index != nil {
-		b.index.Init(&b.data, b.cmp, b.abbreviatedKey)
+		b.index.Init((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 	}
-}
-
-func (b *Batch) grow(n int) {
-	newSize := len(b.data) + n
-	if uint64(newSize) >= maxBatchSize {
-		panic(ErrBatchTooLarge)
-	}
-	if newSize > cap(b.data) {
-		newCap := 2 * cap(b.data)
-		for newCap < newSize {
-			newCap *= 2
-		}
-		newData := rawalloc.New(len(b.data), newCap)
-		copy(newData, b.data)
-		b.data = newData
-	}
-	b.data = b.data[:newSize]
 }
 
 func (b *Batch) setSeqNum(seqNum uint64) {
@@ -1454,9 +1351,6 @@ func (b *Batch) setSeqNum(seqNum uint64) {
 // record in the batch. The sequence number is incremented for each subsequent
 // record. It returns zero if the batch is empty.
 func (b *Batch) SeqNum() uint64 {
-	if len(b.data) == 0 {
-		b.init(batchrepr.HeaderLen)
-	}
 	return batchrepr.ReadSeqNum(b.data)
 }
 
@@ -1478,9 +1372,6 @@ func (b *Batch) Count() uint32 {
 // Reader returns a batchrepr.Reader for the current batch contents. If the
 // batch is mutated, the new entries will not be visible to the reader.
 func (b *Batch) Reader() batchrepr.Reader {
-	if len(b.data) == 0 {
-		b.init(batchrepr.HeaderLen)
-	}
 	return batchrepr.Read(b.data)
 }
 

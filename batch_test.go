@@ -32,7 +32,7 @@ import (
 
 func TestBatch(t *testing.T) {
 	testBatch(t, 0)
-	testBatch(t, batchInitialSize)
+	testBatch(t, 1<<10 /* 1 KiB */)
 }
 
 func testBatch(t *testing.T, size int) {
@@ -205,9 +205,9 @@ func TestBatchPreAlloc(t *testing.T) {
 		size int
 		exp  int
 	}{
-		{0, batchInitialSize},
-		{batchInitialSize, batchInitialSize},
-		{2 * batchInitialSize, 2 * batchInitialSize},
+		{0, 1 << 10 /* 1 KiB */},
+		{1 << 10 /* 1 KiB */, 1 << 10 /* 1 KiB */},
+		{2 << 10 /* 2KiB */, 2 << 10 /* 2 KiB */},
 	}
 	for _, c := range cases {
 		b := newBatchWithSize(nil, c.size)
@@ -256,7 +256,7 @@ func TestBatchLen(t *testing.T) {
 
 func TestBatchEmpty(t *testing.T) {
 	testBatchEmpty(t, 0)
-	testBatchEmpty(t, batchInitialSize)
+	testBatchEmpty(t, 1<<10 /* 1 KiB */)
 }
 
 func testBatchEmpty(t *testing.T, size int) {
@@ -998,20 +998,6 @@ func TestBatchRangeOps(t *testing.T) {
 			return fmt.Sprintf("unknown command: %s", td.Cmd)
 		}
 	})
-}
-
-func TestBatchTooLarge(t *testing.T) {
-	var b Batch
-	var result interface{}
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				result = r
-			}
-		}()
-		b.grow(maxBatchSize)
-	}()
-	require.EqualValues(t, ErrBatchTooLarge, result)
 }
 
 func TestFlushableBatchIter(t *testing.T) {
