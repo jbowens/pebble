@@ -114,14 +114,6 @@ func TestFlushDelay(t *testing.T) {
 		},
 		func() {
 			b := d.NewBatch()
-			op := b.DeleteRangeDeferred(1, 1)
-			op.Key[0] = 'a'
-			op.Value[0] = 'z'
-			op.Finish()
-			require.NoError(t, b.Commit(nil))
-		},
-		func() {
-			b := d.NewBatch()
 			b2 := d.NewBatch()
 			require.NoError(t, b.DeleteRange([]byte("a"), []byte("z"), nil))
 			require.NoError(t, b2.SetRepr(b.Repr()))

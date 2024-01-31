@@ -43,36 +43,6 @@ var ErrInvalidBatch = batchrepr.ErrInvalidBatch
 // ErrBatchTooLarge indicates that a batch is invalid or otherwise corrupted.
 var ErrBatchTooLarge = batchrepr.ErrBatchTooLarge
 
-// DeferredBatchOp represents a batch operation (eg. set, merge, delete) that is
-// being inserted into the batch. Indexing is not performed on the specified key
-// until Finish is called, hence the name deferred. This struct lets the caller
-// copy or encode keys/values directly into the batch representation instead of
-// copying into an intermediary buffer then having pebble.Batch copy off of it.
-type DeferredBatchOp struct {
-	index *batchskl.Skiplist
-
-	// Key and Value point to parts of the binary batch representation where
-	// keys and values should be encoded/copied into. len(Key) and len(Value)
-	// bytes must be copied into these slices respectively before calling
-	// Finish(). Changing where these slices point to is not allowed.
-	Key, Value []byte
-	offset     uint32
-}
-
-// Finish completes the addition of this batch operation, and adds it to the
-// index if necessary. Must be called once (and exactly once) keys/values
-// have been filled into Key and Value. Not calling Finish or not
-// copying/encoding keys will result in an incomplete index, and calling Finish
-// twice may result in a panic.
-func (d DeferredBatchOp) Finish() error {
-	if d.index != nil {
-		if err := d.index.Add(d.offset); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // A Batch is a sequence of Sets, Merges, Deletes, DeleteRanges, RangeKeySets,
 // RangeKeyUnsets, and/or RangeKeyDeletes that are applied atomically. Batch
 // implements the Reader interface, but only an indexed batch supports reading
@@ -232,10 +202,6 @@ type batchInternal struct {
 	// The count of range key sets, unsets and deletes in the batch. Updated
 	// every time a RANGEKEYSET, RANGEKEYUNSET or RANGEKEYDEL key is added.
 	countRangeKeys uint64
-
-	// A deferredOp struct, stored in the Batch so that a pointer can be returned
-	// from the *Deferred() methods rather than a value.
-	deferredOp DeferredBatchOp
 
 	// An optional skiplist keyed by offset into data of the entry.
 	index         *batchskl.Skiplist
@@ -565,25 +531,6 @@ func (b *Batch) Get(key []byte) ([]byte, io.Closer, error) {
 	return b.db.getInternal(key, b, nil /* snapshot */)
 }
 
-func (b *Batch) prepareDeferredKeyValueRecord(keyLen, valueLen int, kind InternalKeyKind) {
-	if b.committing {
-		panic("pebble: batch already committing")
-	}
-	b.count++
-	b.memTableSize += memTableEntrySize(keyLen, valueLen)
-	b.deferredOp.offset, b.deferredOp.Key, b.deferredOp.Value = b.data.PrepareKeyValueRecord(keyLen, valueLen, kind)
-}
-
-func (b *Batch) prepareDeferredKeyRecord(keyLen int, kind InternalKeyKind) {
-	if b.committing {
-		panic("pebble: batch already committing")
-	}
-	b.count++
-	b.memTableSize += memTableEntrySize(keyLen, 0)
-	b.deferredOp.offset, b.deferredOp.Key = b.data.PrepareKeyRecord(keyLen, kind)
-	b.deferredOp.Value = nil
-}
-
 // AddInternalKey allows the caller to add an internal key of point key or range
 // key kinds (but not RangeDelete) to a batch. Passing in an internal key of
 // kind RangeDelete will result in a panic. Note that the seqnum in the internal
@@ -594,36 +541,48 @@ func (b *Batch) prepareDeferredKeyRecord(keyLen int, kind InternalKeyKind) {
 // Note that non-indexed keys (IngestKeyKind{LogData,IngestSST}) are not
 // supported with this method as they require specialized logic.
 func (b *Batch) AddInternalKey(key *base.InternalKey, value []byte, _ *WriteOptions) error {
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
 	keyLen := len(key.UserKey)
-	hasValue := false
+	b.count++
 	switch kind := key.Kind(); kind {
 	case InternalKeyKindRangeDelete:
 		panic("unexpected range delete in AddInternalKey")
 	case InternalKeyKindSingleDelete, InternalKeyKindDelete:
-		b.prepareDeferredKeyRecord(keyLen, kind)
-		b.deferredOp.index = b.index
-	case InternalKeyKindRangeKeySet, InternalKeyKindRangeKeyUnset, InternalKeyKindRangeKeyDelete:
-		b.prepareDeferredKeyValueRecord(keyLen, len(value), kind)
-		hasValue = true
-		b.incrementRangeKeysCount()
-	default:
-		b.prepareDeferredKeyValueRecord(keyLen, len(value), kind)
-		hasValue = true
-		b.deferredOp.index = b.index
-	}
-	copy(b.deferredOp.Key, key.UserKey)
-	if hasValue {
-		copy(b.deferredOp.Value, value)
-	}
-
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
-	// in go1.13 will remove the need for this.
-	if b.index != nil {
-		if err := b.index.Add(b.deferredOp.offset); err != nil {
-			return err
+		b.memTableSize += memTableEntrySize(keyLen, 0)
+		off, keyDst := b.data.PrepareKeyRecord(keyLen, kind)
+		copy(keyDst, key.UserKey)
+		if b.index != nil {
+			return b.index.Add(off)
 		}
+		return nil
+	case InternalKeyKindRangeKeySet, InternalKeyKindRangeKeyUnset, InternalKeyKindRangeKeyDelete:
+		b.memTableSize += memTableEntrySize(keyLen, len(value))
+		off, keyDst, valueDst := b.data.PrepareKeyValueRecord(keyLen, len(value), kind)
+		copy(keyDst, key.UserKey)
+		copy(valueDst, value)
+		b.countRangeKeys++
+		if b.index != nil {
+			b.rangeKeys = nil
+			b.rangeKeysSeqNum = 0
+			// Range keys are rare, so we lazily allocate the index for them.
+			if b.rangeKeyIndex == nil {
+				b.rangeKeyIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
+			}
+			return b.rangeKeyIndex.Add(off)
+		}
+		return nil
+	default:
+		b.memTableSize += memTableEntrySize(keyLen, len(value))
+		off, keyDst, valueDst := b.data.PrepareKeyValueRecord(keyLen, len(value), kind)
+		copy(keyDst, key.UserKey)
+		copy(valueDst, value)
+		if b.index != nil {
+			return b.index.Add(off)
+		}
+		return nil
 	}
-	return nil
 }
 
 // Set adds an action to the batch that sets the key to map to the value.
@@ -646,43 +605,28 @@ func (b *Batch) Set(key, value []byte, _ *WriteOptions) error {
 	return nil
 }
 
-// SetDeferred is similar to Set in that it adds a set operation to the batch,
-// except it only takes in key/value lengths instead of complete slices,
-// letting the caller encode into those objects and then call Finish() on the
-// returned object.
-func (b *Batch) SetDeferred(keyLen, valueLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyValueRecord(keyLen, valueLen, InternalKeyKindSet)
-	b.deferredOp.index = b.index
-	return &b.deferredOp
-}
-
 // Merge adds an action to the batch that merges the value at key with the new
 // value. The details of the merge are dependent upon the configured merge
 // operator.
 //
 // It is safe to modify the contents of the arguments after Merge returns.
 func (b *Batch) Merge(key, value []byte, _ *WriteOptions) error {
-	deferredOp := b.MergeDeferred(len(key), len(value))
-	copy(deferredOp.Key, key)
-	copy(deferredOp.Value, value)
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
-	// in go1.13 will remove the need for this.
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+	keyLen := len(key)
+	valueLen := len(value)
+	b.count++
+	b.memTableSize += memTableEntrySize(keyLen, valueLen)
+	off, keyDst, valueDst := b.data.PrepareKeyValueRecord(keyLen, valueLen, InternalKeyKindMerge)
+	copy(keyDst, key)
+	copy(valueDst, value)
 	if b.index != nil {
-		if err := b.index.Add(deferredOp.offset); err != nil {
+		if err := b.index.Add(off); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// MergeDeferred is similar to Merge in that it adds a merge operation to the
-// batch, except it only takes in key/value lengths instead of complete slices,
-// letting the caller encode into those objects and then call Finish() on the
-// returned object.
-func (b *Batch) MergeDeferred(keyLen, valueLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyValueRecord(keyLen, valueLen, InternalKeyKindMerge)
-	b.deferredOp.index = b.index
-	return &b.deferredOp
 }
 
 // Delete adds an action to the batch that deletes the entry for key.
@@ -704,16 +648,6 @@ func (b *Batch) Delete(key []byte, _ *WriteOptions) error {
 	return nil
 }
 
-// DeleteDeferred is similar to Delete in that it adds a delete operation to
-// the batch, except it only takes in key/value lengths instead of complete
-// slices, letting the caller encode into those objects and then call Finish()
-// on the returned object.
-func (b *Batch) DeleteDeferred(keyLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyRecord(keyLen, InternalKeyKindDelete)
-	b.deferredOp.index = b.index
-	return &b.deferredOp
-}
-
 // DeleteSized behaves identically to Delete, but takes an additional
 // argument indicating the size of the value being deleted. DeleteSized
 // should be preferred when the caller has the expectation that there exists
@@ -728,26 +662,13 @@ func (b *Batch) DeleteDeferred(keyLen int) *DeferredBatchOp {
 // It is safe to modify the contents of the arguments after DeleteSized
 // returns.
 func (b *Batch) DeleteSized(key []byte, deletedValueSize uint32, _ *WriteOptions) error {
-	deferredOp := b.DeleteSizedDeferred(len(key), deletedValueSize)
-	copy(b.deferredOp.Key, key)
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Check if in a
-	// later Go release this is unnecessary.
-	if b.index != nil {
-		if err := b.index.Add(deferredOp.offset); err != nil {
-			return err
-		}
+	if b.committing {
+		panic("pebble: batch already committing")
 	}
-	return nil
-}
-
-// DeleteSizedDeferred is similar to DeleteSized in that it adds a sized delete
-// operation to the batch, except it only takes in key length instead of a
-// complete key slice, letting the caller encode into the DeferredBatchOp.Key
-// slice and then call Finish() on the returned object.
-func (b *Batch) DeleteSizedDeferred(keyLen int, deletedValueSize uint32) *DeferredBatchOp {
 	if b.minimumFormatMajorVersion < FormatDeleteSizedAndObsolete {
 		b.minimumFormatMajorVersion = FormatDeleteSizedAndObsolete
 	}
+	keyLen := len(key)
 
 	// Encode the sum of the key length and the value in the value.
 	v := uint64(deletedValueSize) + uint64(keyLen)
@@ -774,15 +695,18 @@ func (b *Batch) DeleteSizedDeferred(keyLen int, deletedValueSize uint32) *Deferr
 	// will never exceed 128 bytes. This unnecessary extra byte and wrapping is
 	// preserved to avoid special casing across the database, and in particular
 	// in sstable block decoding which is performance sensitive.
-	if b.committing {
-		panic("pebble: batch already committing")
-	}
+
 	b.count++
 	b.memTableSize += memTableEntrySize(keyLen, n)
-	b.deferredOp.offset, b.deferredOp.Key, b.deferredOp.Value = b.data.PrepareKeyValueRecord(keyLen, n, InternalKeyKindDeleteSized)
-	b.deferredOp.index = b.index
-	copy(b.deferredOp.Value, buf[:n])
-	return &b.deferredOp
+	off, keyDst, valueDst := b.data.PrepareKeyValueRecord(keyLen, n, InternalKeyKindDeleteSized)
+	copy(keyDst, key)
+	copy(valueDst, buf[:n])
+	if b.index != nil {
+		if err := b.index.Add(off); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SingleDelete adds an action to the batch that single deletes the entry for key.
@@ -790,26 +714,20 @@ func (b *Batch) DeleteSizedDeferred(keyLen int, deletedValueSize uint32) *Deferr
 //
 // It is safe to modify the contents of the arguments after SingleDelete returns.
 func (b *Batch) SingleDelete(key []byte, _ *WriteOptions) error {
-	deferredOp := b.SingleDeleteDeferred(len(key))
-	copy(deferredOp.Key, key)
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
-	// in go1.13 will remove the need for this.
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+	keyLen := len(key)
+	b.count++
+	b.memTableSize += memTableEntrySize(keyLen, 0)
+	off, keyDst := b.data.PrepareKeyRecord(keyLen, InternalKeyKindSingleDelete)
+	copy(keyDst, key)
 	if b.index != nil {
-		if err := b.index.Add(deferredOp.offset); err != nil {
+		if err := b.index.Add(off); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// SingleDeleteDeferred is similar to SingleDelete in that it adds a single delete
-// operation to the batch, except it only takes in key/value lengths instead of
-// complete slices, letting the caller encode into those objects and then call
-// Finish() on the returned object.
-func (b *Batch) SingleDeleteDeferred(keyLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyRecord(keyLen, InternalKeyKindSingleDelete)
-	b.deferredOp.index = b.index
-	return &b.deferredOp
 }
 
 // DeleteRange deletes all of the point keys (and values) in the range
@@ -819,28 +737,17 @@ func (b *Batch) SingleDeleteDeferred(keyLen int) *DeferredBatchOp {
 // It is safe to modify the contents of the arguments after DeleteRange
 // returns.
 func (b *Batch) DeleteRange(start, end []byte, _ *WriteOptions) error {
-	deferredOp := b.DeleteRangeDeferred(len(start), len(end))
-	copy(deferredOp.Key, start)
-	copy(deferredOp.Value, end)
-	// TODO(peter): Manually inline DeferredBatchOp.Finish(). Mid-stack inlining
-	// in go1.13 will remove the need for this.
-	if deferredOp.index != nil {
-		if err := deferredOp.index.Add(deferredOp.offset); err != nil {
-			return err
-		}
+	if b.committing {
+		panic("pebble: batch already committing")
 	}
-	return nil
-}
-
-// DeleteRangeDeferred is similar to DeleteRange in that it adds a delete range
-// operation to the batch, except it only takes in key lengths instead of
-// complete slices, letting the caller encode into those objects and then call
-// Finish() on the returned object. Note that DeferredBatchOp.Key should be
-// populated with the start key, and DeferredBatchOp.Value should be populated
-// with the end key.
-func (b *Batch) DeleteRangeDeferred(startLen, endLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyValueRecord(startLen, endLen, InternalKeyKindRangeDelete)
+	startLen := len(start)
+	endLen := len(end)
+	b.count++
 	b.countRangeDels++
+	b.memTableSize += memTableEntrySize(startLen, endLen)
+	off, keyDst, valueDst := b.data.PrepareKeyValueRecord(startLen, endLen, InternalKeyKindRangeDelete)
+	copy(keyDst, start)
+	copy(valueDst, end)
 	if b.index != nil {
 		b.tombstones = nil
 		b.tombstonesSeqNum = 0
@@ -848,9 +755,11 @@ func (b *Batch) DeleteRangeDeferred(startLen, endLen int) *DeferredBatchOp {
 		if b.rangeDelIndex == nil {
 			b.rangeDelIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 		}
-		b.deferredOp.index = b.rangeDelIndex
+		if err := b.rangeDelIndex.Add(off); err != nil {
+			return err
+		}
 	}
-	return &b.deferredOp
+	return nil
 }
 
 // RangeKeySet sets a range key mapping the key range [start, end) at the MVCC
@@ -869,33 +778,22 @@ func (b *Batch) RangeKeySet(start, end, suffix, value []byte, _ *WriteOptions) e
 			panic("RangeKeySet called with suffixed end key")
 		}
 	}
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+
+	startLen := len(start)
 	suffixValues := [1]rangekey.SuffixValue{{Suffix: suffix, Value: value}}
 	internalValueLen := rangekey.EncodedSetValueLen(end, suffixValues[:])
-
-	deferredOp := b.rangeKeySetDeferred(len(start), internalValueLen)
-	copy(deferredOp.Key, start)
-	n := rangekey.EncodeSetValue(deferredOp.Value, end, suffixValues[:])
+	b.count++
+	b.countRangeKeys++
+	b.memTableSize += memTableEntrySize(startLen, internalValueLen)
+	off, keyDst, valueDst := b.data.PrepareKeyValueRecord(startLen, internalValueLen, InternalKeyKindRangeKeySet)
+	copy(keyDst, start)
+	n := rangekey.EncodeSetValue(valueDst, end, suffixValues[:])
 	if n != internalValueLen {
 		panic("unexpected internal value length mismatch")
 	}
-
-	// Manually inline DeferredBatchOp.Finish().
-	if deferredOp.index != nil {
-		if err := deferredOp.index.Add(deferredOp.offset); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (b *Batch) rangeKeySetDeferred(startLen, internalValueLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyValueRecord(startLen, internalValueLen, InternalKeyKindRangeKeySet)
-	b.incrementRangeKeysCount()
-	return &b.deferredOp
-}
-
-func (b *Batch) incrementRangeKeysCount() {
-	b.countRangeKeys++
 	if b.index != nil {
 		b.rangeKeys = nil
 		b.rangeKeysSeqNum = 0
@@ -903,8 +801,11 @@ func (b *Batch) incrementRangeKeysCount() {
 		if b.rangeKeyIndex == nil {
 			b.rangeKeyIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
 		}
-		b.deferredOp.index = b.rangeKeyIndex
+		if err := b.rangeKeyIndex.Add(off); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // RangeKeyUnset removes a range key mapping the key range [start, end) at the
@@ -925,29 +826,34 @@ func (b *Batch) RangeKeyUnset(start, end, suffix []byte, _ *WriteOptions) error 
 			panic("RangeKeyUnset called with suffixed end key")
 		}
 	}
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+
+	startLen := len(start)
 	suffixes := [1][]byte{suffix}
 	internalValueLen := rangekey.EncodedUnsetValueLen(end, suffixes[:])
-
-	deferredOp := b.rangeKeyUnsetDeferred(len(start), internalValueLen)
-	copy(deferredOp.Key, start)
-	n := rangekey.EncodeUnsetValue(deferredOp.Value, end, suffixes[:])
+	b.count++
+	b.countRangeKeys++
+	b.memTableSize += memTableEntrySize(startLen, internalValueLen)
+	off, keyDst, valDst := b.data.PrepareKeyValueRecord(startLen, internalValueLen, InternalKeyKindRangeKeyUnset)
+	copy(keyDst, start)
+	n := rangekey.EncodeUnsetValue(valDst, end, suffixes[:])
 	if n != internalValueLen {
 		panic("unexpected internal value length mismatch")
 	}
-
-	// Manually inline DeferredBatchOp.Finish()
-	if deferredOp.index != nil {
-		if err := deferredOp.index.Add(deferredOp.offset); err != nil {
+	if b.index != nil {
+		b.rangeKeys = nil
+		b.rangeKeysSeqNum = 0
+		// Range keys are rare, so we lazily allocate the index for them.
+		if b.rangeKeyIndex == nil {
+			b.rangeKeyIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
+		}
+		if err := b.rangeKeyIndex.Add(off); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (b *Batch) rangeKeyUnsetDeferred(startLen, internalValueLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyValueRecord(startLen, internalValueLen, InternalKeyKindRangeKeyUnset)
-	b.incrementRangeKeysCount()
-	return &b.deferredOp
 }
 
 // RangeKeyDelete deletes all of the range keys in the range [start,end)
@@ -967,28 +873,30 @@ func (b *Batch) RangeKeyDelete(start, end []byte, _ *WriteOptions) error {
 			panic("RangeKeyDelete called with suffixed end key")
 		}
 	}
-	deferredOp := b.RangeKeyDeleteDeferred(len(start), len(end))
-	copy(deferredOp.Key, start)
-	copy(deferredOp.Value, end)
-	// Manually inline DeferredBatchOp.Finish().
-	if deferredOp.index != nil {
-		if err := deferredOp.index.Add(deferredOp.offset); err != nil {
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+
+	startLen := len(start)
+	endLen := len(end)
+	b.count++
+	b.countRangeKeys++
+	b.memTableSize += memTableEntrySize(startLen, endLen)
+	off, keyDst, valueDst := b.data.PrepareKeyValueRecord(startLen, endLen, InternalKeyKindRangeKeyDelete)
+	copy(keyDst, start)
+	copy(valueDst, end)
+	if b.index != nil {
+		b.rangeKeys = nil
+		b.rangeKeysSeqNum = 0
+		// Range keys are rare, so we lazily allocate the index for them.
+		if b.rangeKeyIndex == nil {
+			b.rangeKeyIndex = batchskl.NewSkiplist((*[]byte)(&b.data), b.cmp, b.abbreviatedKey)
+		}
+		if err := b.rangeKeyIndex.Add(off); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// RangeKeyDeleteDeferred is similar to RangeKeyDelete in that it adds an
-// operation to delete range keys to the batch, except it only takes in key
-// lengths instead of complete slices, letting the caller encode into those
-// objects and then call Finish() on the returned object. Note that
-// DeferredBatchOp.Key should be populated with the start key, and
-// DeferredBatchOp.Value should be populated with the end key.
-func (b *Batch) RangeKeyDeleteDeferred(startLen, endLen int) *DeferredBatchOp {
-	b.prepareDeferredKeyValueRecord(startLen, endLen, InternalKeyKindRangeKeyDelete)
-	b.incrementRangeKeysCount()
-	return &b.deferredOp
 }
 
 // LogData adds the specified to the batch. The data will be written to the
@@ -997,13 +905,13 @@ func (b *Batch) RangeKeyDeleteDeferred(startLen, endLen int) *DeferredBatchOp {
 //
 // It is safe to modify the contents of the argument after LogData returns.
 func (b *Batch) LogData(data []byte, _ *WriteOptions) error {
-	origCount, origMemTableSize := b.count, b.memTableSize
-	b.prepareDeferredKeyRecord(len(data), InternalKeyKindLogData)
-	copy(b.deferredOp.Key, data)
+	if b.committing {
+		panic("pebble: batch already committing")
+	}
+	_, keyDst := b.data.PrepareKeyRecord(len(data), InternalKeyKindLogData)
+	copy(keyDst, data)
 	// Since LogData only writes to the WAL and does not affect the memtable, we
-	// restore b.count and b.memTableSize to their origin values. Note that
-	// Batch.count only refers to records that are added to the memtable.
-	b.count, b.memTableSize = origCount, origMemTableSize
+	// do not increment b.count or b.memTableSize.
 	return nil
 }
 
@@ -1017,16 +925,17 @@ func (b *Batch) ingestSST(fileNum base.FileNum) {
 		panic("pebble: invalid call to ingestSST")
 	}
 
-	origMemTableSize := b.memTableSize
+	// Serialize the file number to a varint.
 	var buf [binary.MaxVarintLen64]byte
 	length := binary.PutUvarint(buf[:], uint64(fileNum))
-	b.prepareDeferredKeyRecord(length, InternalKeyKindIngestSST)
-	copy(b.deferredOp.Key, buf[:length])
+
 	// Since IngestSST writes only to the WAL and does not affect the memtable,
-	// we restore b.memTableSize to its original value. Note that Batch.count
-	// is not reset because for the InternalKeyKindIngestSST the count is the
+	// we do not update b.memTableSize. Note that Batch.count is still
+	// incremented because for the InternalKeyKindIngestSST the count is the
 	// number of sstable paths which have been added to the batch.
-	b.memTableSize = origMemTableSize
+	b.count++
+	_, keyDst := b.data.PrepareKeyRecord(length, InternalKeyKindIngestSST)
+	copy(keyDst, buf[:length])
 	b.minimumFormatMajorVersion = FormatFlushableIngest
 }
 

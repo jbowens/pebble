@@ -137,55 +137,6 @@ func testBatch(t *testing.T, size int) {
 	verifyTestCases(b, testCases, false /* indexedKindsOnly */)
 
 	b.Reset()
-	// Run the same operations, this time using the Deferred variants of each
-	// operation (eg. SetDeferred).
-	for _, tc := range testCases {
-		key := []byte(tc.key)
-		value := []byte(tc.value)
-		switch tc.kind {
-		case InternalKeyKindSet:
-			d := b.SetDeferred(len(key), len(value))
-			copy(d.Key, key)
-			copy(d.Value, value)
-			d.Finish()
-		case InternalKeyKindMerge:
-			d := b.MergeDeferred(len(key), len(value))
-			copy(d.Key, key)
-			copy(d.Value, value)
-			d.Finish()
-		case InternalKeyKindDelete:
-			d := b.DeleteDeferred(len(key))
-			copy(d.Key, key)
-			copy(d.Value, value)
-			d.Finish()
-		case InternalKeyKindDeleteSized:
-			d := b.DeleteSizedDeferred(len(tc.key), tc.valueInt)
-			copy(d.Key, key)
-			d.Finish()
-		case InternalKeyKindSingleDelete:
-			d := b.SingleDeleteDeferred(len(key))
-			copy(d.Key, key)
-			copy(d.Value, value)
-			d.Finish()
-		case InternalKeyKindRangeDelete:
-			d := b.DeleteRangeDeferred(len(key), len(value))
-			copy(d.Key, key)
-			copy(d.Value, value)
-			d.Finish()
-		case InternalKeyKindLogData:
-			_ = b.LogData([]byte(tc.key), nil)
-		case InternalKeyKindIngestSST:
-			b.ingestSST(decodeFileNum([]byte(tc.key)))
-		case InternalKeyKindRangeKeyDelete:
-			d := b.RangeKeyDeleteDeferred(len(key), len(value))
-			copy(d.Key, key)
-			copy(d.Value, value)
-			d.Finish()
-		}
-	}
-	verifyTestCases(b, testCases, false /* indexedKindsOnly */)
-
-	b.Reset()
 	// Run the same operations, this time using AddInternalKey instead of the
 	// Kind-specific methods.
 	for _, tc := range testCases {
@@ -355,11 +306,7 @@ func TestBatchReset(t *testing.T) {
 	value := "test-value"
 	b := db.NewBatch()
 	require.NoError(t, b.Set([]byte(key), []byte(value), nil))
-	dd := b.DeleteRangeDeferred(len(key), len(value))
-	copy(dd.Key, key)
-	copy(dd.Value, value)
-	dd.Finish()
-
+	require.NoError(t, b.DeleteRange([]byte(key), []byte(value), nil))
 	require.NoError(t, b.RangeKeySet([]byte(key), []byte(value), []byte(value), []byte(value), nil))
 
 	b.setSeqNum(100)
@@ -373,7 +320,6 @@ func TestBatchReset(t *testing.T) {
 	require.True(t, len(b.data) > 0)
 	require.True(t, b.SeqNum() > 0)
 	require.True(t, b.memTableSize > 0)
-	require.NotEqual(t, b.deferredOp, DeferredBatchOp{})
 	// At this point b.data has not been modified since the db.NewBatch() and is
 	// either nil or contains a byte slice of length batchHeaderLen, with a 0
 	// seqnum encoded in data[0:8] and an arbitrary count encoded in data[8:12].
@@ -397,7 +343,6 @@ func TestBatchReset(t *testing.T) {
 	require.Equal(t, uint64(0), b.SeqNum())
 	require.Equal(t, uint64(0), b.memTableSize)
 	require.Equal(t, FormatMajorVersion(0x00), b.minimumFormatMajorVersion)
-	require.Equal(t, b.deferredOp, DeferredBatchOp{})
 	_ = b.Repr()
 
 	var expected Batch
@@ -1400,70 +1345,6 @@ func BenchmarkIndexedBatchSet(b *testing.B) {
 		for j := i; j < end; j++ {
 			binary.BigEndian.PutUint64(key, uint64(j))
 			batch.Set(key, value, nil)
-		}
-		batch.Reset()
-	}
-
-	b.StopTimer()
-}
-
-func BenchmarkBatchSetDeferred(b *testing.B) {
-	value := make([]byte, 10)
-	for i := range value {
-		value[i] = byte(i)
-	}
-	key := make([]byte, 8)
-	batch := newBatch(nil)
-
-	b.ResetTimer()
-
-	const batchSize = 1000
-	for i := 0; i < b.N; i += batchSize {
-		end := i + batchSize
-		if end > b.N {
-			end = b.N
-		}
-
-		for j := i; j < end; j++ {
-			binary.BigEndian.PutUint64(key, uint64(j))
-			deferredOp := batch.SetDeferred(len(key), len(value))
-
-			copy(deferredOp.Key, key)
-			copy(deferredOp.Value, value)
-
-			deferredOp.Finish()
-		}
-		batch.Reset()
-	}
-
-	b.StopTimer()
-}
-
-func BenchmarkIndexedBatchSetDeferred(b *testing.B) {
-	value := make([]byte, 10)
-	for i := range value {
-		value[i] = byte(i)
-	}
-	key := make([]byte, 8)
-	batch := newIndexedBatch(nil, DefaultComparer)
-
-	b.ResetTimer()
-
-	const batchSize = 1000
-	for i := 0; i < b.N; i += batchSize {
-		end := i + batchSize
-		if end > b.N {
-			end = b.N
-		}
-
-		for j := i; j < end; j++ {
-			binary.BigEndian.PutUint64(key, uint64(j))
-			deferredOp := batch.SetDeferred(len(key), len(value))
-
-			copy(deferredOp.Key, key)
-			copy(deferredOp.Value, value)
-
-			deferredOp.Finish()
 		}
 		batch.Reset()
 	}

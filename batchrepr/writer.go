@@ -98,13 +98,6 @@ func (w *Writer) Append(repr []byte) int {
 	return offset
 }
 
-func (w *Writer) WriteKeyValueRecord(kind base.InternalKeyKind, key, value []byte) uint32 {
-	off, keyDst, valDst := w.PrepareKeyValueRecord(len(key), len(value), kind)
-	copy(keyDst, key)
-	copy(valDst, value)
-	return off
-}
-
 // PrepareKeyValueRecord grows the batch, allocating space and writing metadata
 // for a key and value record with key and value of the provided length. The
 // caller is expected to copy the key and value into their respective slices
