@@ -629,7 +629,8 @@ type compaction struct {
 	// grandparents are the tables in level+2 that overlap with the files being
 	// compacted. Used to determine output table boundaries. Do not assume that the actual files
 	// in the grandparent when this compaction finishes will be the same.
-	grandparents manifest.LevelSlice
+	grandparents     manifest.LevelSlice
+	forcedBoundaries [][]byte
 
 	// Boundaries at which flushes to L0 should be split. Determined by
 	// L0Sublevels. If nil, flushes aren't split.
@@ -736,6 +737,10 @@ func newCompaction(
 	}
 	c.setupInuseKeyRanges()
 	c.kind = pc.kind
+
+	if opts.Experimental.ForceSSTableBoundaries != nil {
+		c.forcedBoundaries = opts.Experimental.ForceSSTableBoundaries(c.smallest.UserKey, c.largest.UserKey)
+	}
 
 	if c.kind == compactionKindDefault && c.outputLevel.files.Empty() && !c.hasExtraLevelData() &&
 		c.startLevel.files.Len() == 1 && c.grandparents.SizeSum() <= c.maxOverlapBytes {
@@ -974,6 +979,9 @@ func newFlush(
 			c.largest.UserKey, c.largest.IsExclusiveSentinel())
 		adjustGrandparentOverlapBytesForFlush(c, flushingBytes)
 	}
+	if opts.Experimental.ForceSSTableBoundaries != nil {
+		c.forcedBoundaries = opts.Experimental.ForceSSTableBoundaries(c.smallest.UserKey, c.largest.UserKey)
+	}
 
 	c.setupInuseKeyRanges()
 	return c, nil
@@ -1044,6 +1052,20 @@ func (c *compaction) findGrandparentLimit(start []byte) []byte {
 		if overlappedBytes > c.maxOverlapBytes {
 			return f.Smallest.UserKey
 		}
+	}
+	return nil
+}
+
+// findForcedBoundaryLimit takes the start user key for a table and returns the
+// user key to which that table can extend without overlapping a user-imposed
+// forced sstable boundary. If there are no additional forced boundaries, this
+// function returns nil.
+func (c *compaction) findForcedBoundaryLimit(start []byte) []byte {
+	for len(c.forcedBoundaries) > 0 && c.cmp(start, c.forcedBoundaries[0]) >= 0 {
+		c.forcedBoundaries = c.forcedBoundaries[1:]
+	}
+	if len(c.forcedBoundaries) > 0 {
+		return c.forcedBoundaries[0]
 	}
 	return nil
 }
@@ -3324,6 +3346,9 @@ func (d *DB) runCompaction(
 	}
 	if splitL0Outputs {
 		outputSplitters = append(outputSplitters, newLimitFuncSplitter(&iter.frontiers, c.findL0Limit))
+	}
+	if len(c.forcedBoundaries) > 0 {
+		outputSplitters = append(outputSplitters, newLimitFuncSplitter(&iter.frontiers, c.findForcedBoundaryLimit))
 	}
 	splitter := &splitterGroup{cmp: c.cmp, splitters: outputSplitters}
 

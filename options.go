@@ -785,6 +785,14 @@ type Options struct {
 		//   which will later be consumed by SingleDelete#3. The violation will
 		//   not be detected and the DB will be correct.
 		SingleDeleteInvariantViolationCallback func(userKey []byte)
+
+		// ForceSSTableBoundaries is called when initializing flushes and
+		// compactions. The function is provided with a start and end key
+		// encompassing the range of keys participating in the compaction.
+		// The flush or compaction will force sstable boundaries at the returned
+		// keys, prohibiting keys on either side of the boundary from mixing
+		// within the same sstable.
+		ForceSSTableBoundaries func(start, end []byte) [][]byte
 	}
 
 	// Filters is a map from filter policy name to filter policy. It is used for
