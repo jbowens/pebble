@@ -102,6 +102,10 @@ type InterleavingIter struct {
 
 	// lower and upper hold the iteration bounds set through SetBounds.
 	lower, upper []byte
+	// interleaveEndKeys configures whether the InterleavingIter should
+	// interleave span end boundaries in addition to the start boundaries (which
+	// are always interleaved).
+	interleaveEndKeys bool
 	// keyBuf is used to copy SeekGE or SeekPrefixGE arguments when they're used
 	// to truncate a span. The byte slices backing a SeekGE/SeekPrefixGE search
 	// keys can come directly from the end user, so they're copied into keyBuf
@@ -193,6 +197,10 @@ var _ base.InternalIterator = &InterleavingIter{}
 type InterleavingIterOpts struct {
 	Mask                   SpanMask
 	LowerBound, UpperBound []byte
+	// InterleaveEndKeys configures the interleaving iterator to interleave the
+	// end keys of spans (in addition to the start keys, which are always
+	// interleaved).
+	InterleaveEndKeys bool
 }
 
 // Init initializes the InterleavingIter to interleave point keys from pointIter
@@ -210,13 +218,14 @@ func (i *InterleavingIter) Init(
 	// To debug:
 	// keyspanIter = InjectLogging(keyspanIter, base.DefaultLogger)
 	*i = InterleavingIter{
-		cmp:         comparer.Compare,
-		comparer:    comparer,
-		pointIter:   pointIter,
-		keyspanIter: keyspanIter,
-		mask:        opts.Mask,
-		lower:       opts.LowerBound,
-		upper:       opts.UpperBound,
+		cmp:               comparer.Compare,
+		comparer:          comparer,
+		pointIter:         pointIter,
+		keyspanIter:       keyspanIter,
+		mask:              opts.Mask,
+		lower:             opts.LowerBound,
+		upper:             opts.UpperBound,
+		interleaveEndKeys: opts.InterleaveEndKeys,
 	}
 }
 
@@ -724,7 +733,7 @@ func (i *InterleavingIter) prevPos() {
 		case i.span == nil:
 			panic("withinSpan=true, but i.span == nil")
 		case i.pointKV == nil:
-			i.pos = posKeyspanEnd
+			i.pos = posKeyspanStart
 		default:
 			// i.withinSpan && i.pointKey != nil && i.span != nil
 			if i.cmp(i.span.Start, i.pointKV.K.UserKey) > 0 {
@@ -797,16 +806,21 @@ func (i *InterleavingIter) yieldPosition(lowerBound []byte, advance func()) *bas
 			}
 			return i.yieldPointKey()
 		case posKeyspanEnd:
-			// Don't interleave end keys; just advance.
-			advance()
-			continue
+			if !i.interleaveEndKeys {
+				// Don't interleave end keys; just advance.
+				advance()
+				continue
+			}
+			fmt.Printf("at keyspan end of %s\n", i.span)
+			return i.yieldSyntheticSpanEndMarker()
 		case posKeyspanStart:
 			// Don't interleave an empty span.
 			if i.span.Empty() {
 				advance()
 				continue
 			}
-			return i.yieldSyntheticSpanMarker(lowerBound)
+			fmt.Printf("at keyspan start of %s\n", i.span)
+			return i.yieldSyntheticSpanStartMarker(lowerBound)
 		default:
 			panic(fmt.Sprintf("unexpected interleavePos=%d", i.pos))
 		}
@@ -944,7 +958,7 @@ func (i *InterleavingIter) yieldPointKey() *base.InternalKV {
 	return i.verify(i.pointKV)
 }
 
-func (i *InterleavingIter) yieldSyntheticSpanMarker(lowerBound []byte) *base.InternalKV {
+func (i *InterleavingIter) yieldSyntheticSpanStartMarker(lowerBound []byte) *base.InternalKV {
 	i.spanMarker.K.UserKey = i.startKey()
 	i.spanMarker.K.Trailer = base.MakeTrailer(base.InternalKeySeqNumMax, i.span.Keys[0].Kind())
 
@@ -978,6 +992,12 @@ func (i *InterleavingIter) yieldSyntheticSpanMarker(lowerBound []byte) *base.Int
 		i.spanMarkerTruncated = true
 	}
 	i.maybeUpdateMask()
+	return i.verify(&i.spanMarker)
+}
+
+func (i *InterleavingIter) yieldSyntheticSpanEndMarker() *base.InternalKV {
+	i.spanMarker.K.UserKey = i.endKey()
+	i.spanMarker.K.Trailer = base.MakeTrailer(base.InternalKeySeqNumMax, i.span.Keys[0].Kind())
 	return i.verify(&i.spanMarker)
 }
 
@@ -1046,6 +1066,13 @@ func (i *InterleavingIter) startKey() []byte {
 		return i.truncatedSpan.Start
 	}
 	return i.span.Start
+}
+
+func (i *InterleavingIter) endKey() []byte {
+	if i.truncated {
+		return i.truncatedSpan.End
+	}
+	return i.span.End
 }
 
 func (i *InterleavingIter) savePoint(kv *base.InternalKV) {
