@@ -234,7 +234,7 @@ Level 1
 
 check
 ----
-unordered or unfragmented range delete tombstones f-g:{(#3,RANGEDEL)}, a-b:{(#4,RANGEDEL)} in L1: fileNum=000024
+out of order keys g#inf,SPANEND >= a#inf,SPANSTART in L1: fileNum=000024
 
 # Case 2: Ordered but not fragmented.
 define write-unfragmented disable-key-order-checks
@@ -247,7 +247,7 @@ Level 1
 
 check
 ----
-unordered or unfragmented range delete tombstones a-d:{(#1,RANGEDEL)}, b-c:{(#2,RANGEDEL)} in L1: fileNum=000025
+out of order keys d#inf,SPANEND >= b#inf,SPANSTART in L1: fileNum=000025
 
 # Case 3: Verify check is done before truncation.
 define write-unfragmented disable-key-order-checks
@@ -260,7 +260,7 @@ Level 1
 
 check
 ----
-unordered or unfragmented range delete tombstones a-z:{(#1,RANGEDEL)}, d-e:{(#2,RANGEDEL)} in L1: fileNum=000026
+out of order keys z#inf,SPANEND >= d#inf,SPANSTART in L1: fileNum=000026
 
 # Merge record processing.
 

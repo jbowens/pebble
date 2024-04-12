@@ -64,7 +64,7 @@ func Interleave(
 
 	ii := interleavingIterPool.Get().(*interleavingIter)
 	ii.Init(comparer, iter, rangeDelIter, keyspan.InterleavingIterOpts{
-		InterleaveEndKeys: true,
+		InterleaveSpanBounds: true,
 	})
 	return ii, ii.Span
 }

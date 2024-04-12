@@ -774,6 +774,8 @@ func (w *Writer) AddWithForceObsolete(key InternalKey, value []byte, forceObsole
 		w.err = errors.Errorf(
 			"pebble: range keys must be added via one of the RangeKey* functions")
 		return w.err
+	case base.InternalKeyKindSpanStart, base.InternalKeyKindSpanEnd:
+		panic(errors.AssertionFailedf("unexpected key kind %s", key.Kind().String()))
 	}
 	return w.addPoint(key, value, forceObsolete)
 }
