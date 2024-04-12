@@ -23,8 +23,8 @@ L1:
 L2:
   000001:[e#10,SET-g#20,SET]
 
-# isNextEntryDeleted() should not allow the rangedel to act on the points in the lower sstable
-# that are after it.
+# isNextEntryDeleted() should not allow the rangedel to act on the points in the
+# lower sstable that are after it.
 iter
 first
 next
@@ -40,7 +40,7 @@ c#27,SET:27
 e#10,SET:10
 g#20,SET:20
 .
-{BlockBytes:116 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:6 ValueBytes:8 PointCount:6 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
+{BlockBytes:116 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:4 ValueBytes:8 PointCount:4 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:0 ValueBytes:0 PointCount:0 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 
 # seekGE() should not allow the rangedel to act on points in the lower sstable that are after it.
@@ -53,21 +53,20 @@ e#10,SET:10
 g#20,SET:20
 .
 
-iter probe-rangedels=(000000,(Log "#  000000.rangeDelIter.")) probe-rangedels=(000001,(If (Equal SeekKey (Bytes "g")) ErrInjected noop),(Log "#  000001.rangeDelIter."))
+iter probe-rangedels=(000000,(Log "#  000000.rangeDelIter.")) probe-rangedels=(000001,(If IsNil ErrInjected noop),(Log "#  000001.rangeDelIter."))
 seek-ge d
 next
 ----
 #  000000.rangeDelIter.opSpanSeekGE("d") = a-e:{(#8,RANGEDEL)}
 #  000001.rangeDelIter.opSpanSeekGE("e") = e-g:{(#8,RANGEDEL)}
-#  000000.rangeDelIter.opSpanSeekGE("e") = nil
+#  000000.rangeDelIter.opSpanNext() = nil
 #  000000.rangeDelIter.opSpanClose() = nil
-#  000001.rangeDelIter.opSpanSeekGE("e") = e-g:{(#8,RANGEDEL)}
 e#10,SET:10
-#  000001.rangeDelIter.opSpanSeekGE("g") = nil <err="injected error">
+#  000001.rangeDelIter.opSpanNext() = nil <err="injected error">
 err=injected error
 
-# isPrevEntryDeleted() should not allow the rangedel to act on the points in the lower sstable
-# that are after it.
+# isPrevEntryDeleted() should not allow the rangedel to act on the points in the
+# lower sstable that are after it.
 iter
 last
 prev
@@ -79,7 +78,8 @@ e#10,SET:10
 c#27,SET:27
 a#30,SET:30
 
-# seekLT() should not allow the rangedel to act on points in the lower sstable that are after it.
+# seekLT() should not allow the rangedel to act on points in the lower sstable
+# that are after it.
 iter
 seek-lt h
 prev
@@ -636,9 +636,9 @@ a#30,SET:30
 f#21,SET:21
 {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:5 ValueBytes:10 PointCount:5 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 .
-{BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:6 ValueBytes:10 PointCount:6 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
+{BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:5 ValueBytes:10 PointCount:5 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 .
-{BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:6 ValueBytes:10 PointCount:6 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
+{BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:5 ValueBytes:10 PointCount:5 PointsCoveredByRangeTombstones:4 SeparatedPointValue:{Count:0 ValueBytes:0 ValueBytesFetched:0}}
 
 # Test a dead simple error handling case of a 1-level seek erroring.
 
@@ -820,16 +820,16 @@ seek-lt coo
 seek-prefix-ge b
 ----
 #  iter.First() = (a#30,SET,"30")
-#  rangedelIter.opSpanSeekGE("a") = nil <err="injected error">
+#  rangedelIter.opSpanFirst() = nil <err="injected error">
 err=injected error
 #  iter.Last() = (f#21,SET,"21")
-#  rangedelIter.opSpanSeekGE("f") = nil <err="injected error">
+#  rangedelIter.opSpanLast() = nil <err="injected error">
 err=injected error
 #  iter.SeekGE("boo") = (c#18,SET,"18")
 #  rangedelIter.opSpanSeekGE("boo") = nil <err="injected error">
 err=injected error
 #  iter.SeekLT("coo") = (c#18,SET,"18")
-#  rangedelIter.opSpanSeekGE("coo") = nil <err="injected error">
+#  rangedelIter.opSpanSeekLT("coo") = nil <err="injected error">
 err=injected error
 #  iter.SeekPrefixGE("b") = (b#19,SET,"19")
 #  rangedelIter.opSpanSeekGE("b") = nil <err="injected error">

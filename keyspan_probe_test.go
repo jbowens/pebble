@@ -88,6 +88,7 @@ var probeParser = func() *dsl.Parser[keyspanProbe] {
 		})
 
 	predicateParser := dsl.NewPredicateParser[*keyspanProbeContext]()
+	predicateParser.DefineConstant("IsNil", func() dsl.Predicate[*keyspanProbeContext] { return isNil{} })
 	predicateParser.DefineFunc("Equal",
 		func(p *dsl.Parser[dsl.Predicate[*keyspanProbeContext]], s *dsl.Scanner) dsl.Predicate[*keyspanProbeContext] {
 			eq := equal{
@@ -232,6 +233,13 @@ type equal struct {
 func (e equal) String() string { return fmt.Sprintf("(Equal %s %s)", e.a, e.b) }
 func (e equal) Evaluate(pctx *keyspanProbeContext) bool {
 	return reflect.DeepEqual(e.a.value(pctx), e.b.value(pctx))
+}
+
+type isNil struct{}
+
+func (isNil) String() string { return "IsNil" }
+func (isNil) Evaluate(pctx *keyspanProbeContext) bool {
+	return pctx.Span == nil
 }
 
 // keyspanOpKind indicates the type of iterator operation being performed.
