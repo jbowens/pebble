@@ -297,11 +297,8 @@ func TestMergingIterCornerCases(t *testing.T) {
 				li := &levelIter{}
 				li.init(context.Background(), IterOptions{}, testkeys.Comparer,
 					newIters, slice.Iter(), manifest.Level(i), internalIterOpts{stats: &stats})
-
-				i := len(levelIters)
-				levelIters = append(levelIters, mergingIterLevel{iter: li})
-				li.initRangeDel(&levelIters[i].rangeDelIter)
-				li.initBoundaryContext(&levelIters[i].levelIterBoundaryContext)
+				li.interleaveRangeDeletions = true
+				levelIters = append(levelIters, mergingIterLevel{iter: li, getTombstone: li.getTombstone})
 			}
 			miter := &mergingIter{}
 			miter.init(nil /* opts */, &stats, cmp, func(a []byte) int { return len(a) }, levelIters...)
@@ -672,9 +669,9 @@ func buildMergingIter(readers [][]*sstable.Reader, levelSlices []manifest.LevelS
 		l := newLevelIter(
 			context.Background(), IterOptions{}, testkeys.Comparer, newIters, levelSlices[i].Iter(),
 			manifest.Level(level), internalIterOpts{})
-		l.initRangeDel(&mils[level].rangeDelIter)
-		l.initBoundaryContext(&mils[level].levelIterBoundaryContext)
+		l.interleaveRangeDeletions = true
 		mils[level].iter = l
+		mils[level].getTombstone = l.getTombstone
 	}
 	var stats base.InternalIteratorStats
 	m := &mergingIter{}

@@ -89,8 +89,7 @@ func TestLevelIter(t *testing.T) {
 
 			iter := newLevelIter(context.Background(), opts, testkeys.Comparer, newIters, files.Iter(), manifest.Level(level), internalIterOpts{})
 			defer iter.Close()
-			// Fake up the range deletion initialization.
-			iter.initRangeDel(new(keyspan.FragmentIterator))
+			iter.interleaveRangeDeletions = true
 			iter.disableInvariants = true
 			return itertest.RunInternalIterCmd(t, d, iter, itertest.Verbose)
 
@@ -326,8 +325,7 @@ func TestLevelIterBoundaries(t *testing.T) {
 			if iter == nil {
 				slice := manifest.NewLevelSliceKeySorted(lt.cmp.Compare, lt.metas)
 				iter = newLevelIter(context.Background(), IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(), manifest.Level(level), internalIterOpts{})
-				// Fake up the range deletion initialization.
-				iter.initRangeDel(new(keyspan.FragmentIterator))
+				iter.interleaveRangeDeletions = true
 			}
 			if !save {
 				defer func() {
@@ -440,7 +438,7 @@ func TestLevelIterSeek(t *testing.T) {
 			iter.init(context.Background(), IterOptions{}, testkeys.Comparer, lt.newIters, slice.Iter(),
 				manifest.Level(level), internalIterOpts{stats: &stats})
 			defer iter.Close()
-			iter.initRangeDel(&iter.rangeDelIter)
+			iter.interleaveRangeDeletions = true
 			return itertest.RunInternalIterCmd(t, d, iter, itertest.Verbose, itertest.WithStats(&stats))
 
 		case "iters-created":
@@ -588,9 +586,7 @@ func BenchmarkLevelIterSeqSeekGEWithBounds(b *testing.B) {
 								return iterSet{point: iter}, err
 							}
 							l := newLevelIter(context.Background(), IterOptions{}, DefaultComparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
-							// Fake up the range deletion initialization, to resemble the usage
-							// in a mergingIter.
-							l.initRangeDel(new(keyspan.FragmentIterator))
+							l.interleaveRangeDeletions = true
 							keyCount := len(keys)
 							b.ResetTimer()
 							for i := 0; i < b.N; i++ {
@@ -636,9 +632,7 @@ func BenchmarkLevelIterSeqSeekPrefixGE(b *testing.B) {
 			b.Run(fmt.Sprintf("skip=%d/use-next=%t", skip, useNext),
 				func(b *testing.B) {
 					l := newLevelIter(context.Background(), IterOptions{}, testkeys.Comparer, newIters, metas.Iter(), manifest.Level(level), internalIterOpts{})
-					// Fake up the range deletion initialization, to resemble the usage
-					// in a mergingIter.
-					l.initRangeDel(new(keyspan.FragmentIterator))
+					l.interleaveRangeDeletions = true
 					keyCount := len(keys)
 					pos := 0
 					l.SeekPrefixGE(keys[pos], keys[pos], base.SeekGEFlagsNone)

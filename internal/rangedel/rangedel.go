@@ -55,6 +55,9 @@ func Decode(ik base.InternalKey, v []byte, keysDst []keyspan.Key) keyspan.Span {
 func Interleave(
 	comparer *base.Comparer, iter base.InternalIterator, rangeDelIter keyspan.FragmentIterator,
 ) (base.InternalIterator, func() *keyspan.Span) {
+	if rangeDelIter == nil {
+		return iter, noTombstone
+	}
 	ii := interleavingIterPool.Get().(*interleavingIter)
 	ii.Init(comparer, iter, rangeDelIter, keyspan.InterleavingIterOpts{
 		InterleaveEndKeys: true,
@@ -79,4 +82,8 @@ func (i *interleavingIter) Close() error {
 	*i = interleavingIter{}
 	interleavingIterPool.Put(i)
 	return err
+}
+
+func noTombstone() *keyspan.Span {
+	return nil
 }
