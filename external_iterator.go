@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
+	"github.com/cockroachdb/pebble/internal/rangedel"
 	"github.com/cockroachdb/pebble/sstable"
 )
 
@@ -215,10 +216,9 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (topLevelIterato
 			if err != nil {
 				return nil, err
 			}
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         pointIter,
-				rangeDelIter: rangeDelIter,
-			})
+			mil := mergingIterLevel{}
+			mil.iter, mil.getTombstone = rangedel.Interleave(&it.comparer, pointIter, rangeDelIter)
+			mlevels = append(mlevels, mil)
 		}
 		if len(combinedIters) == 1 {
 			mlevels = append(mlevels, mergingIterLevel{
@@ -230,10 +230,7 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (topLevelIterato
 				iters: combinedIters,
 			}
 			sli.init(it.opts)
-			mlevels = append(mlevels, mergingIterLevel{
-				iter:         sli,
-				rangeDelIter: nil,
-			})
+			mlevels = append(mlevels, mergingIterLevel{iter: sli})
 		}
 	}
 

@@ -888,6 +888,39 @@ func ingestUpdateSeqNum(
 	return nil
 }
 
+func overlapsWithInternalIterator(
+	cmp base.Compare, bounds base.UserKeyBounds, iter internalIterator,
+) (bool, error) {
+	kv := iter.SeekGE(bounds.Start, base.SeekGEFlagsNone)
+	if kv == nil {
+		if err := iter.Error(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return bounds.End.IsUpperBoundForInternalKey(cmp, kv.K), nil
+}
+
+func overlapsWithFragmentIterator(
+	cmp base.Compare, bounds base.UserKeyBounds, iter keyspan.FragmentIterator,
+) (bool, error) {
+	// NB: The spans surfaced by the fragment iterator are non-overlapping.
+	span, err := iter.SeekGE(bounds.Start)
+	if err != nil {
+		return false, err
+	}
+	for ; span != nil; span, err = iter.Next() {
+		if !bounds.End.IsUpperBoundFor(cmp, span.Start) {
+			// The span starts after our bounds.
+			return false, nil
+		}
+		if !span.Empty() {
+			return true, nil
+		}
+	}
+	return false, err
+}
+
 // overlapWIthIterator returns true if the given iterators produce keys or spans
 // overlapping the given UserKeyBounds. May return false positives (e.g. in
 // error cases).
@@ -1058,11 +1091,7 @@ func ingestTargetLevel(
 	for subLevel := 0; subLevel < len(v.L0SublevelFiles); subLevel++ {
 		iter := newLevelIter(context.Background(),
 			iterOps, comparer, newIters, v.L0Sublevels.Levels[subLevel].Iter(), manifest.Level(0), internalIterOpts{})
-
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		iter.initRangeDel(&rangeDelIter)
+		iter.interleaveRangeDeletions = true
 
 		levelIter := keyspanimpl.LevelIter{}
 		levelIter.Init(
@@ -1070,34 +1099,44 @@ func ingestTargetLevel(
 			v.L0Sublevels.Levels[subLevel].Iter(), manifest.Level(0), manifest.KeyTypeRange,
 		)
 
-		overlap := overlapWithIterator(iter, &rangeDelIter, &levelIter, meta.UserKeyBounds(), comparer.Compare)
+		var anyOverlap bool
+		{
+			// Assume overlap if an errors are encountered.
+			overlap, err := overlapsWithInternalIterator(comparer.Compare, meta.UserKeyBounds(), iter)
+			anyOverlap = anyOverlap || overlap || err != nil
+			overlap, err = overlapsWithFragmentIterator(comparer.Compare, meta.UserKeyBounds(), &levelIter)
+			anyOverlap = anyOverlap || overlap || err != nil
+		}
+
 		err := iter.Close() // Closes range del iter as well.
 		err = firstError(err, levelIter.Close())
 		if err != nil {
 			return 0, nil, err
 		}
-		if overlap {
+		if anyOverlap {
 			return targetLevel, nil, nil
 		}
 	}
 
 	level := baseLevel
 	for ; level < numLevels; level++ {
+		var anyOverlap bool
+
 		levelIter := newLevelIter(context.Background(),
 			iterOps, comparer, newIters, v.Levels[level].Iter(), manifest.Level(level), internalIterOpts{})
-		var rangeDelIter keyspan.FragmentIterator
-		// Pass in a non-nil pointer to rangeDelIter so that levelIter.findFileGE
-		// sets it up for the target file.
-		levelIter.initRangeDel(&rangeDelIter)
+		levelIter.interleaveRangeDeletions = true
+		overlap, err := overlapsWithInternalIterator(comparer.Compare, meta.UserKeyBounds(), levelIter)
+		anyOverlap = anyOverlap || overlap || err != nil
 
 		rkeyLevelIter := &keyspanimpl.LevelIter{}
 		rkeyLevelIter.Init(
 			keyspan.SpanIterOptions{}, comparer.Compare, newRangeKeyIter,
 			v.Levels[level].Iter(), manifest.Level(level), manifest.KeyTypeRange,
 		)
+		overlap, err = overlapsWithFragmentIterator(comparer.Compare, meta.UserKeyBounds(), rkeyLevelIter)
+		anyOverlap = anyOverlap || overlap || err != nil
 
-		overlap := overlapWithIterator(levelIter, &rangeDelIter, rkeyLevelIter, meta.UserKeyBounds(), comparer.Compare)
-		err := levelIter.Close() // Closes range del iter as well.
+		err = levelIter.Close() // Closes range del iter as well.
 		err = firstError(err, rkeyLevelIter.Close())
 		if err != nil {
 			return 0, nil, err
