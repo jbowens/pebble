@@ -347,7 +347,7 @@ func (m *mergingIter) switchToMinHeap() error {
 		if l == cur {
 			continue
 		}
-		l.iterTombstone = nil
+		// fmt.Printf("  switchToMinHeap; before repositioning %d at %v [l.iterTombstone=%v]\n", l.index, l.iterKV, l.iterTombstone)
 		if l.iterKV == nil {
 			if m.lower != nil {
 				l.iterKV = l.iter.SeekGE(m.lower, base.SeekGEFlagsNone)
@@ -367,21 +367,28 @@ func (m *mergingIter) switchToMinHeap() error {
 			}
 			// key >= iter-key
 		}
+		l.iterTombstone = nil
 		if l.iterKV == nil {
 			if err := l.iter.Error(); err != nil {
 				return err
 			}
+		} else if l.iterKV.K.Kind() != base.InternalKeyKindSpanStart {
+			l.iterTombstone = l.getTombstone()
 		}
+		// fmt.Printf("  switchToMinHeap; repositioned %d to %v [l.iterTombstone=%v]\n", l.index, l.iterKV, l.iterTombstone)
 	}
 
 	// Special handling for the current iterator because we were using its key
 	// above.
 	cur.iterKV = cur.iter.Next()
 	cur.iterTombstone = nil
+	// fmt.Printf("  switchToMinHeap; repositioned %d to %v\n", cur.index, cur.iterKV)
 	if cur.iterKV == nil {
 		if err := cur.iter.Error(); err != nil {
 			return err
 		}
+	} else if cur.iterKV.K.Kind() != base.InternalKeyKindSpanStart {
+		cur.iterTombstone = cur.getTombstone()
 	}
 	m.initMinHeap()
 	return nil
@@ -414,7 +421,7 @@ func (m *mergingIter) switchToMaxHeap() error {
 		if l == cur {
 			continue
 		}
-		l.iterTombstone = nil
+		// fmt.Printf("  switchToMaxHeap; before repositioning %d at %v [l.iterTombstone=%v]\n", l.index, l.iterKV, l.iterTombstone)
 		if l.iterKV == nil {
 			if m.upper != nil {
 				l.iterKV = l.iter.SeekLT(m.upper, base.SeekLTFlagsNone)
@@ -434,19 +441,27 @@ func (m *mergingIter) switchToMaxHeap() error {
 			}
 			// key <= iter-key
 		}
+		l.iterTombstone = nil
 		if l.iterKV == nil {
 			if err := l.iter.Error(); err != nil {
 				return err
 			}
+		} else if l.iterKV.K.Kind() != base.InternalKeyKindSpanEnd {
+			l.iterTombstone = l.getTombstone()
 		}
+		// fmt.Printf("  switchToMaxHeap; repositioned %d to %v [l.iterTombstone=%v]\n", l.index, l.iterKV, l.iterTombstone)
 	}
 
 	cur.iterKV = cur.iter.Prev()
 	cur.iterTombstone = nil
+	// fmt.Printf("  switchToMaxHeap; repositioned %d to %v [l.iterTombstone=%v]\n", cur.index, cur.iterKV, cur.iterTombstone)
 	if cur.iterKV == nil {
 		if err := cur.iter.Error(); err != nil {
 			return err
 		}
+	} else if cur.iterKV.K.Kind() != base.InternalKeyKindSpanEnd {
+		cur.iterTombstone = cur.getTombstone()
+
 	}
 	m.initMaxHeap()
 	return nil
@@ -527,6 +542,7 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterLevel) (bool, error) {
 			// key.
 			continue
 		}
+		// fmt.Printf("  isNextEntryDeleted: item.index=%d, item.iterKV=%v, level=%d, l.iterTombstone=%s\n", item.index, item.iterKV, level, l.iterTombstone)
 		if level < item.index {
 			// We could also do m.seekGE(..., level + 1). The levels from [level
 			// + 1, item.index) are already after item.iterKV so seeking them
@@ -589,12 +605,14 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterLevel) (bool, error) {
 					return true, nil
 				}
 			}
+			// fmt.Printf("  m.seekGE(%q, index=%d) [iterTombstone = %s]\n", seekKey, item.index, l.iterTombstone)
 			if err := m.seekGE(seekKey, item.index, base.SeekGEFlagsNone.EnableRelativeSeek()); err != nil {
 				return false, err
 			}
 			return true, nil
 		}
 		if l.iterTombstone.CoversAt(m.snapshot, item.iterKV.SeqNum()) {
+			// fmt.Printf("  %s is deleted by %s\n", item.iterKV.K, l.iterTombstone)
 			if err := m.nextEntry(item, nil /* succKey */); err != nil {
 				return false, err
 			}
@@ -611,6 +629,7 @@ func (m *mergingIter) isNextEntryDeleted(item *mergingIterLevel) (bool, error) {
 func (m *mergingIter) findNextEntry() *base.InternalKV {
 	for m.heap.len() > 0 && m.err == nil {
 		item := m.heap.items[0]
+		// fmt.Printf("  findNextEntry: item[index=%d]: %v\n", item.index, item.iterKV)
 
 		// Is this KV a range tombstone boundary? The boundaries of range
 		// tombstones are interleaved among the point keys.
@@ -621,6 +640,7 @@ func (m *mergingIter) findNextEntry() *base.InternalKV {
 					item.iterTombstone = item.getTombstone()
 				}
 			}
+			// fmt.Printf("  findNextEntry: set index=%d iterTombstone=%v\n", item.index, item.iterTombstone)
 			m.err = m.nextEntry(item, nil /* succKey */)
 			continue
 		}
@@ -686,6 +706,7 @@ func (m *mergingIter) isPrevEntryDeleted(item *mergingIterLevel) (bool, error) {
 			// visible tombstone overlapping the current key.
 			continue
 		}
+		// fmt.Printf("  isPrevEntryDeleted: item.index=%d, item.iterKV=%v, level=%d, l.iterTombstone=%s\n", item.index, item.iterKV, level, l.iterTombstone)
 		if level < item.index {
 			// We could also do m.seekLT(..., level + 1). The levels from [level
 			// + 1, item.index) are already before item.iterKV so seeking them
@@ -729,6 +750,7 @@ func (m *mergingIter) isPrevEntryDeleted(item *mergingIterLevel) (bool, error) {
 func (m *mergingIter) findPrevEntry() *base.InternalKV {
 	for m.heap.len() > 0 && m.err == nil {
 		item := m.heap.items[0]
+		// fmt.Printf("  findPrevEntry: item: %v\n", item.iterKV)
 
 		// Is this KV a range tombstone boundary? The boundaries of range
 		// tombstones are interleaved among the point keys. If we're entering or
@@ -835,6 +857,7 @@ func (m *mergingIter) seekGE(key []byte, level int, flags base.SeekGEFlags) erro
 			}
 		} else {
 			l.iterKV = l.iter.SeekGE(key, flags)
+			// fmt.Printf("level %d SeekGE(%q) -> %v\n", level, key, l.iterKV)
 		}
 		if l.iterKV == nil {
 			if err := l.iter.Error(); err != nil {
@@ -875,6 +898,7 @@ func (m *mergingIter) String() string {
 // or equal to the lower bound.
 func (m *mergingIter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV {
 	m.prefix = nil
+	// fmt.Printf("SeekGE(%q)\n", key)
 	m.err = m.seekGE(key, 0 /* start level */, flags)
 	if m.err != nil {
 		return nil
@@ -920,6 +944,7 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 
 		l := &m.levels[level]
 		l.iterKV = l.iter.SeekLT(key, flags)
+		// fmt.Printf("level %d SeekLT(%q) -> %v\n", level, key, l.iterKV)
 		l.iterTombstone = nil
 		if l.iterKV == nil {
 			if err := l.iter.Error(); err != nil {
@@ -955,6 +980,7 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 // the lower bound. It is up to the caller to ensure that key is less than the
 // upper bound.
 func (m *mergingIter) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV {
+	// fmt.Printf("SeekLT(%q)\n", key)
 	m.prefix = nil
 	m.err = m.seekLT(key, 0 /* start level */, flags)
 	if m.err != nil {
@@ -1005,6 +1031,7 @@ func (m *mergingIter) Last() *base.InternalKV {
 }
 
 func (m *mergingIter) Next() *base.InternalKV {
+	// fmt.Println("Next()")
 	if m.err != nil {
 		return nil
 	}
@@ -1013,10 +1040,13 @@ func (m *mergingIter) Next() *base.InternalKV {
 		if m.err = m.switchToMinHeap(); m.err != nil {
 			return nil
 		}
-		return m.findNextEntry()
+		kv := m.findNextEntry()
+		// fmt.Printf("Next() returning %v\n", kv)
+		return kv
 	}
 
 	if m.heap.len() == 0 {
+		// fmt.Println("Next() returning nil")
 		return nil
 	}
 
@@ -1025,6 +1055,7 @@ func (m *mergingIter) Next() *base.InternalKV {
 	// Next if the iterator has already advanced beyond the iteration prefix.
 	// See the comment above the base.InternalIterator interface.
 	if m.err = m.nextEntry(m.heap.items[0], nil /* succKey */); m.err != nil {
+		// fmt.Println("Next() returning nil due to error")
 		return nil
 	}
 
@@ -1034,6 +1065,7 @@ func (m *mergingIter) Next() *base.InternalKV {
 			m.logger.Fatalf("mergingIter: prefix violation: returning key %q without prefix %q\n", iterKV, m.prefix)
 		}
 	}
+	// fmt.Printf("Next() returning %v\n", iterKV)
 	return iterKV
 }
 
@@ -1089,6 +1121,7 @@ func (m *mergingIter) NextPrefix(succKey []byte) *base.InternalKV {
 }
 
 func (m *mergingIter) Prev() *base.InternalKV {
+	// fmt.Println("Prev()")
 	if m.err != nil {
 		return nil
 	}
@@ -1101,16 +1134,22 @@ func (m *mergingIter) Prev() *base.InternalKV {
 		if m.err = m.switchToMaxHeap(); m.err != nil {
 			return nil
 		}
-		return m.findPrevEntry()
+		kv := m.findPrevEntry()
+		// fmt.Printf("Prev() returning %v\n", kv)
+		return kv
 	}
 
 	if m.heap.len() == 0 {
+		// fmt.Println("Prev() returning nil")
 		return nil
 	}
 	if m.err = m.prevEntry(m.heap.items[0]); m.err != nil {
+		// fmt.Println("Prev() returning nil due to error")
 		return nil
 	}
-	return m.findPrevEntry()
+	kv := m.findPrevEntry()
+	// fmt.Printf("Prev() returning %v\n", kv)
+	return kv
 }
 
 func (m *mergingIter) Error() error {
