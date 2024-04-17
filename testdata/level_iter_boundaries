@@ -373,12 +373,8 @@ iter save continue
 set-bounds lower=e upper=f
 seek-ge e
 next
-next
-next
 ----
 e#5,SET:z
-g#72057594037927935,SPANSTART:
-h#72057594037927935,SPANEND:
 .
 
 file-pos

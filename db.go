@@ -1439,7 +1439,9 @@ func (i *Iterator) constructPointIter(
 			// during a call to SetOptions—in this case, we need to reconstruct
 			// the point iterator to add the batch rangedel iterator.
 			if i.batchRangeDelIter.Count() > 0 {
-				mil.iter, mil.getTombstone = rangedel.Interleave(&i.comparer, &i.batchPointIter, &i.batchRangeDelIter)
+				mil.iter, mil.getTombstone = rangedel.Interleave(
+					&i.comparer, &i.batchPointIter, &i.batchRangeDelIter,
+					i.opts.LowerBound, i.opts.UpperBound)
 			}
 			mlevels = append(mlevels, mil)
 		}
@@ -1450,7 +1452,9 @@ func (i *Iterator) constructPointIter(
 		for j := len(memtables) - 1; j >= 0; j-- {
 			mem := memtables[j]
 			mil := mergingIterLevel{}
-			mil.iter, mil.getTombstone = rangedel.Interleave(&i.comparer, mem.newIter(&i.opts), mem.newRangeDelIter(&i.opts))
+			mil.iter, mil.getTombstone = rangedel.Interleave(
+				&i.comparer, mem.newIter(&i.opts), mem.newRangeDelIter(&i.opts),
+				i.opts.LowerBound, i.opts.UpperBound)
 			mlevels = append(mlevels, mil)
 		}
 

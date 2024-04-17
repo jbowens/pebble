@@ -214,7 +214,9 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (topLevelIterato
 				return nil, err
 			}
 			mil := mergingIterLevel{}
-			mil.iter, mil.getTombstone = rangedel.Interleave(&it.comparer, pointIter, rangeDelIter)
+			mil.iter, mil.getTombstone = rangedel.Interleave(
+				&it.comparer, pointIter, rangeDelIter,
+				it.opts.LowerBound, it.opts.UpperBound)
 			mlevels = append(mlevels, mil)
 		}
 	}

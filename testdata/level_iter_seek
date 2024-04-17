@@ -35,11 +35,7 @@ f#5,SET:f
 iter
 set-bounds upper=d
 seek-ge d
-next
-next
 ----
-d#72057594037927935,SPANSTART:
-e#72057594037927935,SPANEND:
 .
 
 iter
@@ -48,13 +44,11 @@ seek-ge c
 next
 prev
 next
-next
 ----
 c#7,SET:c
-d#72057594037927935,SPANSTART:
+.
 c#7,SET:c
-d#72057594037927935,SPANSTART:
-e#72057594037927935,SPANEND:
+.
 
 # There is no point key with d, but since there is a rangedel, levelIter returns
 # the range deletion start key.

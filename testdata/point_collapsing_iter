@@ -12,12 +12,10 @@ first
 next
 next
 next
-next
 ----
 a#5,SET:foo
 b#6,SET:foo
 c#7,SET:bar
-.
 .
 
 # Ensure that we pause at (and return) rangedel start points correctly.

@@ -249,7 +249,7 @@ func (i *InterleavingIter) InitSeekGE(
 	// NB: This keyspanSeekGE call will truncate the span to the seek key if
 	// necessary. This truncation is important for cases where a switch to
 	// combined iteration is made during a user-initiated SeekGE.
-	i.keyspanSeekGE(key, prefix)
+	i.seekGEKeyspan(key)
 	i.computeSmallestPos()
 	return i.yieldPosition(key, i.nextPos)
 }
@@ -268,7 +268,7 @@ func (i *InterleavingIter) InitSeekLT(key []byte, pointKV *base.InternalKV) *bas
 	i.dir = -1
 	i.clearMask()
 	i.savePoint(pointKV)
-	i.keyspanSeekLT(key)
+	i.seekLTKeyspan(key)
 	i.computeLargestPos()
 	return i.yieldPosition(i.lower, i.prevPos)
 }
@@ -299,7 +299,7 @@ func (i *InterleavingIter) SeekGE(key []byte, flags base.SeekGEFlags) *base.Inte
 		i.saveSpanForward(i.span, nil)
 		i.savedKeyspan()
 	} else {
-		i.keyspanSeekGE(key, nil /* prefix */)
+		i.seekGEKeyspan(key)
 	}
 
 	i.dir = +1
@@ -359,7 +359,7 @@ func (i *InterleavingIter) SeekPrefixGE(
 		}
 	}
 	if seekKeyspanIter {
-		i.keyspanSeekGE(key, prefix)
+		i.seekGEKeyspan(key)
 	}
 
 	i.dir = +1
@@ -398,7 +398,7 @@ func (i *InterleavingIter) SeekLT(key []byte, flags base.SeekLTFlags) *base.Inte
 		}
 		i.savedKeyspan()
 	} else {
-		i.keyspanSeekLT(key)
+		i.seekLTKeyspan(key)
 	}
 
 	i.dir = -1
@@ -462,20 +462,19 @@ func (i *InterleavingIter) Next() *base.InternalKV {
 			// entirely behind the current key (!i.withinSpan), then we
 			// need to move it to the first span in the forward direction.
 			if !i.withinSpan {
-				i.saveSpanForward(i.keyspanIter.Next())
-				i.savedKeyspan()
+				i.nextKeyspan()
 			}
 		case posKeyspanStart:
 			i.withinSpan = true
 			// Since we're positioned on a Span, the pointIter is positioned
 			// entirely behind the current iterator position. Reposition it
 			// ahead of the current iterator position.
-			i.savePoint(i.pointIter.Next())
+			i.nextPoint()
 		case posKeyspanEnd:
 			// Since we're positioned on a Span, the pointIter is positioned
 			// entirely behind of the current iterator position. Reposition it
 			// ahead the current iterator position.
-			i.savePoint(i.pointIter.Next())
+			i.nextPoint()
 		}
 		// Fallthrough to calling i.nextPos.
 	}
@@ -539,14 +538,13 @@ func (i *InterleavingIter) Prev() *base.InternalKV {
 			// current key (!i.withinSpan), then we need to move it to the first
 			// span in the reverse direction.
 			if !i.withinSpan {
-				i.saveSpanBackward(i.keyspanIter.Prev())
-				i.savedKeyspan()
+				i.prevKeyspan()
 			}
 		case posKeyspanStart:
 			// Since we're positioned on a Span, the pointIter is positioned
 			// entirely ahead of the current iterator position. Reposition it
 			// behind the current iterator position.
-			i.savePoint(i.pointIter.Prev())
+			i.prevPoint()
 			// Without considering truncation of spans to seek keys, the keyspan
 			// iterator is already in the right place. But consider span [a, z)
 			// and this sequence of iterator calls:
@@ -568,7 +566,7 @@ func (i *InterleavingIter) Prev() *base.InternalKV {
 			// Since we're positioned on a Span, the pointIter is positioned
 			// entirely ahead of the current iterator position. Reposition it
 			// behind the current iterator position.
-			i.savePoint(i.pointIter.Prev())
+			i.prevPoint()
 		}
 
 		if i.spanMarkerTruncated {
@@ -640,12 +638,11 @@ func (i *InterleavingIter) nextPos() {
 
 	switch i.pos {
 	case posExhausted:
-		i.savePoint(i.pointIter.Next())
-		i.saveSpanForward(i.keyspanIter.Next())
-		i.savedKeyspan()
+		i.nextPoint()
+		i.nextKeyspan()
 		i.computeSmallestPos()
 	case posPointKey:
-		i.savePoint(i.pointIter.Next())
+		i.nextPoint()
 		if i.err != nil {
 			i.pos = posExhausted
 			return
@@ -683,8 +680,7 @@ func (i *InterleavingIter) nextPos() {
 			i.pos = posKeyspanEnd
 		}
 	case posKeyspanEnd:
-		i.saveSpanForward(i.keyspanIter.Next())
-		i.savedKeyspan()
+		i.nextKeyspan()
 		i.computeSmallestPos()
 	default:
 		panic(fmt.Sprintf("unexpected pos=%d", i.pos))
@@ -712,12 +708,11 @@ func (i *InterleavingIter) prevPos() {
 
 	switch i.pos {
 	case posExhausted:
-		i.savePoint(i.pointIter.Prev())
-		i.saveSpanBackward(i.keyspanIter.Prev())
-		i.savedKeyspan()
+		i.prevPoint()
+		i.prevKeyspan()
 		i.computeLargestPos()
 	case posPointKey:
-		i.savePoint(i.pointIter.Prev())
+		i.prevPoint()
 		if i.err != nil {
 			i.pos = posExhausted
 			return
@@ -743,8 +738,7 @@ func (i *InterleavingIter) prevPos() {
 			}
 		}
 	case posKeyspanStart:
-		i.saveSpanBackward(i.keyspanIter.Prev())
-		i.savedKeyspan()
+		i.prevKeyspan()
 		i.computeLargestPos()
 	case posKeyspanEnd:
 		// Either a point key or the span's start key is previous.
@@ -825,14 +819,38 @@ func (i *InterleavingIter) yieldPosition(lowerBound []byte, advance func()) *bas
 	}
 }
 
-// keyspanSeekGE seeks the keyspan iterator to the first span covering a key ≥ k.
-func (i *InterleavingIter) keyspanSeekGE(k []byte, prefix []byte) {
+func (i *InterleavingIter) nextPoint() {
+	if i.pointKV == nil {
+		if i.lower != nil {
+			i.savePoint(i.pointIter.SeekGE(i.lower, base.SeekGEFlagsNone))
+		} else {
+			i.savePoint(i.pointIter.First())
+		}
+		return
+	}
+	i.savePoint(i.pointIter.Next())
+}
+
+func (i *InterleavingIter) prevPoint() {
+	if i.pointKV == nil {
+		if i.upper != nil {
+			i.savePoint(i.pointIter.SeekLT(i.upper, base.SeekLTFlagsNone))
+		} else {
+			i.savePoint(i.pointIter.Last())
+		}
+		return
+	}
+	i.savePoint(i.pointIter.Prev())
+}
+
+// seekGEKeyspan seeks the keyspan iterator to the first span covering a key ≥ k.
+func (i *InterleavingIter) seekGEKeyspan(k []byte) {
 	i.saveSpanForward(i.keyspanIter.SeekGE(k))
 	i.savedKeyspan()
 }
 
-// keyspanSeekLT seeks the keyspan iterator to the last span covering a key < k.
-func (i *InterleavingIter) keyspanSeekLT(k []byte) {
+// seekLTKeyspan seeks the keyspan iterator to the last span covering a key < k.
+func (i *InterleavingIter) seekLTKeyspan(k []byte) {
 	i.saveSpanBackward(i.keyspanIter.SeekLT(k))
 	// The current span's start key is not guaranteed to be less than key,
 	// because of the bounds enforcement. Consider the following example:
@@ -848,6 +866,16 @@ func (i *InterleavingIter) keyspanSeekLT(k []byte) {
 	if i.span != nil && i.truncated && i.cmp(i.truncatedSpan.Start, k) >= 0 {
 		i.span = nil
 	}
+	i.savedKeyspan()
+}
+
+func (i *InterleavingIter) nextKeyspan() {
+	i.saveSpanForward(i.keyspanIter.Next())
+	i.savedKeyspan()
+}
+
+func (i *InterleavingIter) prevKeyspan() {
+	i.saveSpanBackward(i.keyspanIter.Prev())
 	i.savedKeyspan()
 }
 
@@ -1019,12 +1047,12 @@ func (i *InterleavingIter) verify(kv *base.InternalKV) *base.InternalKV {
 		switch {
 		case i.dir == -1 && i.spanMarkerTruncated:
 			panic("pebble: invariant violation: truncated span key in reverse iteration")
-		case kv != nil && i.lower != nil && i.cmp(kv.K.UserKey, i.lower) < 0:
-			panic("pebble: invariant violation: key < lower bound")
-		case kv != nil && i.upper != nil:
-			if v := i.cmp(kv.K.UserKey, i.upper); v > 0 || v == 0 && kv.K.Kind() != base.InternalKeyKindSpanEnd {
-				panic("pebble: invariant violation: key ≥ upper bound")
-			}
+		case kv != nil && i.lower != nil && i.cmp(kv.K.UserKey, i.lower) < 0 &&
+			kv.K.Kind() != base.InternalKeyKindSpanStart && kv.K.Kind() != base.InternalKeyKindSpanEnd:
+			panic(fmt.Sprintf("pebble: invariant violation: key (%q) < lower bound (%q)", kv.K, i.lower))
+		case kv != nil && i.upper != nil && i.cmp(kv.K.UserKey, i.upper) > 0 &&
+			kv.K.Kind() != base.InternalKeyKindSpanEnd && kv.K.Kind() != base.InternalKeyKindSpanStart:
+			panic(fmt.Sprintf("pebble: invariant violation: key %q ≥ upper bound %q", kv.K, i.upper))
 		case i.err != nil && kv != nil:
 			panic("pebble: invariant violation: accumulated error swallowed")
 		case i.err == nil && i.pointIter.Error() != nil:

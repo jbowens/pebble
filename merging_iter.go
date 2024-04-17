@@ -347,7 +347,7 @@ func (m *mergingIter) switchToMinHeap() error {
 		if l == cur {
 			continue
 		}
-		if l.iterKV == nil {
+		if l.iterKV == nil || (m.lower != nil && m.heap.cmp(l.iterKV.K.UserKey, m.lower) < 0) {
 			if m.lower != nil {
 				l.iterKV = l.iter.SeekGE(m.lower, base.SeekGEFlagsNone)
 			} else {
@@ -418,7 +418,7 @@ func (m *mergingIter) switchToMaxHeap() error {
 		if l == cur {
 			continue
 		}
-		if l.iterKV == nil {
+		if l.iterKV == nil || (m.upper != nil && m.heap.cmp(l.iterKV.K.UserKey, m.upper) >= 0) {
 			if m.upper != nil {
 				l.iterKV = l.iter.SeekLT(m.upper, base.SeekLTFlagsNone)
 			} else {
@@ -430,6 +430,7 @@ func (m *mergingIter) switchToMaxHeap() error {
 				}
 			}
 		}
+		fmt.Printf("Repositioning level %d l.iter=%s\n", i, l.iter)
 		for ; l.iterKV != nil; l.iterKV = l.iter.Prev() {
 			if base.InternalCompare(m.heap.cmp, key, l.iterKV.K) > 0 {
 				// key > iter-key
@@ -943,10 +944,9 @@ func (m *mergingIter) seekLT(key []byte, level int, flags base.SeekLTFlags) erro
 			// the range tombstone's span that need to be observed to trigger a
 			// switch to combined iteration.
 			if t := l.getTombstone(); t.VisibleAt(m.snapshot) && m.heap.cmp(key, t.End) <= 0 {
-				// NB: Based on the containment condition
-				// tombstone.Start.UserKey <= key, so the assignment to key
-				// results in a monotonically non-increasing key across
-				// iterations of this loop.
+				// NB: Based on the containment condition t.Start.UserKey <=
+				// key, so the assignment to key results in a monotonically
+				// non-increasing key across iterations of this loop.
 				//
 				// The adjustment of key here can only move it to a smaller key.
 				// Since the caller of seekLT guaranteed that the original key
@@ -1101,6 +1101,7 @@ func (m *mergingIter) Prev() *base.InternalKV {
 	if m.err != nil {
 		return nil
 	}
+	fmt.Printf("mergingIter.Prev() m.lower=%s, m.upper=%s\n", m.lower, m.upper)
 
 	if m.dir != -1 {
 		if m.prefix != nil {

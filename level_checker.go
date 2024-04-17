@@ -586,7 +586,9 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 	for i := len(memtables) - 1; i >= 0; i-- {
 		mem := memtables[i]
 		var smil simpleMergingIterLevel
-		smil.iter, smil.getTombstone = rangedel.Interleave(c.comparer, mem.newIter(nil), mem.newRangeDelIter(nil))
+		smil.iter, smil.getTombstone = rangedel.Interleave(
+			c.comparer, mem.newIter(nil), mem.newRangeDelIter(nil),
+			nil /* lower bound */, nil /* upper bound */)
 		mlevels = append(mlevels, smil)
 	}
 

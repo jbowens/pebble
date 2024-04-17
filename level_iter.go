@@ -544,7 +544,11 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 		// deletions, then wrap the point iterator with an interleaving iterator
 		// to interleave range deletion bounds among the point keys.
 		if iters.rangeDeletion != nil {
-			interleaveOpts := keyspan.InterleavingIterOpts{InterleaveSpanBounds: true}
+			interleaveOpts := keyspan.InterleavingIterOpts{
+				InterleaveSpanBounds: true,
+				LowerBound:           l.tableOpts.LowerBound,
+				UpperBound:           l.tableOpts.UpperBound,
+			}
 			l.interleaving.Init(l.comparer, l.iter, iters.rangeDeletion, interleaveOpts)
 			l.iter = &l.interleaving
 		}
@@ -831,9 +835,9 @@ func (l *levelIter) SetContext(ctx context.Context) {
 
 func (l *levelIter) String() string {
 	if l.iterFile != nil {
-		return fmt.Sprintf("%s: fileNum=%s", l.level, l.iterFile.FileNum.String())
+		return fmt.Sprintf("levelIter %s: fileNum=%s", l.level, l.iterFile.FileNum.String())
 	}
-	return fmt.Sprintf("%s: fileNum=<nil>", l.level)
+	return fmt.Sprintf("levelIter %s: fileNum=<nil>", l.level)
 }
 
 var _ internalIterator = &levelIter{}

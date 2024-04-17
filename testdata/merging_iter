@@ -551,8 +551,8 @@ seek-lt jd
 next
 ----
 #  000022.SeekLT("jd") = (iwoeionch#792,SET,"792")
-#  000023.SeekLT("c") = nil
-#  000024.SeekLT("c") = nil
+#  000023.SeekLT("cz") = nil
+#  000024.SeekLT("cz") = nil
 iwoeionch#792,SET:792
 #  000023.SeekGE("cz") = nil <err="injected error">
 err=injected error
@@ -904,6 +904,26 @@ set-bounds lower=cz upper=jd
 seek-lt jd
 ----
 #  000033.SeekLT("jd") = (iwoeionch#792,SET,"792")
-#  000034.SeekLT("c") = nil
-#  000035.SeekLT("c") = nil
+#  000034.SeekLT("cz") = nil
+#  000035.SeekLT("cz") = nil
 iwoeionch#792,SET:792
+
+define
+L
+a.SET.30 x.RANGEDEL.72057594037927935
+a.SET.30:30 a.RANGEDEL.20:x b.SET.19:19 c.SET.18:18 d.SET.17:17 e.SET.16:16 f.SET.21:21
+L
+a.SET.2 z.SET.3
+a.SET.2:2 c.RANGEDEL.1:y u.SET.3:3 x.SET.3:3  z.SET.3:3
+----
+L1:
+  000036:[a#30,SET-x#inf,RANGEDEL]
+L2:
+  000037:[a#2,SET-z#3,SET]
+
+iter upper=d
+seek-ge e
+prev
+----
+f#21,SET:21
+a#30,SET:30

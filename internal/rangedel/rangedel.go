@@ -53,7 +53,10 @@ func Decode(ik base.InternalKey, v []byte, keysDst []keyspan.Key) keyspan.Span {
 //
 // The returned iterator must only be closed once.
 func Interleave(
-	comparer *base.Comparer, iter base.InternalIterator, rangeDelIter keyspan.FragmentIterator,
+	comparer *base.Comparer,
+	iter base.InternalIterator,
+	rangeDelIter keyspan.FragmentIterator,
+	lower, upper []byte,
 ) (base.InternalIterator, func() *keyspan.Span) {
 	// If there is no range deletion iterator, don't bother using an interleaving
 	// iterator. We can return iter verbatim and a func that unconditionally
@@ -64,6 +67,8 @@ func Interleave(
 
 	ii := interleavingIterPool.Get().(*interleavingIter)
 	ii.Init(comparer, iter, rangeDelIter, keyspan.InterleavingIterOpts{
+		LowerBound:           lower,
+		UpperBound:           upper,
 		InterleaveSpanBounds: true,
 	})
 	return ii, ii.Span
