@@ -53,7 +53,7 @@ Backing tables: 0 (0B)
 Virtual tables: 0 (0B)
 Local tables size: 569B
 Block cache: 6 entries (945B)  hit rate: 30.8%
-Table cache: 1 entries (760B)  hit rate: 50.0%
+Table cache: 1 entries (760B)  hit rate: 66.7%
 Secondary cache: 0 entries (0B)  hit rate: 0.0%
 Snapshots: 0  earliest seq num: 0
 Table iters: 0
@@ -446,6 +446,7 @@ lsm
 ----
 L0.4:
   000021:[a#22,SET-g#22,SET]
+  000024:[i#24,RANGEDEL-j#inf,RANGEDEL]
   000020:[j#21,RANGEDEL-m#21,SET]
 L0.3:
   000016:[a#20,RANGEDEL-z#inf,RANGEDEL]
@@ -461,7 +462,6 @@ L0.0:
 L6:
   000006:[a#10,SET-b#10,SET]
   000023:[d#23,SET-d#23,SET]
-  000024:[i#24,RANGEDEL-j#inf,RANGEDEL]
   000015:[n#19,SET-n#19,SET]
   000010:[x#14,SET-y#14,SET]
   000022:[z#25,SET-z#25,SET]
@@ -479,6 +479,7 @@ lsm
 ----
 L0.4:
   000021:[a#22,SET-g#22,SET]
+  000024:[i#24,RANGEDEL-j#inf,RANGEDEL]
   000020:[j#21,RANGEDEL-m#21,SET]
 L0.3:
   000016:[a#20,RANGEDEL-z#inf,RANGEDEL]
@@ -495,7 +496,6 @@ L6:
   000006:[a#10,SET-b#10,SET]
   000023:[d#23,SET-d#23,SET]
   000025:[e#26,RANGEDEL-f#inf,RANGEDEL]
-  000024:[i#24,RANGEDEL-j#inf,RANGEDEL]
   000015:[n#19,SET-n#19,SET]
   000010:[x#14,SET-y#14,SET]
   000022:[z#25,SET-z#25,SET]
@@ -522,6 +522,7 @@ L0.5:
   000029:[a#27,RANGEDEL-d#inf,RANGEDEL]
 L0.4:
   000021:[a#22,SET-g#22,SET]
+  000024:[i#24,RANGEDEL-j#inf,RANGEDEL]
   000020:[j#21,RANGEDEL-m#21,SET]
 L0.3:
   000016:[a#20,RANGEDEL-z#inf,RANGEDEL]
@@ -538,7 +539,6 @@ L6:
   000006:[a#10,SET-b#10,SET]
   000023:[d#23,SET-d#23,SET]
   000025:[e#26,RANGEDEL-f#inf,RANGEDEL]
-  000024:[i#24,RANGEDEL-j#inf,RANGEDEL]
   000015:[n#19,SET-n#19,SET]
   000010:[x#14,SET-y#14,SET]
   000022:[z#25,SET-z#25,SET]

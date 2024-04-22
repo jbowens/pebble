@@ -421,6 +421,7 @@ func (r *Reader) newCompactionIter(
 		return &twoLevelCompactionIterator{twoLevelIterator: i}, nil
 	}
 	i := singleLevelIterPool.Get().(*singleLevelIterator)
+
 	err := i.init(
 		context.Background(), r, vState, transforms, nil /* lower */, nil, /* upper */
 		nil, false /* useFilter */, nil /* stats */, categoryAndQoS, statsCollector, rp, bufferPool,

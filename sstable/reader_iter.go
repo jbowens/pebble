@@ -142,11 +142,11 @@ var rangeKeyFragmentBlockIterPool = sync.Pool{
 func checkSingleLevelIterator(obj interface{}) {
 	i := obj.(*singleLevelIterator)
 	if p := i.data.handle.Get(); p != nil {
-		fmt.Fprintf(os.Stderr, "singleLevelIterator.data.handle is not nil: %p\n", p)
+		fmt.Fprintf(os.Stderr, "singleLevelIterator.data.handle is not nil: %p [i=%p]\n", p, i)
 		os.Exit(1)
 	}
 	if p := i.index.handle.Get(); p != nil {
-		fmt.Fprintf(os.Stderr, "singleLevelIterator.index.handle is not nil: %p\n", p)
+		fmt.Fprintf(os.Stderr, "singleLevelIterator.index.handle is not nil: %p [i=%p]\n", p, i)
 		os.Exit(1)
 	}
 }

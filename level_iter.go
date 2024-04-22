@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime/debug"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
@@ -120,12 +121,6 @@ type levelIter struct {
 	//   reached the user-imposed bound. This signals that the underlying
 	//   iterators are not necessarily exhausted, but iteration has paused to
 	//   avoid unnecessarily loading sstables outside the user-imposed bounds.
-	// - isIgnorableBoundaryKey is set to true when the levelIter returns a
-	//   fake key at one of the bounds of an sstable within the level. It does
-	//   this only when the current sstable contains range deletions. It ensures
-	//   the merging iterator does not move beyond the table until the table's
-	//   range deletions are no longer necessary, even if the table contains
-	//   no more relevant point keys.
 	boundaryContext *levelIterBoundaryContext
 
 	// internalOpts holds the internal iterator options to pass to the table
@@ -136,6 +131,11 @@ type levelIter struct {
 	// property filters specified. See the performance note where
 	// IterOptions.PointKeyFilters is declared.
 	filtersBuf [1]BlockPropertyFilter
+	// interleaving is used when rangeDelIterPtr != nil to interleave the
+	// boundaries of range deletions among point keys. This ensures that we
+	// don't advance to a new file until the range deletions are no longer
+	// needed by other levels.
+	interleaving keyspan.InterleavingIter
 
 	// Disable invariant checks even if they are otherwise enabled. Used by tests
 	// which construct "impossible" situations (e.g. seeking to a key before the
@@ -508,16 +508,16 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 	l.largestBoundary = nil
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 	if l.iterFile == file {
 		if l.err != nil {
 			return noFileLoaded
 		}
 		if l.iter != nil {
-			// We don't bother comparing the file bounds with the iteration bounds when we have
-			// an already open iterator. It is possible that the iter may not be relevant given the
-			// current iteration bounds, but it knows those bounds, so it will enforce them.
+			// We don't bother comparing the file bounds with the iteration
+			// bounds when we have an already open iterator. It is possible that
+			// the iter may not be relevant given the current iteration bounds,
+			// but it knows those bounds, so it will enforce them.
 			if l.rangeDelIterPtr != nil {
 				*l.rangeDelIterPtr = l.rangeDelIterCopy
 			}
@@ -533,9 +533,9 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 			l.maybeTriggerCombinedIteration(file, dir)
 			return fileAlreadyLoaded
 		}
-		// We were already at file, but don't have an iterator, probably because the file was
-		// beyond the iteration bounds. It may still be, but it is also possible that the bounds
-		// have changed. We handle that below.
+		// We were already at file, but don't have an iterator, probably because
+		// the file was beyond the iteration bounds. It may still be, but it is
+		// also possible that the bounds have changed. We handle that below.
 	}
 
 	// Close both iter and rangeDelIterPtr. While mergingIter knows about
@@ -582,8 +582,13 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 			continue
 		}
 
+		iterKinds := iterPointKeys
+		if l.rangeDelIterPtr != nil {
+			iterKinds |= iterRangeDeletions
+		}
+
 		var iters iterSet
-		iters, l.err = l.newIters(l.ctx, l.iterFile, &l.tableOpts, l.internalOpts, iterPointKeys|iterRangeDeletions)
+		iters, l.err = l.newIters(l.ctx, l.iterFile, &l.tableOpts, l.internalOpts, iterKinds)
 		if l.err != nil {
 			return noFileLoaded
 		}
@@ -591,8 +596,22 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 		if l.rangeDelIterPtr != nil {
 			*l.rangeDelIterPtr = iters.rangeDeletion
 			l.rangeDelIterCopy = iters.rangeDeletion
-		} else if iters.rangeDeletion != nil {
-			iters.rangeDeletion.Close()
+
+			var itersForBounds iterSet
+			itersForBounds, l.err = l.newIters(l.ctx, l.iterFile, &l.tableOpts, l.internalOpts, iterRangeDeletions)
+			l.interleaving.Init(l.comparer, l.iter, itersForBounds.RangeDeletion(), keyspan.InterleavingIterOpts{
+				LowerBound:                  l.tableOpts.LowerBound,
+				UpperBound:                  l.tableOpts.UpperBound,
+				InterleaveEndKeys:           true,
+				DisableBoundInvariantChecks: true,
+			})
+			if l.err != nil {
+				l.iter = nil
+				*l.rangeDelIterPtr = nil
+				l.err = errors.CombineErrors(l.err, iters.CloseAll())
+				return noFileLoaded
+			}
+			l.iter = &l.interleaving
 		}
 		return newFileLoaded
 	}
@@ -604,7 +623,7 @@ func (l *levelIter) verify(kv *base.InternalKV) *base.InternalKV {
 	// Note that invariants.Enabled is a compile time constant, which means the
 	// block of code will be compiled out of normal builds making this method
 	// eligible for inlining. Do not change this to use a variable.
-	if invariants.Enabled && !l.disableInvariants && kv != nil {
+	if invariants.Enabled && !l.disableInvariants && kv != nil && !kv.K.IsExclusiveSentinel() {
 		// We allow returning a boundary key that is outside of the lower/upper
 		// bounds as such keys are always range tombstones which will be skipped by
 		// the Iterator.
@@ -622,7 +641,6 @@ func (l *levelIter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 	l.err = nil // clear cached iteration error
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 	// NB: the top-level Iterator has already adjusted key based on
 	// IterOptions.LowerBound.
@@ -645,7 +663,6 @@ func (l *levelIter) SeekPrefixGE(prefix, key []byte, flags base.SeekGEFlags) *ba
 	l.err = nil // clear cached iteration error
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator has already adjusted key based on
@@ -679,7 +696,6 @@ func (l *levelIter) SeekPrefixGE(prefix, key []byte, flags base.SeekGEFlags) *ba
 			l.largestBoundary = &l.syntheticBoundary
 			if l.boundaryContext != nil {
 				l.boundaryContext.isSyntheticIterBoundsKey = true
-				l.boundaryContext.isIgnorableBoundaryKey = false
 			}
 			return l.verify(l.largestBoundary)
 		}
@@ -691,7 +707,6 @@ func (l *levelIter) SeekPrefixGE(prefix, key []byte, flags base.SeekGEFlags) *ba
 		l.largestBoundary = &l.syntheticBoundary
 		if l.boundaryContext != nil {
 			l.boundaryContext.isSyntheticIterBoundsKey = false
-			l.boundaryContext.isIgnorableBoundaryKey = true
 		}
 		return l.verify(l.largestBoundary)
 	}
@@ -714,7 +729,6 @@ func (l *levelIter) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV 
 	l.err = nil // clear cached iteration error
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator has already adjusted key based on
@@ -732,7 +746,6 @@ func (l *levelIter) First() *base.InternalKV {
 	l.err = nil // clear cached iteration error
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator will call SeekGE if IterOptions.LowerBound is
@@ -750,7 +763,6 @@ func (l *levelIter) Last() *base.InternalKV {
 	l.err = nil // clear cached iteration error
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator will call SeekLT if IterOptions.UpperBound is
@@ -770,7 +782,6 @@ func (l *levelIter) Next() *base.InternalKV {
 	}
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	switch {
@@ -811,7 +822,6 @@ func (l *levelIter) NextPrefix(succKey []byte) *base.InternalKV {
 	}
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	switch {
@@ -864,7 +874,6 @@ func (l *levelIter) Prev() *base.InternalKV {
 	}
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	switch {
@@ -950,30 +959,6 @@ func (l *levelIter) skipEmptyFileForward() *base.InternalKV {
 				// bounds.
 				return nil
 			}
-			// If the boundary is a range deletion tombstone, or the caller is
-			// accessing range dels through l.rangeDelIterPtr, pause at an
-			// ignorable boundary key to avoid advancing to the next file until
-			// other levels are caught up.
-			//
-			// Note that even if the largest boundary is not a range deletion,
-			// there may still be range deletions beyong the last point key
-			// returned. When block-property filters are in use, the sstable
-			// iterator may have transparently skipped a tail of the point keys
-			// in the file. If the last point key returned /was/ the largest
-			// key, then we'll return a key with the same user key and trailer
-			// twice.  Returning it again is a violation of the strict
-			// monotonicity normally provided. The mergingIter's heap can
-			// tolerate this repeat key and in this case will keep the level at
-			// the top of the heap and immediately skip the entry, advancing to
-			// the next file.
-			if *l.rangeDelIterPtr != nil {
-				l.syntheticBoundary = base.MakeInternalKV(l.iterFile.LargestPointKey, nil)
-				l.largestBoundary = &l.syntheticBoundary
-				if l.boundaryContext != nil {
-					l.boundaryContext.isIgnorableBoundaryKey = true
-				}
-				return l.largestBoundary
-			}
 		}
 
 		// Current file was exhausted. Move to the next file.
@@ -1033,23 +1018,6 @@ func (l *levelIter) skipEmptyFileBackward() *base.InternalKV {
 				// sstables and most don't have any actual keys within the
 				// bounds.
 				return nil
-			}
-			// If the boundary could be a range deletion tombstone, return the
-			// smallest point key as a special ignorable key to avoid advancing to the
-			// next file.
-			//
-			// It's possible the SmallestPointKey was already returned. Returning it
-			// again is a violation of the strict monotonicity normally provided. The
-			// mergingIter's heap can tolerate this repeat key and in this case will
-			// keep the level at the top of the heap and immediately skip the entry,
-			// advancing to the next file.
-			if *l.rangeDelIterPtr != nil {
-				l.syntheticBoundary = base.MakeInternalKV(l.iterFile.SmallestPointKey, nil)
-				l.smallestBoundary = &l.syntheticBoundary
-				if l.boundaryContext != nil {
-					l.boundaryContext.isIgnorableBoundaryKey = true
-				}
-				return l.smallestBoundary
 			}
 		}
 

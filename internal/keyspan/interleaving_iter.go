@@ -193,7 +193,8 @@ type InterleavingIterOpts struct {
 	// InterleaveEndKeys configures the interleaving iterator to interleave the
 	// end keys of spans (in addition to the start keys, which are always
 	// interleaved).
-	InterleaveEndKeys bool
+	InterleaveEndKeys           bool
+	DisableBoundInvariantChecks bool
 }
 
 // Init initializes the InterleavingIter to interleave point keys from pointIter
@@ -1005,9 +1006,9 @@ func (i *InterleavingIter) verify(kv *base.InternalKV) *base.InternalKV {
 		switch {
 		case i.dir == -1 && i.spanMarkerTruncated:
 			panic("pebble: invariant violation: truncated span key in reverse iteration")
-		case kv != nil && i.opts.LowerBound != nil && i.cmp(kv.K.UserKey, i.opts.LowerBound) < 0:
+		case kv != nil && !i.opts.DisableBoundInvariantChecks && i.opts.LowerBound != nil && i.cmp(kv.K.UserKey, i.opts.LowerBound) < 0:
 			panic("pebble: invariant violation: key < lower bound")
-		case kv != nil && i.opts.UpperBound != nil &&
+		case kv != nil && !i.opts.DisableBoundInvariantChecks && i.opts.UpperBound != nil &&
 			!base.UserKeyExclusive(i.opts.UpperBound).IsUpperBoundForInternalKey(i.comparer.Compare, kv.K):
 			panic("pebble: invariant violation: key ≥ upper bound")
 		case i.err != nil && kv != nil:

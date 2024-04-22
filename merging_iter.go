@@ -54,14 +54,6 @@ type levelIterBoundaryContext struct {
 	// the only range deletions exposed by this mergingIter should be those with
 	// `isSyntheticIterBoundsKey || isIgnorableBoundaryKey`.
 	isSyntheticIterBoundsKey bool
-	// isIgnorableBoundaryKey is set to true iff the key returned by the level
-	// iterator is a file boundary key that should be ignored when returning to
-	// the parent iterator. File boundary keys are used by the level iter to
-	// keep a levelIter file's range deletion iterator open as long as other
-	// levels within the merging iterator require it. When used with a user-facing
-	// Iterator, the only range deletions exposed by this mergingIter should be
-	// those with `isSyntheticIterBoundsKey || isIgnorableBoundaryKey`.
-	isIgnorableBoundaryKey bool
 }
 
 // mergingIter provides a merged view of multiple iterators from different
@@ -801,10 +793,10 @@ func (m *mergingIter) findNextEntry() *base.InternalKV {
 
 		m.addItemStats(item)
 
-		// Skip ignorable boundary keys. These are not real keys and exist to
-		// keep sstables open until we've surpassed their end boundaries so that
-		// their range deletions are visible.
-		if m.levels[item.index].isIgnorableBoundaryKey {
+		// Skip interleaved range deletion boundary keys. These are not real
+		// keys and exist to keep sstables open until we no logner require their
+		// range deletions.
+		if item.iterKV.K.IsExclusiveSentinel() {
 			m.err = m.nextEntry(item, nil /* succKey */)
 			if m.err != nil {
 				return nil
@@ -950,10 +942,10 @@ func (m *mergingIter) findPrevEntry() *base.InternalKV {
 		if m.levels[item.index].isSyntheticIterBoundsKey {
 			break
 		}
-		// Skip ignorable boundary keys. These are not real keys and exist to
-		// keep sstables open until we've surpassed their end boundaries so that
-		// their range deletions are visible.
-		if m.levels[item.index].isIgnorableBoundaryKey {
+		// Skip interleaved range deletion boundary keys. These are not real
+		// keys and exist to keep sstables open until we no logner require their
+		// range deletions.
+		if item.iterKV.K.IsExclusiveSentinel() {
 			m.err = m.prevEntry(item)
 			if m.err != nil {
 				return nil
