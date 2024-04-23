@@ -460,7 +460,7 @@ func (m *mergingIter) switchToMinHeap() error {
 		// Next on the L2 iterator, it would return e, violating its lower
 		// bound.  Instead, we seek it to >= f and Next from there.
 
-		if l.iterKV == nil || (l.isSyntheticIterBoundsKey && m.heap.cmp(l.iterKV.K.UserKey, m.lower) <= 0) {
+		if l.isSyntheticIterBoundsKey && m.heap.cmp(l.iterKV.K.UserKey, m.lower) <= 0 {
 			if m.lower != nil {
 				l.iterKV = l.iter.SeekGE(m.lower, base.SeekGEFlagsNone)
 			} else {
@@ -471,6 +471,8 @@ func (m *mergingIter) switchToMinHeap() error {
 					return err
 				}
 			}
+		} else {
+			l.iterKV = l.iter.Next()
 		}
 		for ; l.iterKV != nil; l.iterKV = l.iter.Next() {
 			if base.InternalCompare(m.heap.cmp, key, l.iterKV.K) < 0 {
@@ -555,7 +557,7 @@ func (m *mergingIter) switchToMaxHeap() error {
 		// Prev on the L2 iterator, it would return h, violating its upper
 		// bound.  Instead, we seek it to < g, and Prev from there.
 
-		if l.iterKV == nil || (l.isSyntheticIterBoundsKey && m.heap.cmp(l.iterKV.K.UserKey, m.upper) >= 0) {
+		if l.isSyntheticIterBoundsKey && m.heap.cmp(l.iterKV.K.UserKey, m.upper) >= 0 {
 			if m.upper != nil {
 				l.iterKV = l.iter.SeekLT(m.upper, base.SeekLTFlagsNone)
 			} else {
@@ -566,6 +568,8 @@ func (m *mergingIter) switchToMaxHeap() error {
 					return err
 				}
 			}
+		} else {
+			l.iterKV = l.iter.Prev()
 		}
 		for ; l.iterKV != nil; l.iterKV = l.iter.Prev() {
 			if base.InternalCompare(m.heap.cmp, key, l.iterKV.K) > 0 {
