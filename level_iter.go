@@ -114,19 +114,13 @@ type levelIter struct {
 	// Pointer into this level's mergingIterLevel.levelIterBoundaryContext.
 	// It's populated when the levelIter is in-use by a mergingIter. It's used
 	// to signal additional semantic meaning about the most recently returned
-	// key. It's currently used to pause at two different types of bounds:
+	// key. It's currently used to pause at one type of bounds:
 	//
 	// - isSyntheticIterBoundsKey is set to true when the iterator has
 	//   user-imposed iteration bounds (l.{lower,upper}), and the levelIter
 	//   reached the user-imposed bound. This signals that the underlying
 	//   iterators are not necessarily exhausted, but iteration has paused to
 	//   avoid unnecessarily loading sstables outside the user-imposed bounds.
-	// - isIgnorableBoundaryKey is set to true when the levelIter returns a
-	//   fake key at one of the bounds of an sstable within the level. It does
-	//   this only when the current sstable contains range deletions. It ensures
-	//   the merging iterator does not move beyond the table until the table's
-	//   range deletions are no longer necessary, even if the table contains
-	//   no more relevant point keys.
 	boundaryContext *levelIterBoundaryContext
 
 	// internalOpts holds the internal iterator options to pass to the table
@@ -137,6 +131,12 @@ type levelIter struct {
 	// property filters specified. See the performance note where
 	// IterOptions.PointKeyFilters is declared.
 	filtersBuf [1]BlockPropertyFilter
+
+	// interleaving is used when rangeDelIterPtr != nil to interleave the
+	// boundaries of range deletions among point keys. This ensures that we
+	// don't advance to a new file until the range deletions are no longer
+	// needed by other levels.
+	interleaving keyspan.InterleavingIter
 
 	// exhaustedDir is set to +1 or -1 when the levelIter has been exhausted in
 	// the forward or backward direction respectively. It is set when the
@@ -519,16 +519,16 @@ func (l *levelIter) loadFile(file *fileMetadata, dir int) loadFileReturnIndicato
 	l.largestBoundary = nil
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 	if l.iterFile == file {
 		if l.err != nil {
 			return noFileLoaded
 		}
 		if l.iter != nil {
-			// We don't bother comparing the file bounds with the iteration bounds when we have
-			// an already open iterator. It is possible that the iter may not be relevant given the
-			// current iteration bounds, but it knows those bounds, so it will enforce them.
+			// We don't bother comparing the file bounds with the iteration
+			// bounds when we have an already open iterator. It is possible that
+			// the iter may not be relevant given the current iteration bounds,
+			// but it knows those bounds, so it will enforce them.
 			if l.rangeDelIterPtr != nil {
 				*l.rangeDelIterPtr = l.rangeDelIterCopy
 			}
@@ -652,7 +652,6 @@ func (l *levelIter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 	l.exhaustedDir = 0
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 	// NB: the top-level Iterator has already adjusted key based on
 	// IterOptions.LowerBound.
@@ -681,7 +680,6 @@ func (l *levelIter) SeekPrefixGE(prefix, key []byte, flags base.SeekGEFlags) *ba
 	l.exhaustedDir = 0
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator has already adjusted key based on
@@ -716,7 +714,6 @@ func (l *levelIter) SeekPrefixGE(prefix, key []byte, flags base.SeekGEFlags) *ba
 			l.largestBoundary = &l.syntheticBoundary
 			if l.boundaryContext != nil {
 				l.boundaryContext.isSyntheticIterBoundsKey = true
-				l.boundaryContext.isIgnorableBoundaryKey = false
 			}
 			return l.verify(l.largestBoundary)
 		}
@@ -757,7 +754,6 @@ func (l *levelIter) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV 
 	l.exhaustedDir = 0
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator has already adjusted key based on
@@ -781,7 +777,6 @@ func (l *levelIter) First() *base.InternalKV {
 	l.exhaustedDir = 0
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator will call SeekGE if IterOptions.LowerBound is
@@ -805,7 +800,6 @@ func (l *levelIter) Last() *base.InternalKV {
 	l.exhaustedDir = 0
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	// NB: the top-level Iterator will call SeekLT if IterOptions.UpperBound is
@@ -832,7 +826,6 @@ func (l *levelIter) Next() *base.InternalKV {
 	}
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	switch {
@@ -874,7 +867,6 @@ func (l *levelIter) NextPrefix(succKey []byte) *base.InternalKV {
 	}
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	switch {
@@ -934,7 +926,6 @@ func (l *levelIter) Prev() *base.InternalKV {
 	}
 	if l.boundaryContext != nil {
 		l.boundaryContext.isSyntheticIterBoundsKey = false
-		l.boundaryContext.isIgnorableBoundaryKey = false
 	}
 
 	switch {

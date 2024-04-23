@@ -57,14 +57,6 @@ type levelIterBoundaryContext struct {
 	// When true, the coincident key is an exclusive sentinel, and the current
 	// direction of iteration has a user-imposed iteration bound.
 	isSyntheticIterBoundsKey bool
-	// isIgnorableBoundaryKey is set to true iff the key returned by the level
-	// iterator is a file boundary key that should be ignored when returning to
-	// the parent iterator. File boundary keys are used by the level iter to
-	// keep a levelIter file's range deletion iterator open as long as other
-	// levels within the merging iterator require it. When used with a user-facing
-	// Iterator, the only range deletions exposed by this mergingIter should be
-	// those with `isSyntheticIterBoundsKey || isIgnorableBoundaryKey`.
-	isIgnorableBoundaryKey bool
 }
 
 // mergingIter provides a merged view of multiple iterators from different
