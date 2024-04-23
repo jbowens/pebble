@@ -129,8 +129,7 @@ func (m *simpleMergingIter) step() bool {
 	item := &m.heap.items[0]
 	l := &m.levels[item.index]
 	// Sentinels are not relevant for this point checking.
-	if !l.isIgnorableBoundaryKey && !item.key.IsExclusiveSentinel() &&
-		item.key.Visible(m.snapshot, base.InternalKeySeqNumMax) {
+	if !item.key.IsExclusiveSentinel() && item.key.Visible(m.snapshot, base.InternalKeySeqNumMax) {
 		// This is a visible point key.
 		if !m.handleVisiblePoint(item, l) {
 			return false
@@ -144,7 +143,7 @@ func (m *simpleMergingIter) step() bool {
 
 	// Step to the next point.
 	l.iterKV = l.iter.Next()
-	if !l.isIgnorableBoundaryKey {
+	if l.iterKV == nil || !l.iterKV.K.IsExclusiveSentinel() {
 		if l.iterKV != nil {
 			// Check point keys in an sstable are ordered. Although not required, we check
 			// for memtables as well. A subtle check here is that successive sstables of

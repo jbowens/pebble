@@ -452,7 +452,7 @@ func (m *mergingIter) switchToMinHeap() error {
 		// Next on the L2 iterator, it would return e, violating its lower
 		// bound.  Instead, we seek it to >= f and Next from there.
 
-		if l.isSyntheticIterBoundsKey && m.heap.cmp(l.iterKV.K.UserKey, m.lower) <= 0 {
+		if l.iterKV != nil && l.iterKV.K.IsExclusiveSentinel() && m.heap.cmp(l.iterKV.K.UserKey, m.lower) <= 0 {
 			if m.lower != nil {
 				l.iterKV = l.iter.SeekGE(m.lower, base.SeekGEFlagsNone)
 			} else {
@@ -485,7 +485,7 @@ func (m *mergingIter) switchToMinHeap() error {
 	// sentinel. Similar to the logic applied to the other levels, in these
 	// cases we seek the iterator to the first key in order to avoid violating
 	// levelIter's invariants. See the example in the for loop above.
-	if cur.isSyntheticIterBoundsKey && m.heap.cmp(cur.iterKV.K.UserKey, m.lower) <= 0 {
+	if cur.iterKV.IsExclusiveSentinel() && m.heap.cmp(cur.iterKV.K.UserKey, m.lower) <= 0 {
 		cur.iterKV = cur.iter.SeekGE(m.lower, base.SeekGEFlagsNone)
 	} else {
 		cur.iterKV = cur.iter.Next()
@@ -549,7 +549,7 @@ func (m *mergingIter) switchToMaxHeap() error {
 		// Prev on the L2 iterator, it would return h, violating its upper
 		// bound.  Instead, we seek it to < g, and Prev from there.
 
-		if l.isSyntheticIterBoundsKey && m.heap.cmp(l.iterKV.K.UserKey, m.upper) >= 0 {
+		if l.iterKV != nil && l.iterKV.K.IsExclusiveSentinel() && m.heap.cmp(l.iterKV.K.UserKey, m.upper) >= 0 {
 			if m.upper != nil {
 				l.iterKV = l.iter.SeekLT(m.upper, base.SeekLTFlagsNone)
 			} else {
@@ -583,7 +583,7 @@ func (m *mergingIter) switchToMaxHeap() error {
 	// cases we seek the iterator to  in order to avoid violating levelIter's
 	// invariants by Prev-ing through files.  See the example in the for loop
 	// above.
-	if cur.isSyntheticIterBoundsKey && m.heap.cmp(cur.iterKV.K.UserKey, m.upper) >= 0 {
+	if cur.iterKV.IsExclusiveSentinel() && m.heap.cmp(cur.iterKV.K.UserKey, m.upper) >= 0 {
 		cur.iterKV = cur.iter.SeekLT(m.upper, base.SeekLTFlagsNone)
 	} else {
 		cur.iterKV = cur.iter.Prev()
@@ -632,7 +632,15 @@ func (m *mergingIter) nextEntry(l *mergingIterLevel, succKey []byte) error {
 	if succKey == nil {
 		l.iterKV = l.iter.Next()
 	} else {
+		pointKeyConclusive := !l.iterKV.IsExclusiveSentinel()
 		l.iterKV = l.iter.NextPrefix(succKey)
+		for l.iterKV != nil && (!pointKeyConclusive || l.iterKV.IsExclusiveSentinel()) {
+			if m.heap.cmp(l.iterKV.K.UserKey, succKey) >= 0 {
+				break
+			}
+			pointKeyConclusive = pointKeyConclusive || !l.iterKV.IsExclusiveSentinel()
+			l.iterKV = l.iter.NextPrefix(succKey)
+		}
 	}
 
 	if l.iterKV == nil {
@@ -795,10 +803,10 @@ func (m *mergingIter) findNextEntry() *base.InternalKV {
 
 		m.addItemStats(item)
 
-		// Skip ignorable boundary keys. These are not real keys and exist to
-		// keep sstables open until we've surpassed their end boundaries so that
-		// their range deletions are visible.
-		if m.levels[item.index].isIgnorableBoundaryKey {
+		// Skip interleaved range deletion boundary keys. These are not real
+		// keys and exist to keep sstables open until we no longer require their
+		// range deletions.
+		if item.iterKV.K.IsExclusiveSentinel() {
 			m.err = m.nextEntry(item, nil /* succKey */)
 			if m.err != nil {
 				return nil
@@ -944,10 +952,10 @@ func (m *mergingIter) findPrevEntry() *base.InternalKV {
 		if m.levels[item.index].isSyntheticIterBoundsKey {
 			break
 		}
-		// Skip ignorable boundary keys. These are not real keys and exist to
-		// keep sstables open until we've surpassed their end boundaries so that
-		// their range deletions are visible.
-		if m.levels[item.index].isIgnorableBoundaryKey {
+		// Skip interleaved range deletion boundary keys. These are not real
+		// keys and exist to keep sstables open until we no longer require their
+		// range deletions.
+		if item.iterKV.K.IsExclusiveSentinel() {
 			m.err = m.prevEntry(item)
 			if m.err != nil {
 				return nil
