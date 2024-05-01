@@ -261,9 +261,10 @@ close-snapshot
 # elision-only compaction because it zeroed sequence numbers of keys with
 # sequence numbers higher than the lowest tombstone sequence number.
 #
-# In the current code, the hint remains but when the hint is resolved. Instead
-# we use FileMetadata.LargestSeqNumAbsolute to ensure that we don't drop keys
-# that previously had higher sequence numbers that have since been zerored.
+# In the current code, the hint remains but when the hint is resolved the hint
+# will not apply to any sstables containing keys that previously had sequence
+# numbers higher than the hint's lowest tombstone sequence number. We use
+# FileMetadata.LargestSeqNumAbsolute for this purpose..
 
 get-hints
 ----

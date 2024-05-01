@@ -398,6 +398,22 @@ type ingestLoadResult struct {
 	externalFilesHaveLevel bool
 }
 
+func (r *ingestLoadResult) ith(i int) *fileMetadata {
+	if i < len(r.local) {
+		return r.local[i].fileMetadata
+	}
+	i -= len(r.local)
+	if i < len(r.shared) {
+		return r.shared[i].fileMetadata
+	}
+	i -= len(r.shared)
+	return r.external[i].fileMetadata
+}
+
+func (r *ingestLoadResult) fileCount() int {
+	return len(r.local) + len(r.shared) + len(r.external)
+}
+
 type ingestLocalMeta struct {
 	*fileMetadata
 	path string
@@ -416,10 +432,6 @@ type ingestExternalMeta struct {
 	// VirtualBackings.Protect() on that backing; we will need to call
 	// Unprotect() after the ingestion.
 	usedExistingBacking bool
-}
-
-func (r *ingestLoadResult) fileCount() int {
-	return len(r.local) + len(r.shared) + len(r.external)
 }
 
 func ingestLoad(
@@ -1568,6 +1580,51 @@ func (d *DB) ingest(
 		return IngestOperationStats{}, err
 	}
 
+	// In order to determine where inthe LSM we should put the ingested
+	// sstables, we must look for overlap with existing data. The new ingested
+	// sstables cannot sit below any conflicting keys that have already been
+	// committed. Once we enter the commit pipeline, we begin to block
+	// concurrently committed batches as any batches with higher sequence
+	// numbers must wait until the ingestion is complete before their sequence
+	// numbers may be published.
+	//
+	// To reduce the impact, we try to perform the read I/O necessary to
+	// determine overlap before we've entered the commit pipeline (and without
+	// holding DB.mu). It's possible the view of the LSM we use for determining
+	// overlap will become outdated by the time we enter the commit pipeline and
+	// acquire our sequence number. To accommodate this race, we record an
+	// inclusive upper bound on the overlapping sequence numbers for each
+	// ingested sstable. When we enter the commit pipeline, we'll use the ...
+	ctx := context.Background()
+	largestOverlappingSeqNums := make([]uint64, loadResult.fileCount())
+	err = func() error {
+		c := &overlapChecker{
+			comparer: d.opts.Comparer,
+			newIters: d.newIters,
+			opts: IterOptions{
+				logger: d.opts.Logger,
+				CategoryAndQoS: sstable.CategoryAndQoS{
+					Category: "pebble-ingest",
+					QoSLevel: sstable.LatencySensitiveQoSLevel,
+				},
+			},
+			readState: d.loadReadState(),
+		}
+		for i := 0; i < loadResult.fileCount(); i++ {
+			var err error
+			bounds := loadResult.ith(i).UserKeyBounds()
+			largestOverlappingSeqNums[i], err = c.largestPossibleOverlappingSeqNum(ctx, bounds)
+			if err != nil {
+				return err
+			}
+		}
+		defer c.readState.unref()
+		return nil
+	}()
+	if err != nil {
+		return IngestOperationStats{}, err
+	}
+
 	// metaFlushableOverlaps is a map indicating which of the ingested sstables
 	// overlap some table in the flushable queue. It's used to approximate
 	// ingest-into-L0 stats when using flushable ingests.
@@ -1821,16 +1878,10 @@ func (d *DB) ingest(
 	}
 
 	info := TableIngestInfo{
-		JobID:     int(jobID),
-		Err:       err,
-		flushable: asFlushable,
-	}
-	if len(loadResult.local) > 0 {
-		info.GlobalSeqNum = loadResult.local[0].SmallestSeqNum
-	} else if len(loadResult.shared) > 0 {
-		info.GlobalSeqNum = loadResult.shared[0].SmallestSeqNum
-	} else {
-		info.GlobalSeqNum = loadResult.external[0].SmallestSeqNum
+		JobID:        int(jobID),
+		Err:          err,
+		GlobalSeqNum: loadResult.ith(0).SmallestSeqNum,
+		flushable:    asFlushable,
 	}
 	var stats IngestOperationStats
 	if ve != nil {
