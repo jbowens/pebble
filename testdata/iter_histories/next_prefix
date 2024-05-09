@@ -43,6 +43,30 @@ n@100: (n@100, .)
 o@100: (o@100, .)
 p@100: (p@100, .)
 
+# NextPrefix from a reverse exhausted position should move on to the first key.
+
+combined-iter
+first
+prev
+next-prefix
+----
+a@100: (a@100, .)
+.
+a@100: (a@100, .)
+
+# NextPrefix from a forward exhausted position should remain exhausted.
+
+combined-iter
+last
+next-prefix
+next-prefix
+prev
+----
+z@1: (z@1, .)
+.
+.
+z@1: (z@1, .)
+
 combined-iter
 seek-ge n@30
 next-prefix
