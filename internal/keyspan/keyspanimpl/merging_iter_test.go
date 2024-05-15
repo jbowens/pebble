@@ -48,6 +48,7 @@ func TestMergingIter(t *testing.T) {
 			buf.Reset()
 			snapshot := base.InternalKeySeqNumMax
 			iters := slices.Clone(definedIters)
+			var lower, upper []byte
 			for _, cmdArg := range td.CmdArgs {
 				switch cmdArg.Key {
 				case "snapshot":
@@ -63,12 +64,19 @@ func TestMergingIter(t *testing.T) {
 					}
 					// The remaining values define probes to attach.
 					iters[i] = keyspan.ParseAndAttachProbes(iters[i], &buf, cmdArg.Vals[1:]...)
+				case "lower":
+					lower = []byte(cmdArg.Vals[0])
+				case "upper":
+					upper = []byte(cmdArg.Vals[0])
 				default:
 					return fmt.Sprintf("unrecognized arg %q", cmdArg.Key)
 				}
 			}
 			var iter MergingIter
 			iter.Init(base.DefaultComparer, keyspan.VisibleTransform(snapshot), new(MergingBuffers), iters...)
+			if lower != nil || upper != nil {
+				iter.SetBounds(lower, upper)
+			}
 			keyspan.RunIterCmd(td.Input, &iter, &buf)
 			return buf.String()
 		default:

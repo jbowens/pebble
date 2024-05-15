@@ -732,3 +732,173 @@ c-d:{(#10,RANGEKEYSET,@1,apples)}
 b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
 a-b:{(#3,RANGEKEYUNSET,@1)}
 <nil>
+
+# Test bounds enforcement during scanning.
+
+iter lower=b upper=k
+seek-ge b
+next
+next
+next
+next
+next
+seek-lt k
+prev
+prev
+prev
+prev
+prev
+----
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+e-f:{}
+g-h:{(#8,RANGEKEYDEL)}
+h-k:{(#5,RANGEKEYDEL)}
+<nil>
+h-k:{(#5,RANGEKEYDEL)}
+g-h:{(#8,RANGEKEYDEL)}
+e-f:{}
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+<nil>
+
+# Test bounds truncation during scanning.
+
+iter lower=boo upper=j
+seek-ge boo
+next
+next
+next
+next
+next
+seek-lt j
+prev
+prev
+prev
+prev
+prev
+----
+boo-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+e-f:{}
+g-h:{(#8,RANGEKEYDEL)}
+h-j:{(#5,RANGEKEYDEL)}
+<nil>
+h-j:{(#5,RANGEKEYDEL)}
+g-h:{(#8,RANGEKEYDEL)}
+e-f:{}
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+boo-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+<nil>
+
+# Test bounds truncation during seeks.
+
+iter lower=boo upper=cat
+seek-ge boo
+seek-ge bux
+seek-ge c
+seek-ge cat
+seek-lt cat
+seek-lt c
+seek-lt bux
+seek-lt boo
+----
+boo-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+boo-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+c-cat:{(#10,RANGEKEYSET,@1,apples)}
+<nil>
+c-cat:{(#10,RANGEKEYSET,@1,apples)}
+boo-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+boo-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+<nil>
+
+# Test bounds enforcement during seeks and ensure switching directions from the
+# bound exhausted position works.
+
+iter upper=dog
+seek-ge d
+prev
+seek-ge dag
+prev
+seek-ge dog
+prev
+----
+<nil>
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+<nil>
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+<nil>
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+
+iter lower=dog
+seek-lt e
+next
+seek-lt doth
+next
+seek-lt dog
+next
+----
+<nil>
+e-f:{}
+<nil>
+e-f:{}
+<nil>
+e-f:{}
+
+# Test seeking to a span that gets truncated by a bound, stepping to exhaust the
+# iteration and then reversing.
+
+iter lower=apple upper=cat
+seek-ge c
+next
+prev
+seek-lt b
+prev
+next
+----
+c-cat:{(#10,RANGEKEYSET,@1,apples)}
+<nil>
+c-cat:{(#10,RANGEKEYSET,@1,apples)}
+apple-b:{(#3,RANGEKEYUNSET,@1)}
+<nil>
+apple-b:{(#3,RANGEKEYUNSET,@1)}
+
+iter upper=d
+seek-lt d
+next
+prev
+prev
+----
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+<nil>
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+
+iter lower=b
+seek-ge b
+prev
+next
+next
+----
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+<nil>
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+
+iter upper=d
+seek-ge e
+prev
+prev
+----
+<nil>
+c-d:{(#10,RANGEKEYSET,@1,apples)}
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+
+iter lower=b
+seek-lt a
+next
+next
+----
+<nil>
+b-c:{(#10,RANGEKEYSET,@1,apples) (#3,RANGEKEYUNSET,@1)}
+c-d:{(#10,RANGEKEYSET,@1,apples)}

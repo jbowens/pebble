@@ -100,6 +100,7 @@ func (ui *UserIteratorConfig) Init(
 	ui.comparer = comparer
 	ui.internalKeys = internalKeys
 	ui.miter.Init(comparer, ui, &bufs.merging, iters...)
+	ui.miter.SetBounds(lower, upper)
 	ui.biter.Init(comparer.Compare, comparer.Split, &ui.miter, lower, upper, hasPrefix, prefix)
 	if internalKeys {
 		ui.diter.Init(comparer, &ui.biter, keyspan.DefragmentInternal, keyspan.StaticDefragmentReducer, &bufs.defragmenting)
@@ -132,6 +133,7 @@ func (ui *UserIteratorConfig) NewLevelIter() *keyspanimpl.LevelIter {
 // interface ordinarily doesn't enforce bounds, so this is exposed as an
 // explicit method on the user iterator config.
 func (ui *UserIteratorConfig) SetBounds(lower, upper []byte) {
+	ui.miter.SetBounds(lower, upper)
 	ui.biter.SetBounds(lower, upper)
 }
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
@@ -174,6 +175,8 @@ type MergingIter struct {
 	// Invariant: None of the levels' iterators contain spans with a bound
 	// between start and end. For all bounds b, b ≤ start || b ≥ end.
 	start, end []byte
+	// lower and upper iteration bounds. Set via SetBounds.
+	lower, upper []byte
 
 	// transformer defines a transformation to be applied to a span before it's
 	// yielded to the user. Transforming may filter individual keys contained
@@ -183,7 +186,15 @@ type MergingIter struct {
 	// destination for transforms. Every tranformed span overwrites the
 	// previous.
 	span keyspan.Span
-	dir  int8
+	// spanValid is true if the contents of span are valid. It's updated to true
+	// when we construct a span in synthesizeKeys. All operations that exhaust
+	// the iterator set spanValid=false except if we can infer that an upper or
+	// lower bound has been reached without stepping the internal iterators. In
+	// this case, we leave spanValid=true, and a subsequent step away from the
+	// bound may return the span without manipulating internal iterators.
+	spanValid bool
+	dir       int8
+	pos       mergingIterPos
 
 	// alloc preallocates mergingIterLevel and mergingIterItems for use by the
 	// merging iterator. As long as the merging iterator is used with
@@ -196,6 +207,24 @@ type MergingIter struct {
 		items  [manifest.NumLevels + 3]mergingIterItem
 	}
 }
+
+type mergingIterPos int8
+
+const (
+	// posAtLowerBound indicates the iterator is exhausted due to reaching the
+	// lower bound. If i.spanValid=true, then i.span holds a valid span that
+	// extends up to the lower bound. A subsequent Next() should return this
+	// span as-is.
+	posAtLowerBound mergingIterPos = -1
+	// posAtIterSpan indicates that the externally-visible span matches the
+	// internal iterator span state.
+	posAtIterSpan mergingIterPos = 0
+	// posAtUpperBound indicates the iterator is exhausted due to reaching the
+	// upper bound. If i.spanValid=true, then i.span holds a valid span that
+	// extends up to the upper bound. A subsequent Prev() should return this
+	// span as-is.
+	posAtUpperBound mergingIterPos = +1
+)
 
 // MergingBuffers holds buffers used while merging keyspans.
 type MergingBuffers struct {
@@ -340,6 +369,13 @@ func (m *MergingIter) AddLevel(iter keyspan.FragmentIterator) {
 // or equal to the given key. This is equivalent to seeking to the first
 // span with an end key greater than the given key.
 func (m *MergingIter) SeekGE(key []byte) (*keyspan.Span, error) {
+	// key is guaranteed to be ≥ m.lower, but is unconstrained with respect to
+	// m.upper. We choose to constrain it up front to ensure we don't position
+	// the iterators beneath the lower bound. This is necessary to ensure that a
+	// subequent Prev() obeys the upper bound.
+	if m.upper != nil && m.comparer.Compare(key, m.upper) > 0 {
+		key = m.upper
+	}
 	// SeekGE(k) seeks to the first span with an end key greater than the given
 	// key. The merged span M that we're searching for might straddle the seek
 	// `key`. In this case, the M.Start may be a key ≤ the seek key.
@@ -383,6 +419,10 @@ func (m *MergingIter) SeekGE(key []byte) (*keyspan.Span, error) {
 	// child iterator to `k`.  For every child span found, we determine the
 	// largest bound ≤ `k` and use it to initialize our max heap. The resulting
 	// root of the max heap is a preliminary value for `M.Start`.
+	m.spanValid = false
+	m.pos = posAtIterSpan
+	m.start = nil
+	m.end = nil
 	for i := range m.levels {
 		l := &m.levels[i]
 		s, err := l.iter.SeekLT(key)
@@ -433,6 +473,9 @@ func (m *MergingIter) SeekGE(key []byte) (*keyspan.Span, error) {
 	// 2). After we switch to a min heap, we'll check for the third case and
 	// adjust the start boundary if necessary.
 	m.start = m.heap.items[0].boundKey.key
+	if m.lower != nil && m.heap.cmp(m.start, m.lower) < 0 {
+		m.start = m.lower
+	}
 
 	// Before switching the direction of the heap, save a copy of the start
 	// boundary if it's the end boundary of some child span. Next-ing the child
@@ -464,6 +507,19 @@ func (m *MergingIter) SeekGE(key []byte) (*keyspan.Span, error) {
 	}
 
 	m.end = m.heap.items[0].boundKey.key
+	// If the end boundary extends beyond the upper bound, truncate the end
+	// boundary to the upper bound.
+	if m.upper != nil && m.comparer.Compare(m.end, m.upper) > 0 {
+		if m.comparer.Compare(key, m.upper) >= 0 {
+			// The caller is permitted to issue a SeekGE(k) where k ≥ the upper
+			// bound, in which case the iterator is exhausted. We performed all
+			// the positioning work to ensure that switching directions behaves
+			// correctly.
+			m.pos = posAtUpperBound
+			return nil, nil
+		}
+		m.end = m.upper
+	}
 	if found, s, err := m.synthesizeKeys(+1); err != nil {
 		return nil, err
 	} else if found && s != nil {
@@ -476,6 +532,13 @@ func (m *MergingIter) SeekGE(key []byte) (*keyspan.Span, error) {
 // given key. This is equivalent to seeking to the last span with a start
 // key less than the given key.
 func (m *MergingIter) SeekLT(key []byte) (*keyspan.Span, error) {
+	// key is guaranteed to be ≤ m.upper, but is unconstrained with respect to
+	// m.lower. We choose to constrain it up front to ensure we don't position
+	// the iterators beneath the lower bound. This is necessary to ensure that a
+	// subequent Next() obeys the lower bound.
+	if m.lower != nil && m.comparer.Compare(key, m.lower) < 0 {
+		key = m.lower
+	}
 	// SeekLT(k) seeks to the last span with a start key less than the given
 	// key. The merged span M that we're searching for might straddle the seek
 	// `key`. In this case, the M.End may be a key ≥ the seek key.
@@ -519,6 +582,10 @@ func (m *MergingIter) SeekLT(key []byte) (*keyspan.Span, error) {
 	// child iterator to `k`. For every child span found, we determine the
 	// smallest bound ≥ `k` and use it to initialize our min heap. The resulting
 	// root of the min heap is a preliminary value for `M.End`.
+	m.spanValid = false
+	m.pos = posAtIterSpan
+	m.start = nil
+	m.end = nil
 	for i := range m.levels {
 		l := &m.levels[i]
 		s, err := l.iter.SeekGE(key)
@@ -569,6 +636,9 @@ func (m *MergingIter) SeekLT(key []byte) (*keyspan.Span, error) {
 	// 2). After we switch to a max heap, we'll check for the third case and
 	// adjust the end boundary if necessary.
 	m.end = m.heap.items[0].boundKey.key
+	if m.upper != nil && m.heap.cmp(m.end, m.upper) > 0 {
+		m.end = m.upper
+	}
 
 	// Before switching the direction of the heap, save a copy of the end
 	// boundary if it's the start boundary of some child span. Prev-ing the
@@ -599,6 +669,19 @@ func (m *MergingIter) SeekLT(key []byte) (*keyspan.Span, error) {
 	}
 
 	m.start = m.heap.items[0].boundKey.key
+	// If the start boundary extends beneath the lower bound, truncate the
+	// start boundary to the lower bound.
+	if m.lower != nil && m.comparer.Compare(m.start, m.lower) < 0 {
+		if m.comparer.Compare(key, m.lower) <= 0 {
+			// The caller is permitted to issue a SeekLT(k) where k ≤ the lower
+			// bound, in which case the iterator is exhausted. We performed all
+			// the positioning work to ensure that switching directions behaves
+			// correctly.
+			m.pos = posAtLowerBound
+			return nil, nil
+		}
+		m.start = m.lower
+	}
 	if found, s, err := m.synthesizeKeys(-1); err != nil {
 		return nil, err
 	} else if found && s != nil {
@@ -609,6 +692,10 @@ func (m *MergingIter) SeekLT(key []byte) (*keyspan.Span, error) {
 
 // First seeks the iterator to the first span.
 func (m *MergingIter) First() (*keyspan.Span, error) {
+	m.pos = posAtIterSpan
+	m.spanValid = false
+	m.start = nil
+	m.end = nil
 	for i := range m.levels {
 		s, err := m.levels[i].iter.First()
 		switch {
@@ -630,6 +717,10 @@ func (m *MergingIter) First() (*keyspan.Span, error) {
 
 // Last seeks the iterator to the last span.
 func (m *MergingIter) Last() (*keyspan.Span, error) {
+	m.pos = posAtIterSpan
+	m.spanValid = false
+	m.start = nil
+	m.end = nil
 	for i := range m.levels {
 		s, err := m.levels[i].iter.Last()
 		switch {
@@ -651,10 +742,22 @@ func (m *MergingIter) Last() (*keyspan.Span, error) {
 
 // Next advances the iterator to the next span.
 func (m *MergingIter) Next() (*keyspan.Span, error) {
-	if m.dir == +1 && (m.end == nil || m.start == nil) {
+	if m.pos == posAtUpperBound && m.dir == +1 && (m.end == nil || m.start == nil) {
 		return nil, nil
 	}
+	// If the iterator is currently exhausted the lower bound, and we didn't
+	// need to invalidate the first span to determine that, we shouldn't move
+	// the internal iterators. We just need to return the currently synthesized
+	// span.
+	if m.pos == posAtLowerBound && m.spanValid {
+		m.pos = posAtIterSpan
+		return &m.span, nil
+	}
 	if m.dir != +1 {
+		if m.spanValid && m.comparer.Equal(m.end, m.upper) {
+			m.pos = posAtUpperBound
+			return nil, nil
+		}
 		if err := m.switchToMinHeap(); err != nil {
 			return nil, err
 		}
@@ -664,15 +767,34 @@ func (m *MergingIter) Next() (*keyspan.Span, error) {
 
 // Prev advances the iterator to the previous span.
 func (m *MergingIter) Prev() (*keyspan.Span, error) {
-	if m.dir == -1 && (m.end == nil || m.start == nil) {
+	if m.pos == posAtLowerBound || m.dir == -1 && (m.end == nil || m.start == nil) {
 		return nil, nil
 	}
+	// If the iterator is currently exhausted the upper bound, and we didn't
+	// need to invalidate the last span to determine that, we shouldn't move
+	// the internal iterators. We just need to return the currently synthesized
+	// span.
+	if m.pos == posAtUpperBound && m.spanValid {
+		m.pos = posAtIterSpan
+		return &m.span, nil
+	}
 	if m.dir != -1 {
+		if m.spanValid && m.comparer.Equal(m.start, m.lower) {
+			m.pos = posAtLowerBound
+			return nil, nil
+		}
 		if err := m.switchToMaxHeap(); err != nil {
 			return nil, err
 		}
 	}
 	return m.findPrevFragmentSet()
+}
+
+// SetBounds sets iteration bounds. The iterator will only return spans that
+// overlap [lower, upper). Returned spans bounds' will be truncated to [lower,
+// upper).
+func (m *MergingIter) SetBounds(lower, upper []byte) {
+	m.lower, m.upper = lower, upper
 }
 
 // Close closes the iterator, releasing all acquired resources.
@@ -755,12 +877,13 @@ func (m *MergingIter) switchToMinHeap() error {
 	if invariants.Enabled {
 		for i := range m.levels {
 			l := &m.levels[i]
-			if l.heapKey.kind != boundKindInvalid && m.comparer.Compare(l.heapKey.key, m.start) > 0 {
+			if m.start != nil && l.heapKey.kind != boundKindInvalid && m.comparer.Compare(l.heapKey.key, m.start) > 0 {
 				panic("pebble: invariant violation: max-heap key > m.start")
 			}
 		}
 	}
 
+	m.spanValid = false
 	for i := range m.levels {
 		if err := m.levels[i].next(); err != nil {
 			return err
@@ -810,12 +933,13 @@ func (m *MergingIter) switchToMaxHeap() error {
 	if invariants.Enabled {
 		for i := range m.levels {
 			l := &m.levels[i]
-			if l.heapKey.kind != boundKindInvalid && m.comparer.Compare(l.heapKey.key, m.end) < 0 {
+			if m.end != nil && l.heapKey.kind != boundKindInvalid && m.comparer.Compare(l.heapKey.key, m.end) < 0 {
 				panic("pebble: invariant violation: min-heap key < m.end")
 			}
 		}
 	}
 
+	m.spanValid = false
 	for i := range m.levels {
 		if err := m.levels[i].prev(); err != nil {
 			return err
@@ -832,6 +956,16 @@ func (m *MergingIter) findNextFragmentSet() (*keyspan.Span, error) {
 	// below loop will still consider [b,d) before continuing to [d, e)). It
 	// returns when it finds a span that is covered by at least one key.
 
+	// If we have an upper bound and the heap root is already at or above
+	// the upper bound, the iterator is exhausted.
+	if m.upper != nil && m.heap.len() > 0 && m.comparer.Compare(m.heap.items[0].boundKey.key, m.upper) >= 0 {
+		// The iterator is exhausted.
+		m.pos = posAtUpperBound
+		return nil, nil
+	}
+
+	m.spanValid = false
+	m.pos = posAtIterSpan
 	for m.heap.len() > 0 {
 		// Initialize the next span's start bound. SeekGE and First prepare the
 		// heap without advancing. Next leaves the heap in a state such that the
@@ -887,6 +1021,12 @@ func (m *MergingIter) findNextFragmentSet() (*keyspan.Span, error) {
 		// It must become the end bound for the span we will return to the user.
 		// In the above example, the root of the heap is L1's end(d).
 		m.end = m.heap.items[0].boundKey.key
+		// If the end boundary extends beyond the upper bound, truncate the
+		// end boundary to the upper bound.
+		endBoundaryMeetsUpperBound := m.upper != nil && m.comparer.Compare(m.end, m.upper) >= 0
+		if endBoundaryMeetsUpperBound {
+			m.end = m.upper
+		}
 
 		// Each level within m.levels may have a span that overlaps the
 		// fragmented key span [m.start, m.end). Update m.keys to point to them
@@ -902,6 +1042,12 @@ func (m *MergingIter) findNextFragmentSet() (*keyspan.Span, error) {
 		} else if found && s != nil {
 			return s, nil
 		}
+		// If the span we just considered extended to the upper bound, there are
+		// no more spans to consider in the forward direction.
+		if endBoundaryMeetsUpperBound {
+			m.pos = posAtUpperBound
+			return nil, nil
+		}
 	}
 	// Exhausted.
 	m.clear()
@@ -915,6 +1061,16 @@ func (m *MergingIter) findPrevFragmentSet() (*keyspan.Span, error) {
 	// below loop will still consider [b,d) before continuing to [a, b)). It
 	// returns when it finds a span that is covered by at least one key.
 
+	// If we have a lower bound and the heap root is already at or below
+	// the lower bound, the iterator is exhausted.
+	if m.lower != nil && m.heap.len() > 0 && m.comparer.Compare(m.heap.items[0].boundKey.key, m.lower) <= 0 {
+		// The iterator is exhausted.
+		m.pos = posAtLowerBound
+		return nil, nil
+	}
+
+	m.spanValid = false
+	m.pos = posAtIterSpan
 	for m.heap.len() > 0 {
 		// Initialize the next span's end bound. SeekLT and Last prepare the
 		// heap without advancing. Prev leaves the heap in a state such that the
@@ -969,6 +1125,12 @@ func (m *MergingIter) findPrevFragmentSet() (*keyspan.Span, error) {
 		// It must become the start bound for the span we will return to the
 		// user. In the above example, the root of the heap is L1's start(a).
 		m.start = m.heap.items[0].boundKey.key
+		// If the start boundary extends beneath the lower bound, truncate the
+		// start boundary to the lower bound.
+		startBoundaryMeetsLowerBound := m.lower != nil && m.comparer.Compare(m.start, m.lower) <= 0
+		if startBoundaryMeetsLowerBound {
+			m.start = m.lower
+		}
 
 		// Each level within m.levels may have a set of keys that overlap the
 		// fragmented key span [m.start, m.end). Update m.keys to point to them
@@ -983,6 +1145,12 @@ func (m *MergingIter) findPrevFragmentSet() (*keyspan.Span, error) {
 			return nil, err
 		} else if found && s != nil {
 			return s, nil
+		}
+		// If the span we just considered extended to the lower bound, there are
+		// no more spans to consider in the backward direction.
+		if startBoundaryMeetsLowerBound {
+			m.pos = posAtLowerBound
+			return nil, nil
 		}
 	}
 	// Exhausted.
@@ -1043,6 +1211,17 @@ func (m *MergingIter) synthesizeKeys(dir int8) (bool, *keyspan.Span, error) {
 	if err := m.transformer.Transform(m.comparer.Compare, m.span, &m.span); err != nil {
 		return false, nil, err
 	}
+	m.spanValid = found
+	if invariants.Enabled {
+		switch {
+		case m.lower != nil && m.comparer.Compare(m.start, m.lower) < 0:
+			panic(errors.AssertionFailedf("pebble: invariant violation: start < lower: %q < %q", m.start, m.lower))
+		case m.upper != nil && m.comparer.Compare(m.end, m.upper) > 0:
+			panic(errors.AssertionFailedf("pebble: invariant violation: end > upper: %q > %q", m.end, m.upper))
+		case m.upper != nil && m.comparer.Compare(m.start, m.end) >= 0:
+			panic(errors.AssertionFailedf("pebble: invariant violation: start >= end: %q >= %q", m.start, m.end))
+		}
+	}
 	return found, &m.span, nil
 }
 
@@ -1050,6 +1229,7 @@ func (m *MergingIter) clear() {
 	for fi := range m.keys {
 		m.keys[fi] = keyspan.Key{}
 	}
+	m.spanValid = false
 	m.keys = m.keys[:0]
 }
 

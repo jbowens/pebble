@@ -53,8 +53,6 @@ type BoundedIter struct {
 	iterSpan  *Span
 	cmp       base.Compare
 	split     base.Split
-	lower     []byte
-	upper     []byte
 	hasPrefix *bool
 	prefix    *[]byte
 	pos       boundedIterPos
@@ -81,8 +79,6 @@ func (i *BoundedIter) Init(
 		iter:      iter,
 		cmp:       cmp,
 		split:     split,
-		lower:     lower,
-		upper:     upper,
 		hasPrefix: hasPrefix,
 		prefix:    prefix,
 	}
@@ -103,30 +99,26 @@ var _ FragmentIterator = (*BoundedIter)(nil)
 func (i *BoundedIter) SeekGE(key []byte) (*Span, error) {
 	s, err := i.iter.SeekGE(key)
 	s, err = i.checkPrefixSpanStart(s, err)
-	s, err = i.checkPrefixSpanEnd(s, err)
-	return i.checkForwardBound(s, err)
+	return i.checkPrefixSpanEnd(s, err)
 }
 
 // SeekLT implements FragmentIterator.
 func (i *BoundedIter) SeekLT(key []byte) (*Span, error) {
 	s, err := i.iter.SeekLT(key)
 	s, err = i.checkPrefixSpanStart(s, err)
-	s, err = i.checkPrefixSpanEnd(s, err)
-	return i.checkBackwardBound(s, err)
+	return i.checkPrefixSpanEnd(s, err)
 }
 
 // First implements FragmentIterator.
 func (i *BoundedIter) First() (*Span, error) {
 	s, err := i.iter.First()
-	s, err = i.checkPrefixSpanStart(s, err)
-	return i.checkForwardBound(s, err)
+	return i.checkPrefixSpanStart(s, err)
 }
 
 // Last implements FragmentIterator.
 func (i *BoundedIter) Last() (*Span, error) {
 	s, err := i.iter.Last()
-	s, err = i.checkPrefixSpanEnd(s, err)
-	return i.checkBackwardBound(s, err)
+	return i.checkPrefixSpanEnd(s, err)
 }
 
 // Next implements FragmentIterator.
@@ -140,13 +132,6 @@ func (i *BoundedIter) Next() (*Span, error) {
 		i.pos = posAtIterSpan
 		return i.iterSpan, nil
 	case posAtIterSpan:
-		// If the span at the underlying iterator position extends to or beyond the
-		// upper bound, we can avoid advancing because the next span is necessarily
-		// out of bounds.
-		if i.iterSpan != nil && i.upper != nil && i.cmp(i.iterSpan.End, i.upper) >= 0 {
-			i.pos = posAtUpperLimit
-			return nil, nil
-		}
 		// Similarly, if the span extends to the next prefix and we're in prefix
 		// iteration mode, we can avoid advancing.
 		if i.iterSpan != nil && i.hasPrefix != nil && *i.hasPrefix {
@@ -156,7 +141,7 @@ func (i *BoundedIter) Next() (*Span, error) {
 				return nil, nil
 			}
 		}
-		return i.checkForwardBound(i.checkPrefixSpanStart(i.iter.Next()))
+		return i.checkPrefixSpanStart(i.iter.Next())
 	case posAtUpperLimit:
 		// Already exhausted.
 		return nil, nil
@@ -172,13 +157,6 @@ func (i *BoundedIter) Prev() (*Span, error) {
 		// Already exhausted.
 		return nil, nil
 	case posAtIterSpan:
-		// If the span at the underlying iterator position extends to or beyond
-		// the lower bound, we can avoid advancing because the previous span is
-		// necessarily out of bounds.
-		if i.iterSpan != nil && i.lower != nil && i.cmp(i.iterSpan.Start, i.lower) <= 0 {
-			i.pos = posAtLowerLimit
-			return nil, nil
-		}
 		// Similarly, if the span extends to or beyond the current prefix and
 		// we're in prefix iteration mode, we can avoid advancing.
 		if i.iterSpan != nil && i.hasPrefix != nil && *i.hasPrefix {
@@ -188,7 +166,7 @@ func (i *BoundedIter) Prev() (*Span, error) {
 				return nil, nil
 			}
 		}
-		return i.checkBackwardBound(i.checkPrefixSpanEnd(i.iter.Prev()))
+		return i.checkPrefixSpanEnd(i.iter.Prev())
 	case posAtUpperLimit:
 		// The BoundedIter had previously returned nil, because it knew from
 		// i.iterSpan's bounds that there was no next span. To Prev, we only
@@ -208,7 +186,6 @@ func (i *BoundedIter) Close() error {
 
 // SetBounds modifies the FragmentIterator's bounds.
 func (i *BoundedIter) SetBounds(lower, upper []byte) {
-	i.lower, i.upper = lower, upper
 }
 
 func (i *BoundedIter) checkPrefixSpanStart(span *Span, err error) (*Span, error) {
@@ -223,41 +200,11 @@ func (i *BoundedIter) checkPrefixSpanStart(span *Span, err error) (*Span, error)
 	return span, err
 }
 
-// checkForwardBound enforces the upper bound, returning nil if the provided
-// span is wholly outside the upper bound. It also updates i.pos and i.iterSpan
-// to reflect the new iterator position.
-func (i *BoundedIter) checkForwardBound(span *Span, err error) (*Span, error) {
-	// Compare to the upper bound.
-	if span != nil && i.upper != nil && i.cmp(span.Start, i.upper) >= 0 {
-		span = nil
-	}
-	i.iterSpan = span
-	if i.pos != posAtIterSpan {
-		i.pos = posAtIterSpan
-	}
-	return span, err
-}
-
 func (i *BoundedIter) checkPrefixSpanEnd(span *Span, err error) (*Span, error) {
 	// Compare to the prefix's bounds, if in prefix iteration mode.
 	if span != nil && i.hasPrefix != nil && *i.hasPrefix && i.cmp(span.End, *i.prefix) <= 0 {
 		// This span ends before the current prefix.
 		span = nil
-	}
-	return span, err
-}
-
-// checkBackward enforces the lower bound, returning nil if the provided span is
-// wholly outside the lower bound.  It also updates i.pos and i.iterSpan to
-// reflect the new iterator position.
-func (i *BoundedIter) checkBackwardBound(span *Span, err error) (*Span, error) {
-	// Compare to the lower bound.
-	if span != nil && i.lower != nil && i.cmp(span.End, i.lower) <= 0 {
-		span = nil
-	}
-	i.iterSpan = span
-	if i.pos != posAtIterSpan {
-		i.pos = posAtIterSpan
 	}
 	return span, err
 }
