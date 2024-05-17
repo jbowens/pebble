@@ -7,6 +7,7 @@ package rowblk
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/crdbtest"
 	"github.com/cockroachdb/pebble/internal/itertest"
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/sstable/block"
@@ -767,4 +769,75 @@ func BenchmarkBlockIterPrev(b *testing.B) {
 			}
 		}
 	}
+}
+
+func BenchmarkCockroachDataBlockWriter(b *testing.B) {
+	for _, prefixSize := range []int{8, 32, 128} {
+		for _, valueSize := range []int{8, 128, 1024} {
+			b.Run(fmt.Sprintf("prefix=%d,value=%d", prefixSize, valueSize), func(b *testing.B) {
+				benchmarkCockroachDataBlockWriter(b, prefixSize, valueSize)
+			})
+		}
+	}
+}
+
+func benchmarkCockroachDataBlockWriter(b *testing.B, prefixSize, valueSize int) {
+	const targetBlockSize = 32 << 10
+	seed := uint64(time.Now().UnixNano())
+	rng := rand.New(rand.NewSource(seed))
+	keys, values := makeCockroachRandomKVs(rng, prefixSize, valueSize, targetBlockSize)
+
+	var w Writer
+	b.ResetTimer()
+	var lastPrefix []byte
+
+	for i := 0; i < b.N; i++ {
+		w.Reset()
+		var j int
+		for w.EstimatedSize() < targetBlockSize {
+			ik := base.MakeInternalKey(keys[j], base.SeqNum(rng.Uint64n(uint64(base.SeqNumMax))), base.InternalKeyKindSet)
+			var samePrefix bool
+			if j > 0 {
+				prefix := crdbtest.Comparer.Split.Prefix(keys[j])
+				samePrefix = bytes.Equal(prefix, lastPrefix)
+				lastPrefix = prefix
+			}
+
+			w.AddWithOptionalValuePrefix(
+				ik,
+				false, /* isObsolete */
+				values[j],
+				len(ik.UserKey), /* maxSharedKeyLen */
+				true,            /* addValuePrefix */
+				block.InPlaceValuePrefix(samePrefix),
+				samePrefix, /* setHasSameKeyPrefix */
+			)
+			w.Add(ik, values[j])
+			j++
+		}
+		w.Finish()
+	}
+}
+
+func makeCockroachRandomKVs(
+	rng *rand.Rand, prefixSize, valueSize int, aggregateSize int,
+) (keys, vals [][]byte) {
+	keys = make([][]byte, aggregateSize/valueSize+1)
+	vals = make([][]byte, len(keys))
+	for i := range keys {
+		keys[i] = randCockroachKey(rng, make([]byte, prefixSize+crdbtest.MaxSuffixLen), prefixSize)
+		vals[i] = make([]byte, valueSize)
+		rng.Read(vals[i])
+	}
+	slices.SortFunc(keys, crdbtest.Compare)
+	return keys, vals
+}
+
+func randCockroachKey(rng *rand.Rand, buf []byte, prefixLen int) []byte {
+	wallTime := uint64(time.Now().UnixNano()) + rng.Uint64n(uint64(time.Hour))
+	key := buf[:prefixLen]
+	for i := 0; i < prefixLen; i++ {
+		buf[i] = byte(rng.Intn(26) + 'a')
+	}
+	return crdbtest.EncodeTimestamp(key, wallTime, 0)
 }

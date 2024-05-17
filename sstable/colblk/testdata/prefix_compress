@@ -1,0 +1,66 @@
+compress bundle-size=4
+|
+----
+----
+Size: 6
+nKeys=0; bundleSize=4; nOffsets16=1
+nBundles=0; blockPrefixLen=0; currentBundleLen=0; currentBundleKeys=0
+Offsets:
+  0000
+Data (len=0):
+
+-
+----
+----
+
+compress bundle-size=4
+|a|b|
+----
+Size: 11
+nKeys=0; bundleSize=4; nOffsets16=3
+nBundles=0; blockPrefixLen=0; currentBundleLen=0; currentBundleKeys=0
+Offsets:
+  0000  0001  0002
+Data (len=2):
+ab
+-
+ab
+
+compress bundle-size=4
+|a|b|c|
+----
+Size: 13
+nKeys=0; bundleSize=4; nOffsets16=4
+nBundles=0; blockPrefixLen=0; currentBundleLen=0; currentBundleKeys=0
+Offsets:
+  0000  0001  0002  0003
+Data (len=3):
+abc
+-
+ab
+
+compress bundle-size=4
+|ab||abc|
+----
+Size: 14
+nKeys=0; bundleSize=4; nOffsets16=4
+nBundles=0; blockPrefixLen=0; currentBundleLen=0; currentBundleKeys=0
+Offsets:
+  0000  0002  0002  0005
+Data (len=5):
+ababc
+-
+abc
+
+compress bundle-size=4
+|ab||abc|abd|
+----
+Size: 16
+nKeys=0; bundleSize=4; nOffsets16=5
+nBundles=0; blockPrefixLen=0; currentBundleLen=0; currentBundleKeys=0
+Offsets:
+  0000  0002  0002  0005  0008
+Data (len=8):
+ababcabd
+-
+abcd

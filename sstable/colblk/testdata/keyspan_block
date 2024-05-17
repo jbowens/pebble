@@ -1,0 +1,279 @@
+init
+----
+size=36 header=35:
+0:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+1:int32        allnull,rows=0,size=0,nulls=0
+2:int64        allnull,rows=0,size=0,nulls=0
+3:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+4:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+
+add
+a-b:{(#0,RANGEDEL)}
+----
+size=65 header=35:
+0:bytes        default,rows=2,size=11,nulls=0,n16=3,n32=0
+1:int32        constant,rows=1,size=4,nulls=0
+2:int64        constant,rows=1,size=8,nulls=0
+3:bytes        allnull,rows=1,size=0,nulls=1,n16=0,n32=0
+4:bytes        allnull,rows=1,size=0,nulls=1,n16=0,n32=0
+
+add
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+----
+size=81 header=35:
+0:bytes        default,rows=3,size=14,nulls=0,n16=4,n32=0
+1:int32        delta8,rows=4,size=9,nulls=0
+2:int64        delta16,rows=4,size=16,nulls=0
+3:bytes        allnull,rows=4,size=0,nulls=4,n16=0,n32=0
+4:bytes        allnull,rows=4,size=0,nulls=4,n16=0,n32=0
+
+add
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+----
+size=85 header=35:
+0:bytes        default,rows=4,size=17,nulls=0,n16=5,n32=0
+1:int32        delta8,rows=6,size=12,nulls=0
+2:int64        delta16,rows=6,size=26,nulls=0
+3:bytes        allnull,rows=6,size=0,nulls=6,n16=0,n32=0
+4:bytes        allnull,rows=6,size=0,nulls=6,n16=0,n32=0
+
+add
+d-e:{(#0,RANGEDEL)}
+----
+size=95 header=35:
+0:bytes        default,rows=5,size=20,nulls=0,n16=6,n32=0
+1:int32        delta8,rows=7,size=12,nulls=0
+2:int64        delta16,rows=7,size=23,nulls=0
+3:bytes        allnull,rows=7,size=0,nulls=7,n16=0,n32=0
+4:bytes        allnull,rows=7,size=0,nulls=7,n16=0,n32=0
+
+finish
+----
+05000000050007000000062300000064370000008543000000265e000000265e
+0000000600000000010002000300040005006162636465000000000000010101
+02020300000000000f00000000000000000000640014000000640000000001
+# keyspan block header
+00-04: x 05000000         # user key count: 5
+# columnar block header
+04-06: x 0500             # 5 columns
+06-10: x 07000000         # 7 rows
+# column 0
+10-11: b 00000110         # bytes
+11-15: x 23000000         # page start 35
+# column 1
+15-16: b 01100100         # int32+delta8
+16-20: x 37000000         # page start 55
+# column 2
+20-21: b 10000101         # int64+delta16
+21-25: x 43000000         # page start 67
+# column 3
+25-26: b 00100110         # bytes+allnull
+26-30: x 5e000000         # page start 94
+# column 4
+30-31: b 00100110         # bytes+allnull
+31-35: x 5e000000         # page start 94
+# Data for column 0
+# RawBytes
+35-37: x 0600             # 16-bit offset count: 6
+37-38: x 00               # padding to align offsets table
+38-40: x 0000             # off[0]: 0 [overall 50]
+40-42: x 0100             # off[1]: 1 [overall 51]
+42-44: x 0200             # off[2]: 2 [overall 52]
+44-46: x 0300             # off[3]: 3 [overall 53]
+46-48: x 0400             # off[4]: 4 [overall 54]
+48-50: x 0500             # off[5]: 5 [overall 55]
+50-51: x 61               # data[0]: a
+51-52: x 62               # data[1]: b
+52-53: x 63               # data[2]: c
+53-54: x 64               # data[3]: d
+54-55: x 65               # data[4]: e
+# Data for column 1
+55-56: x 00               # padding to align to 32-bit
+56-60: x 00000000         # 32-bit constant: 0
+60-61: x 00               # data[0] = 0
+61-62: x 01               # data[1] = 1
+62-63: x 01               # data[2] = 1
+63-64: x 01               # data[3] = 1
+64-65: x 02               # data[4] = 2
+65-66: x 02               # data[5] = 2
+66-67: x 03               # data[6] = 3
+# Data for column 2
+67-72: x 0000000000       # padding to align to 64-bit
+72-80: x 0f00000000000000 # 64-bit constant: 15
+80-82: x 0000             # data[0] = 0
+82-84: x 0064             # data[1] = 25600
+84-86: x 0014             # data[2] = 5120
+86-88: x 0000             # data[3] = 0
+88-90: x 0064             # data[4] = 25600
+90-92: x 0000             # data[5] = 0
+92-94: x 0000             # data[6] = 0
+# Data for column 3
+# Data for column 4
+
+# Test iterating over the block's spans.
+
+iter
+seek-ge a
+seek-ge apple
+seek-ge b
+seek-ge banana
+seek-ge c
+seek-ge coconut
+seek-ge d
+seek-ge dragonfruit
+seek-ge e
+seek-ge z
+----
+a-b:{(#0,RANGEDEL)}
+a-b:{(#0,RANGEDEL)}
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+d-e:{(#0,RANGEDEL)}
+d-e:{(#0,RANGEDEL)}
+.
+.
+
+iter
+seek-lt z
+seek-lt e
+seek-lt dragonfruit
+seek-lt d
+----
+d-e:{(#0,RANGEDEL)}
+d-e:{(#0,RANGEDEL)}
+d-e:{(#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+
+iter
+first
+next
+next
+next
+next
+prev
+prev
+prev
+prev
+prev
+----
+a-b:{(#0,RANGEDEL)}
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+d-e:{(#0,RANGEDEL)}
+.
+d-e:{(#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+a-b:{(#0,RANGEDEL)}
+.
+
+iter
+last
+prev
+prev
+prev
+prev
+next
+next
+next
+next
+next
+----
+d-e:{(#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+a-b:{(#0,RANGEDEL)}
+.
+a-b:{(#0,RANGEDEL)}
+b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
+c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
+d-e:{(#0,RANGEDEL)}
+.
+
+init
+----
+size=36 header=35:
+0:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+1:int32        allnull,rows=0,size=0,nulls=0
+2:int64        allnull,rows=0,size=0,nulls=0
+3:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+4:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+
+add
+b-d:{(#4,RANGEKEYSET,@3,coconut)}
+----
+size=86 header=35:
+0:bytes        default,rows=2,size=10,nulls=0,n16=3,n32=0
+1:int32        constant,rows=1,size=4,nulls=0
+2:int64        constant,rows=1,size=12,nulls=0
+3:bytes        default,rows=1,size=8,nulls=0,n16=2,n32=0
+4:bytes        default,rows=1,size=13,nulls=0,n16=2,n32=0
+
+finish
+----
+020000000500010000000623000000442e000000453400000006400000000648
+0000000300000000010002006264000000000000000000001504000000000000
+0200000002004033020000000700636f636f6e757401
+# keyspan block header
+00-04: x 02000000         # user key count: 2
+# columnar block header
+04-06: x 0500             # 5 columns
+06-10: x 01000000         # 1 rows
+# column 0
+10-11: b 00000110         # bytes
+11-15: x 23000000         # page start 35
+# column 1
+15-16: b 01000100         # int32+constant
+16-20: x 2e000000         # page start 46
+# column 2
+20-21: b 01000101         # int64+constant
+21-25: x 34000000         # page start 52
+# column 3
+25-26: b 00000110         # bytes
+26-30: x 40000000         # page start 64
+# column 4
+30-31: b 00000110         # bytes
+31-35: x 48000000         # page start 72
+# Data for column 0
+# RawBytes
+35-37: x 0300             # 16-bit offset count: 3
+37-38: x 00               # padding to align offsets table
+38-40: x 0000             # off[0]: 0 [overall 44]
+40-42: x 0100             # off[1]: 1 [overall 45]
+42-44: x 0200             # off[2]: 2 [overall 46]
+44-45: x 62               # data[0]: b
+45-46: x 64               # data[1]: d
+# Data for column 1
+46-48: x 0000             # padding to align to 32-bit
+48-52: x 00000000         # 32-bit constant: 0
+# Data for column 2
+52-56: x 00000000         # padding to align to 64-bit
+56-64: x 1504000000000000 # 64-bit constant: 1045
+# Data for column 3
+# RawBytes
+64-66: x 0200             # 16-bit offset count: 2
+66-68: x 0000             # off[0]: 0 [overall 70]
+68-70: x 0200             # off[1]: 2 [overall 72]
+70-72: x 4033             # data[0]: @3
+# Data for column 4
+# RawBytes
+72-74: x 0200             # 16-bit offset count: 2
+74-76: x 0000             # off[0]: 0 [overall 78]
+76-78: x 0700             # off[1]: 7 [overall 85]
+78-85: x 636f636f6e7574   # data[0]: coconut
+85-86: x 01               # ???
+
+iter
+seek-ge a
+next
+prev
+prev
+next
+----
+b-d:{(#4,RANGEKEYSET,@3,coconut)}
+.
+b-d:{(#4,RANGEKEYSET,@3,coconut)}
+.
+b-d:{(#4,RANGEKEYSET,@3,coconut)}

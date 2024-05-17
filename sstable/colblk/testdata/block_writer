@@ -1,0 +1,375 @@
+init schema=(prefixbytes,bytes)
+----
+size=17 header=16:
+0:prefixbytes(16) allnull,rows=0,size=0,nulls=0
+1:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+
+write
+apple       @3
+----
+size=41 header=16:
+0:prefixbytes(16) default,rows=1,size=14,nulls=0
+1:bytes        default,rows=1,size=9,nulls=0,n16=2,n32=0
+
+write
+avocado     @2
+----
+size=53 header=16:
+0:prefixbytes(16) default,rows=2,size=22,nulls=0
+1:bytes        default,rows=2,size=13,nulls=0,n16=3,n32=0
+
+finish
+----
+# columnar block header
+00-02: x 0200                 # 2 columns
+02-06: x 02000000             # 2 rows
+# column 0
+06-07: b 00000111             # prefixbytes
+07-11: x 10000000             # page start 16
+# column 1
+11-12: b 00000110             # bytes
+12-16: x 27000000             # page start 39
+# Data for column 0
+16-26: x 04040000010001000500 # ???
+26-36: x 0b006170706c65766f63 # ???
+36-39: x 61646f               # ???
+# Data for column 1
+# RawBytes
+39-41: x 0300                 # 16-bit offset count: 3
+41-42: x 00                   # padding to align offsets table
+42-44: x 0000                 # off[0]: 0 [overall 48]
+44-46: x 0200                 # off[1]: 2 [overall 50]
+46-48: x 0400                 # off[2]: 4 [overall 52]
+48-50: x 4033                 # data[0]: @3
+50-52: x 4032                 # data[1]: @2
+52-53: x 00                   # ???
+
+# Test an int64 column with all zeroes. It should be encoded as a single 64-bit
+# constant.
+
+init schema=(int64)
+----
+size=12 header=11:
+0:int64        allnull,rows=0,size=0,nulls=0
+
+write
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+----
+size=25 header=11:
+0:int64        constant,rows=10,size=15,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0100             # 1 columns
+02-06: x 0a000000         # 10 rows
+# column 0
+06-07: b 01000101         # int64+constant
+07-11: x 0b000000         # page start 11
+# Data for column 0
+11-16: x 0000000000       # padding to align to 64-bit
+16-24: x 0000000000000000 # 64-bit constant: 0
+24-25: x 00               # ???
+
+# Test an int64 column with all values equal but non-zero.
+
+init schema=(int64)
+----
+size=12 header=11:
+0:int64        allnull,rows=0,size=0,nulls=0
+
+write
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+9223372036854775807
+----
+size=25 header=11:
+0:int64        constant,rows=12,size=15,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0100             # 1 columns
+02-06: x 0c000000         # 12 rows
+# column 0
+06-07: b 01000101         # int64+constant
+07-11: x 0b000000         # page start 11
+# Data for column 0
+11-16: x 0000000000       # padding to align to 64-bit
+16-24: x ffffffffffffff7f # 64-bit constant: 4294967295
+24-25: x 00               # ???
+
+# Test an int64 column with a mix of values, but all values less than 256
+# greater than 4149660732785475243. It should use the delta8 encoding.
+
+init schema=(int64)
+----
+size=12 header=11:
+0:int64        allnull,rows=0,size=0,nulls=0
+
+write
+4149660732785475244
+4149660732785475243
+4149660732785475294
+4149660732785475324
+4149660732785475390
+----
+size=30 header=11:
+0:int64        delta8,rows=5,size=15,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0100             # 1 columns
+02-06: x 05000000         # 5 rows
+# column 0
+06-07: b 01100101         # int64+delta8
+07-11: x 0b000000         # page start 11
+# Data for column 0
+11-16: x 0000000000       # padding to align to 64-bit
+16-24: x abbe105c738e9639 # 64-bit constant: 1544601259
+24-25: x 01               # data[0] = 1
+25-26: x 00               # data[1] = 0
+26-27: x 33               # data[2] = 51
+27-28: x 51               # data[3] = 81
+28-29: x 93               # data[4] = 147
+29-30: x 00               # ???
+
+# Test the same case, but this time with a value that is exactly 256 greater
+# than the lowest value. The column should use the delta16 encoding.
+
+init schema=(int64)
+----
+size=12 header=11:
+0:int64        allnull,rows=0,size=0,nulls=0
+
+write
+4149660732785475244
+4149660732785475243
+4149660732785475294
+4149660732785475499
+4149660732785475324
+4149660732785475390
+----
+size=37 header=11:
+0:int64        delta16,rows=6,size=23,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0100             # 1 columns
+02-06: x 06000000         # 6 rows
+# column 0
+06-07: b 10000101         # int64+delta16
+07-11: x 0b000000         # page start 11
+# Data for column 0
+11-16: x 0000000000       # padding to align to 64-bit
+16-24: x abbe105c738e9639 # 64-bit constant: 1544601259
+24-26: x 0100             # data[0] = 1
+26-28: x 0000             # data[1] = 0
+28-30: x 3300             # data[2] = 51
+30-32: x 0001             # data[3] = 256
+32-34: x 5100             # data[4] = 81
+34-36: x 9300             # data[5] = 147
+36-37: x 00               # ???
+
+init schema=(int64)
+----
+size=12 header=11:
+0:int64        allnull,rows=0,size=0,nulls=0
+
+write
+0
+1
+2
+3
+4
+5
+6
+2147483647
+65536
+----
+size=61 header=11:
+0:int64        delta32,rows=9,size=47,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0100             # 1 columns
+02-06: x 09000000         # 9 rows
+# column 0
+06-07: b 10100101         # int64+delta32
+07-11: x 0b000000         # page start 11
+# Data for column 0
+11-16: x 0000000000       # padding to align to 64-bit
+16-24: x 0000000000000000 # 64-bit constant: 0
+24-28: x 00000000         # data[0] = 0
+28-32: x 01000000         # data[1] = 1
+32-36: x 02000000         # data[2] = 2
+36-40: x 03000000         # data[3] = 3
+40-44: x 04000000         # data[4] = 4
+44-48: x 05000000         # data[5] = 5
+48-52: x 06000000         # data[6] = 6
+52-56: x ffffff7f         # data[7] = 2147483647
+56-60: x 00000100         # data[8] = 65536
+60-61: x 00               # ???
+
+init schema=(int32,int64)
+----
+size=17 header=16:
+0:int32        allnull,rows=0,size=0,nulls=0
+1:int64        allnull,rows=0,size=0,nulls=0
+
+write
+0 0
+1 1
+2 2
+3 3
+4 4
+5 5
+6 6
+7 7
+8 8
+9 9
+----
+size=51 header=16:
+0:int32        delta8,rows=10,size=15,nulls=0
+1:int64        delta8,rows=10,size=24,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0200             # 2 columns
+02-06: x 0a000000         # 10 rows
+# column 0
+06-07: b 01100100         # int32+delta8
+07-11: x 10000000         # page start 16
+# column 1
+11-12: b 01100101         # int64+delta8
+12-16: x 1e000000         # page start 30
+# Data for column 0
+16-20: x 00000000         # 32-bit constant: 0
+20-21: x 00               # data[0] = 0
+21-22: x 01               # data[1] = 1
+22-23: x 02               # data[2] = 2
+23-24: x 03               # data[3] = 3
+24-25: x 04               # data[4] = 4
+25-26: x 05               # data[5] = 5
+26-27: x 06               # data[6] = 6
+27-28: x 07               # data[7] = 7
+28-29: x 08               # data[8] = 8
+29-30: x 09               # data[9] = 9
+# Data for column 1
+30-32: x 0000             # padding to align to 64-bit
+32-40: x 0000000000000000 # 64-bit constant: 0
+40-41: x 00               # data[0] = 0
+41-42: x 01               # data[1] = 1
+42-43: x 02               # data[2] = 2
+43-44: x 03               # data[3] = 3
+44-45: x 04               # data[4] = 4
+45-46: x 05               # data[5] = 5
+46-47: x 06               # data[6] = 6
+47-48: x 07               # data[7] = 7
+48-49: x 08               # data[8] = 8
+49-50: x 09               # data[9] = 9
+50-51: x 00               # ???
+
+init schema=(int32,int64)
+----
+size=17 header=16:
+0:int32        allnull,rows=0,size=0,nulls=0
+1:int64        allnull,rows=0,size=0,nulls=0
+
+write
+12295 2592525825202
+1 1
+----
+size=41 header=16:
+0:int32        delta16,rows=2,size=11,nulls=0
+1:int64        default,rows=2,size=20,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0200             # 2 columns
+02-06: x 02000000         # 2 rows
+# column 0
+06-07: b 10000100         # int32+delta16
+07-11: x 10000000         # page start 16
+# column 1
+11-12: b 00000101         # int64
+12-16: x 18000000         # page start 24
+# Data for column 0
+16-20: x 01000000         # 32-bit constant: 1
+20-22: x 0630             # data[0] = 12294
+22-24: x 0000             # data[1] = 0
+# Data for column 1
+24-32: x b2b4949e5b020000 # data[0] = 2592525825202
+32-40: x 0100000000000000 # data[1] = 1
+40-41: x 00               # ???
+
+init schema=(bool)
+----
+size=12 header=11:
+0:bool         allnull,rows=0,size=0,nulls=0
+
+write
+t
+t
+t
+f
+t
+t
+f
+t
+t
+f
+t
+t
+t
+t
+t
+f
+t
+t
+f
+t
+t
+f
+t
+t
+----
+size=33 header=11:
+0:bool         default,rows=24,size=23,nulls=0
+
+finish
+----
+# columnar block header
+00-02: x 0100                                                             # 1 columns
+02-06: x 18000000                                                         # 24 rows
+# column 0
+06-07: b 00000001                                                         # bool
+07-11: x 0b000000                                                         # page start 11
+# Data for column 0
+11-16: x 0000000000                                                       # padding to align to 64-bit
+16-24: b 1011011101111101110110110000000000000000000000000000000000000000 # bitmap word 0
+24-32: b 0000000100000000000000000000000000000000000000000000000000000000 # bitmap summary word 0-63
+32-33: x 00                                                               # ???
