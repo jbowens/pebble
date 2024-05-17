@@ -1,0 +1,411 @@
+init bundle-size=4
+----
+Size: 4
+
+put
+abc
+----
+Size: 13
+nKeys=1; bundleSize=4; nOffsets16=3
+nBundles=1; blockPrefixLen=3; currentBundleLen=3; currentBundleKeys=1
+Offsets:
+  0000  0003  0003
+Data (len=3):
+abc
+
+put
+abcd
+----
+Size: 16
+nKeys=2; bundleSize=4; nOffsets16=4
+nBundles=1; blockPrefixLen=3; currentBundleLen=7; currentBundleKeys=2
+Offsets:
+  0000  0003  0003  0007
+Data (len=7):
+abcabcd
+
+put
+abce
+----
+Size: 19
+nKeys=3; bundleSize=4; nOffsets16=5
+nBundles=1; blockPrefixLen=3; currentBundleLen=11; currentBundleKeys=3
+Offsets:
+  0000  0003  0003  0007  0011
+Data (len=11):
+abcabcdabce
+
+put
+abdd
+----
+Size: 25
+nKeys=4; bundleSize=4; nOffsets16=6
+nBundles=1; blockPrefixLen=2; currentBundleLen=15; currentBundleKeys=4
+Offsets:
+  0000  0002  0003  0007  0011  0015
+Data (len=15):
+abcabcdabceabdd
+
+put
+abde
+----
+Size: 31
+nKeys=5; bundleSize=4; nOffsets16=8
+nBundles=2; blockPrefixLen=2; currentBundleLen=4; currentBundleKeys=1
+Offsets:
+  0000  0002  0003  0007  0011  0015  0019  0019
+Data (len=19):
+abcabcdabceabddabde
+
+finish
+----
+020800000200020003000500070009000b000b006162636364636564646465
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      2 | ab
+     1 |       |      2 | ..
+     2 |     0 |      3 | ..c
+     3 |     1 |      5 | ..cd
+     4 |     2 |      7 | ..ce
+     5 |     3 |      9 | ..dd
+     6 |       |     11 | ..de
+     7 |     4 |     11 | ....
+
+get indices=(0, 1, 2, 3, 4)
+----
+abc
+abcd
+abce
+abdd
+abde
+
+# Set max-offset-16 to force the use of 32-bit offsets.
+
+init bundle-size=4 max-offset-16=0
+----
+Size: 4
+
+put
+abc
+abcd
+abce
+abdd
+abde
+----
+Size: 47
+nKeys=5; bundleSize=4; nOffsets16=0
+nBundles=2; blockPrefixLen=2; currentBundleLen=4; currentBundleKeys=1
+Offsets:
+  0000  0002  0003  0007  0011  0015  0019  0019
+Data (len=19):
+abcabcdabceabddabde
+
+finish
+----
+020000000200000002000000030000000500000007000000090000000b000000
+0b0000006162636364636564646465
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      2 | ab
+     1 |       |      2 | ..
+     2 |     0 |      3 | ..c
+     3 |     1 |      5 | ..cd
+     4 |     2 |      7 | ..ce
+     5 |     3 |      9 | ..dd
+     6 |       |     11 | ..de
+     7 |     4 |     11 | ....
+
+get indices=(0, 1, 2, 3, 4)
+----
+abc
+abcd
+abce
+abdd
+abde
+
+init bundle-size=4
+----
+Size: 4
+
+put
+aaabbbc
+----
+Size: 17
+nKeys=1; bundleSize=4; nOffsets16=3
+nBundles=1; blockPrefixLen=7; currentBundleLen=7; currentBundleKeys=1
+Offsets:
+  0000  0007  0007
+Data (len=7):
+aaabbbc
+
+put
+aaabbbcc
+----
+Size: 20
+nKeys=2; bundleSize=4; nOffsets16=4
+nBundles=1; blockPrefixLen=7; currentBundleLen=15; currentBundleKeys=2
+Offsets:
+  0000  0007  0007  0015
+Data (len=15):
+aaabbbcaaabbbcc
+
+put
+aaabbbcde
+----
+Size: 24
+nKeys=3; bundleSize=4; nOffsets16=5
+nBundles=1; blockPrefixLen=7; currentBundleLen=24; currentBundleKeys=3
+Offsets:
+  0000  0007  0007  0015  0024
+Data (len=24):
+aaabbbcaaabbbccaaabbbcde
+
+put
+aaabbbce
+----
+Size: 27
+nKeys=4; bundleSize=4; nOffsets16=6
+nBundles=1; blockPrefixLen=7; currentBundleLen=32; currentBundleKeys=4
+Offsets:
+  0000  0007  0007  0015  0024  0032
+Data (len=32):
+aaabbbcaaabbbccaaabbbcdeaaabbbce
+
+put
+aaabbbdee*
+----
+Size: 35
+nKeys=5; bundleSize=4; nOffsets16=8
+nBundles=2; blockPrefixLen=6; currentBundleLen=10; currentBundleKeys=1
+Offsets:
+  0000  0007  0007  0015  0024  0032  0042  0042
+Data (len=42):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*
+
+put
+aaabbbdee*
+----
+Size: 37
+nKeys=6; bundleSize=4; nOffsets16=9
+nBundles=2; blockPrefixLen=6; currentBundleLen=10; currentBundleKeys=1
+Offsets:
+  0000  0007  0007  0015  0024  0032  0042  0042  0042
+Data (len=42):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*
+
+put
+aaabbbdee*
+----
+Size: 39
+nKeys=7; bundleSize=4; nOffsets16=10
+nBundles=2; blockPrefixLen=6; currentBundleLen=10; currentBundleKeys=1
+Offsets:
+  0000  0007  0007  0015  0024  0032  0042  0042  0042  0042
+Data (len=42):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*
+
+put
+aaabbbeff
+----
+Size: 44
+nKeys=8; bundleSize=4; nOffsets16=11
+nBundles=2; blockPrefixLen=6; currentBundleLen=19; currentBundleKeys=2
+Offsets:
+  0000  0007  0007  0015  0024  0032  0038  0042  0042  0042
+  0051
+Data (len=51):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeff
+
+put
+aaabbe
+----
+Size: 50
+nKeys=9; bundleSize=4; nOffsets16=13
+nBundles=3; blockPrefixLen=5; currentBundleLen=6; currentBundleKeys=1
+Offsets:
+  0000  0007  0007  0015  0024  0032  0038  0042  0042  0042
+  0051  0057  0057
+Data (len=57):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeffaaabbe
+
+put
+aaabbeef*
+----
+Size: 55
+nKeys=10; bundleSize=4; nOffsets16=14
+nBundles=3; blockPrefixLen=5; currentBundleLen=15; currentBundleKeys=2
+Offsets:
+  0000  0007  0007  0015  0024  0032  0038  0042  0042  0042
+  0051  0057  0057  0066
+Data (len=66):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeffaaabbeaaa
+bbeef*
+
+put
+aaabbeef*
+----
+Size: 57
+nKeys=11; bundleSize=4; nOffsets16=15
+nBundles=3; blockPrefixLen=5; currentBundleLen=15; currentBundleKeys=2
+Offsets:
+  0000  0007  0007  0015  0024  0032  0038  0042  0042  0042
+  0051  0057  0057  0066  0066
+Data (len=66):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeffaaabbeaaa
+bbeef*
+
+put
+aaabc
+----
+Size: 64
+nKeys=12; bundleSize=4; nOffsets16=16
+nBundles=3; blockPrefixLen=4; currentBundleLen=20; currentBundleKeys=3
+Offsets:
+  0000  0007  0007  0015  0024  0032  0038  0042  0042  0042
+  0051  0055  0057  0066  0066  0071
+Data (len=71):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeffaaabbeaaa
+bbeef*aaabc
+
+put
+aabcceef*
+aabcceef*
+----
+Size: 81
+nKeys=14; bundleSize=4; nOffsets16=19
+nBundles=4; blockPrefixLen=2; currentBundleLen=9; currentBundleKeys=1
+Offsets:
+  0000  0007  0007  0015  0024  0032  0038  0042  0042  0042
+  0051  0055  0057  0066  0066  0071  0080  0080  0080
+Data (len=80):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeffaaabbeaaa
+bbeef*aaabcaabcceef*
+
+finish
+----
+0213000002000700070008000a000b000f00130013001300160018001a001f00
+1f0020002700270027006161616262626363646565616262626465652a656666
+61626265626565662a636263636565662a
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      2 | aa
+     1 |       |      7 | ..abbbc
+     2 |     0 |      7 | .......
+     3 |     1 |      8 | .......c
+     4 |     2 |     10 | .......de
+     5 |     3 |     11 | .......e
+     6 |       |     15 | ..abbb
+     7 |     4 |     19 | ......dee*
+     8 |     5 |     19 | ......
+     9 |     6 |     19 | ......
+    10 |     7 |     22 | ......eff
+    11 |       |     24 | ..ab
+    12 |     8 |     26 | ....be
+    13 |     9 |     31 | ....beef*
+    14 |    10 |     31 | ....
+    15 |    11 |     32 | ....c
+    16 |       |     39 | ..bcceef*
+    17 |    12 |     39 | .........
+    18 |    13 |     39 | .........
+
+
+get indices=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+----
+aaabbbc
+aaabbbcc
+aaabbbcde
+aaabbbce
+aaabbbdee*
+aaabbbdee*
+aaabbbdee*
+aaabbbeff
+aaabbe
+aaabbeef*
+aaabbeef*
+aaabc
+aabcceef*
+aabcceef*
+
+
+init bundle-size=2
+----
+Size: 4
+
+put
+aaabbbc
+aaabbbcc
+aaabbbcde
+aaabbbce
+aaabbbdee*
+aaabbbdee*
+aaabbbdee*
+aaabbbeff
+aaabbe
+aaabbeef*
+aaabbeef*
+aaabc
+aabcceef*
+aabcceef*
+aabcceef*
+----
+Size: 116
+nKeys=15; bundleSize=2; nOffsets16=24
+nBundles=8; blockPrefixLen=2; currentBundleLen=9; currentBundleKeys=1
+Offsets:
+  0000  0007  0007  0015  0022  0024  0032  0042  0042  0042
+  0048  0052  0061  0067  0067  0076  0080  0085  0090  0099
+  0099  0099  0108  0108
+Data (len=108):
+aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbdee*aaabbbef
+faaabbeaaabbeef*aaabbeef*aaabcaabcceef*aabcceef*
+
+finish
+----
+0118000002000700070008000d000f0010001800180018001c00200023002700
+27002a002c003100320039003900390040004000616161626262636361626262
+63646565616262626465652a616262626465652a6566666162626565662a6162
+626565662a636263636565662a6263636565662a
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      2 | aa
+     1 |       |      7 | ..abbbc
+     2 |     0 |      7 | .......
+     3 |     1 |      8 | .......c
+     4 |       |     13 | ..abbbc
+     5 |     2 |     15 | .......de
+     6 |     3 |     16 | .......e
+     7 |       |     24 | ..abbbdee*
+     8 |     4 |     24 | ..........
+     9 |     5 |     24 | ..........
+    10 |       |     28 | ..abbb
+    11 |     6 |     32 | ......dee*
+    12 |     7 |     35 | ......eff
+    13 |       |     39 | ..abbe
+    14 |     8 |     39 | ......
+    15 |     9 |     42 | ......ef*
+    16 |       |     44 | ..ab
+    17 |    10 |     49 | ....beef*
+    18 |    11 |     50 | ....c
+    19 |       |     57 | ..bcceef*
+    20 |    12 |     57 | .........
+    21 |    13 |     57 | .........
+    22 |       |     64 | ..bcceef*
+    23 |    14 |     64 | .........
+
+get indices=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
+----
+aaabbbc
+aaabbbcc
+aaabbbcde
+aaabbbce
+aaabbbdee*
+aaabbbdee*
+aaabbbdee*
+aaabbbeff
+aaabbe
+aaabbeef*
+aaabbeef*
+aaabc
+aabcceef*
+aabcceef*
+aabcceef*
