@@ -6,10 +6,12 @@ package colblk
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,10 +23,15 @@ import (
 )
 
 func TestBlockWriter(t *testing.T) {
+	panicIfErr := func(dataType DataType, stringValue string, err error) {
+		if err != nil {
+			panicf("unable to decode %q as value for data type %s: %s", stringValue, dataType, err)
+		}
+	}
 	var buf bytes.Buffer
-	var w blockWriter
-	var rows uint32
+	var rows int
 	var colConfigs []ColumnConfig
+	var colWriters []ColumnWriter
 	datadriven.RunTest(t, "testdata/block_writer", func(t *testing.T, td *datadriven.TestData) string {
 		buf.Reset()
 		switch td.Cmd {
@@ -34,27 +41,100 @@ func TestBlockWriter(t *testing.T) {
 				return "schema argument missing"
 			}
 			colConfigs = make([]ColumnConfig, len(colTypeNames.Vals))
+			colWriters = make([]ColumnWriter, len(colConfigs))
 			for i, v := range colTypeNames.Vals {
 				colConfigs[i].DataType = dataTypeFromName(v)
 				if colConfigs[i].DataType == DataTypePrefixBytes {
 					colConfigs[i].BundleSize = 16
 				}
+				switch colConfigs[i].DataType {
+				case DataTypeBool:
+					colWriters[i] = &bitmapBuilder{}
+				case DataTypeUint8:
+					colWriters[i] = &Uint8Builder{}
+				case DataTypeUint16:
+					colWriters[i] = &Uint16Builder{}
+				case DataTypeUint32:
+					colWriters[i] = &Uint32Builder{}
+				case DataTypeUint64:
+					colWriters[i] = &Uint64Builder{}
+				case DataTypeBytes:
+					bb := &bytesBuilder{}
+					bb.Init(0)
+					colWriters[i] = bb
+				case DataTypePrefixBytes:
+					bb := &bytesBuilder{}
+					bb.Init(colConfigs[i].BundleSize)
+					colWriters[i] = bb
+				default:
+					panicf("unsupported data type: %s", colConfigs[i].DataType)
+				}
+				colWriters[i].Reset()
 			}
 			rows = 0
-			w.init(0, 0, colConfigs)
-			fmt.Fprint(&buf, &w)
-			return buf.String()
+			return ""
 		case "write":
-			for _, line := range strings.Split(td.Input, "\n") {
-				for i, v := range strings.Fields(line) {
-					writeColumnValue(colConfigs[i].DataType, i, v, &w)
-				}
-				rows++
+			lines := strings.Split(td.Input, "\n")
+			lineFields := make([][]string, len(lines))
+			for i, line := range lines {
+				lineFields[i] = strings.Fields(line)
 			}
-			fmt.Fprint(&buf, &w)
-			return buf.String()
+			rows += len(lineFields)
+			for c, cfg := range colConfigs {
+				switch cfg.DataType {
+				case DataTypeBool:
+					bb := colWriters[c].(*bitmapBuilder)
+					for r := range lineFields {
+						v, err := strconv.ParseBool(lineFields[r][c])
+						panicIfErr(cfg.DataType, lineFields[r][c], err)
+						(*bb) = (*bb).Set(r, v)
+					}
+					colWriters[c] = bb
+				case DataTypeUint8:
+					b := colWriters[c].(*Uint8Builder)
+					for r := range lineFields {
+						v, err := strconv.ParseUint(lineFields[r][c], 10, 8)
+						panicIfErr(cfg.DataType, lineFields[r][c], err)
+						b.Set(r, uint8(v))
+					}
+				case DataTypeUint16:
+					b := colWriters[c].(*Uint16Builder)
+					for r := range lineFields {
+						v, err := strconv.ParseUint(lineFields[r][c], 10, 16)
+						panicIfErr(cfg.DataType, lineFields[r][c], err)
+						b.Set(r, uint16(v))
+					}
+				case DataTypeUint32:
+					b := colWriters[c].(*Uint32Builder)
+					for r := range lineFields {
+						v, err := strconv.ParseUint(lineFields[r][c], 10, 32)
+						panicIfErr(cfg.DataType, lineFields[r][c], err)
+						b.Set(r, uint32(v))
+					}
+				case DataTypeUint64:
+					b := colWriters[c].(*Uint64Builder)
+					for r := range lineFields {
+						v, err := strconv.ParseUint(lineFields[r][c], 10, 64)
+						panicIfErr(cfg.DataType, lineFields[r][c], err)
+						b.Set(r, v)
+					}
+				case DataTypeBytes:
+					b := colWriters[c].(*bytesBuilder)
+					for r := range lineFields {
+						b.Put([]byte(lineFields[r][c]))
+					}
+				case DataTypePrefixBytes:
+					b := colWriters[c].(*bytesBuilder)
+					for r := range lineFields {
+						b.PutOrdered([]byte(lineFields[r][c]))
+					}
+				default:
+					panicf("unsupported data type: %s", cfg.DataType)
+				}
+			}
+			return ""
 		case "finish":
-			block := w.Finish(rows)
+			block := FinishBlock(int(rows), colWriters)
 			r := NewBlockReader(block, 0)
 			f := binfmt.New(r.data()).LineWidth(20)
 			r.headerToBinFormatter(f)
@@ -125,32 +205,75 @@ func randBlock(rng *rand.Rand, rows int, schema []ColumnConfig) ([]byte, []inter
 
 		}
 	}
+	buf := buildBlock(schema, rows, data)
+	return buf, data
+}
 
-	var w blockWriter
-	w.init(0, 0, schema)
-
-	for row := 0; row < rows; row++ {
-		for col := range schema {
-			switch schema[col].DataType {
-			case DataTypeBool:
-				w.PutBitmap(col, data[col].([]bool)[row])
-			case DataTypeUint8:
-				w.PutUint8(col, data[col].([]uint8)[row])
-			case DataTypeUint16:
-				w.PutUint16(col, data[col].([]uint16)[row])
-			case DataTypeUint32:
-				w.PutUint32(col, data[col].([]uint32)[row])
-			case DataTypeUint64:
-				w.PutUint64(col, data[col].([]uint64)[row])
-			case DataTypeBytes:
-				w.PutRawBytes(col, data[col].([][]byte)[row])
-			case DataTypePrefixBytes:
-				w.PutPrefixBytes(col, data[col].([][]byte)[row])
+func buildBlock(schema []ColumnConfig, rows int, data []interface{}) []byte {
+	buf := make([]byte, blockHeaderSize(len(schema), 0))
+	WriteHeader(buf, Header{Columns: uint16(len(schema)), Rows: uint32(rows)})
+	pageOffset := uint32(len(buf))
+	for col := range schema {
+		var cw ColumnWriter
+		switch schema[col].DataType {
+		case DataTypeBool:
+			var bb bitmapBuilder
+			for row, v := range data[col].([]bool) {
+				bb = bb.Set(row, v)
 			}
+			cw = &bb
+		case DataTypeUint8:
+			var b Uint8Builder
+			for row, v := range data[col].([]uint8) {
+				b.Set(row, v)
+			}
+			cw = &b
+		case DataTypeUint16:
+			var b Uint16Builder
+			for row, v := range data[col].([]uint16) {
+				b.Set(row, v)
+			}
+			cw = &b
+		case DataTypeUint32:
+			var b Uint32Builder
+			for row, v := range data[col].([]uint32) {
+				b.Set(row, v)
+			}
+			cw = &b
+		case DataTypeUint64:
+			var b Uint64Builder
+			for row, v := range data[col].([]uint64) {
+				b.Set(row, v)
+			}
+			cw = &b
+		case DataTypeBytes:
+			var b bytesBuilder
+			for _, v := range data[col].([][]byte) {
+				b.Put(v)
+			}
+			cw = &b
+		case DataTypePrefixBytes:
+			var b bytesBuilder
+			b.Init(16)
+			for _, v := range data[col].([][]byte) {
+				b.PutOrdered(v)
+			}
+			cw = &b
 		}
-	}
+		if newOffset := cw.Size(rows, pageOffset); uint32(len(buf)) < newOffset {
+			newBuf := make([]byte, newOffset)
+			copy(newBuf, buf)
+			buf = newBuf
+		}
 
-	return w.Finish(uint32(rows)), data
+		hi := blockHeaderSize(col, 0)
+		binary.LittleEndian.PutUint32(buf[hi+1:], uint32(pageOffset))
+		var desc ColumnDesc
+		pageOffset, desc = cw.Finish(rows, pageOffset, buf)
+		buf[hi] = byte(desc)
+	}
+	buf = append(buf, 0x00)
+	return buf
 }
 
 func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []ColumnConfig) {
@@ -257,26 +380,35 @@ func TestBlockWriterRandomized(t *testing.T) {
 	}
 }
 
-func TestBlockWriterNullValues(t *testing.T) {
-	var w blockWriter
+func TestNullable(t *testing.T) {
+	var w Nullable[*Uint32Builder] = MakeNullable(DataTypeUint32, new(Uint32Builder))
+	w.writer.Init(UintDefaultNone)
+
 	const rows = 16
-	w.init(0, 0, []ColumnConfig{{DataType: DataTypeUint32}})
 	for i := 0; i < rows; i++ {
 		if i%2 == 0 {
-			w.PutNull(0)
+			w.SetNull(i)
 		} else {
-			w.PutUint32(0, uint32(i))
+			builder, j := w.NotNull(i)
+			builder.Set(j, uint32(i))
 		}
 	}
-	r := NewBlockReader(w.Finish(rows), 0)
+	block := FinishBlock(rows, []ColumnWriter{&w})
+	r := NewBlockReader(block, 0)
+
+	f := binfmt.New(r.data()).LineWidth(20)
+	r.headerToBinFormatter(f)
+	r.columnToBinFormatter(f, 0, rows)
+	t.Log(f.String())
+
 	col := r.Column(0)
 	for i := 0; i < int(col.N); i++ {
 		if j := col.Rank(i); j < 0 {
 			if i%2 != 0 {
-				t.Fatalf("expected non-NULL value, but found NULL")
+				t.Fatalf("%d: expected non-NULL value, but found NULL", i)
 			}
 		} else if i%2 == 0 {
-			t.Fatalf("expected NULL value, but found %d", col.Int32()[j])
+			t.Fatalf("%d: expected NULL value, but found %d at rank %d", i, col.Int32()[j], j)
 		}
 	}
 }

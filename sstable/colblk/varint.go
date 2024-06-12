@@ -45,7 +45,7 @@ type uvarint32Builder struct {
 }
 
 func (vb *uvarint32Builder) Reset() {
-	vb.bb.Reset(0)
+	vb.bb.Reset()
 	vb.n = 0
 }
 
@@ -63,7 +63,7 @@ func (vb *uvarint32Builder) Append(v uint32) {
 
 func (vb *uvarint32Builder) MaxSize(offset uint32) uint32 {
 	// TODO(jackson): Tighten the bound on the current pending group.
-	return vb.bb.Size(offset) + maxVarint32Len + align32
+	return vb.bb.Size(int((vb.n+3)/4), offset) + maxVarint32Len + align32
 }
 
 func (vb *uvarint32Builder) Finish(offset uint32, buf []byte) uint32 {
@@ -77,7 +77,8 @@ func (vb *uvarint32Builder) Finish(offset uint32, buf []byte) uint32 {
 			vb.bb.Put(encodeGroupVarint32(vb.buf[:], vb.grp[:]))
 		}
 	}
-	return vb.bb.Finish(offset, buf)
+	off, _ := vb.bb.Finish(int((vb.n+3)/4), offset, buf)
+	return off
 }
 
 func encodeGroupVarint32(dst []byte, src []uint32) []byte {

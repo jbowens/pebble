@@ -5,7 +5,9 @@
 package colblk
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/pebble/internal/base"
@@ -41,15 +43,40 @@ var keyspanSchema = [keyspanColumnCount]ColumnConfig{
 
 // A KeyspanBlockWriter writes keyspan blocks.
 type KeyspanBlockWriter struct {
-	bw                blockWriter
-	equal             base.Equal
+	equal base.Equal
+
+	userKeys      bytesBuilder
+	startIndexes  Uint32Builder
+	trailers      Uint64Builder
+	suffixes      DefaultNull[*bytesBuilder]
+	suffixesBytes bytesBuilder
+	values        DefaultNull[*bytesBuilder]
+	valuesBytes   bytesBuilder
+
+	buf               []byte
+	keyCount          int
 	unsafeLastUserKey []byte
 }
 
 // Init initializes a keyspan block writer.
 func (w *KeyspanBlockWriter) Init(equal base.Equal) {
-	w.bw.init(keyspanBlockVersionTODO, keyspanHeaderSize, keyspanSchema[:])
 	w.equal = equal
+	w.userKeys.Init(0)
+	w.suffixesBytes.Init(0)
+	w.suffixes = MakeDefaultNull(DataTypeBytes, &w.suffixesBytes)
+	w.valuesBytes.Init(0)
+	w.values = MakeDefaultNull(DataTypeBytes, &w.valuesBytes)
+	w.Reset()
+}
+
+func (w *KeyspanBlockWriter) Reset() {
+	w.userKeys.Reset()
+	w.startIndexes.Reset()
+	w.trailers.Reset()
+	w.suffixes.Reset()
+	w.values.Reset()
+	w.buf = w.buf[:0]
+	w.keyCount = 0
 	w.unsafeLastUserKey = nil
 }
 
@@ -60,55 +87,124 @@ func (w *KeyspanBlockWriter) AddSpan(s keyspan.Span) {
 	// end key is the next span's start key.  Check if the previous user key
 	// equals this span's start key, and avoid encoding it again if so.
 	if w.unsafeLastUserKey == nil || !w.equal(w.unsafeLastUserKey, s.Start) {
-		w.bw.PutRawBytes(keyspanColUserKeys, s.Start)
+		w.userKeys.Put(s.Start)
 	}
-	startIdx := w.bw.cols[keyspanColUserKeys].count - 1
+	startIdx := w.userKeys.nKeys - 1
 	// The end key must be strictly greater than the start key and spans are
 	// already sorted, so the end key is guaranteed to not be present in the
 	// column yet. We need to encode it.
-	w.bw.PutRawBytes(keyspanColUserKeys, s.End)
+	w.userKeys.Put(s.End)
 
-	// Hold on to a slice of the copy of s.End we just added to the column
+	// Hold on to a slice of the copy of s.End we just added to the bytes
 	// builder so that we can compare it to the next span's start key.
-	w.unsafeLastUserKey = w.bw.cols[keyspanColUserKeys].bytes.data[len(w.bw.cols[keyspanColUserKeys].bytes.data)-len(s.End):]
+	w.unsafeLastUserKey = w.userKeys.data[len(w.userKeys.data)-len(s.End):]
 
 	// Encode each keyspan.Key in the span.
 	for i := range s.Keys {
-		w.bw.PutUint32(keyspanColStartIndices, startIdx)
-		w.bw.PutUint64(keyspanColTrailers, s.Keys[i].Trailer)
-		if len(s.Keys[i].Suffix) == 0 {
-			w.bw.PutNull(keyspanColSuffixes)
-		} else {
-			w.bw.PutRawBytes(keyspanColSuffixes, s.Keys[i].Suffix)
+		w.startIndexes.Set(w.keyCount, uint32(startIdx))
+		w.trailers.Set(w.keyCount, s.Keys[i].Trailer)
+		if len(s.Keys[i].Suffix) > 0 {
+			sw, _ := w.suffixes.NotNull(w.keyCount)
+			sw.Put(s.Keys[i].Suffix)
 		}
-		if len(s.Keys[i].Value) == 0 {
-			w.bw.PutNull(keyspanColValues)
-		} else {
-			w.bw.PutRawBytes(keyspanColValues, s.Keys[i].Value)
+		if len(s.Keys[i].Value) > 0 {
+			vw, _ := w.values.NotNull(w.keyCount)
+			vw.Put(s.Keys[i].Value)
 		}
+		w.keyCount++
 	}
 }
 
 // Size returns the size of the pending block.
 func (w *KeyspanBlockWriter) Size() int {
-	return w.bw.Size() + keyspanHeaderSize
+	off := blockHeaderSize(keyspanColumnCount, keyspanHeaderSize)
+	off = w.userKeys.Size(w.userKeys.nKeys, off)
+	off = w.startIndexes.Size(w.keyCount, off)
+	off = w.trailers.Size(w.keyCount, off)
+	off = w.suffixes.Size(w.keyCount, off)
+	off = w.values.Size(w.keyCount, off)
+	off++
+	return int(off)
 }
 
 // Finish finalizes the pending block and returns the encoded block.
 func (w *KeyspanBlockWriter) Finish() []byte {
+	size := w.Size()
+	if cap(w.buf) < size {
+		w.buf = make([]byte, size)
+	}
+	w.buf = w.buf[:size]
+
 	// The keyspan block has a 4-byte custom header used to encode the number of
 	// user keys encoded within the user key column. All other columns have the
 	// number of rows indicated by the shared columnar block header, except for
 	// the user key column.
-	nUserKeys := w.bw.cols[keyspanColUserKeys].count
-	data := w.bw.Finish(w.bw.cols[keyspanColStartIndices].count)
-	binary.LittleEndian.PutUint32(data, uint32(nUserKeys))
-	return data
+	binary.LittleEndian.PutUint32(w.buf, uint32(w.userKeys.nKeys))
+
+	WriteHeader(w.buf[keyspanHeaderSize:], Header{
+		Columns: uint16(keyspanColumnCount),
+		Rows:    uint32(w.keyCount),
+	})
+	var desc ColumnDesc
+	pageOffset := blockHeaderSize(keyspanColumnCount, keyspanHeaderSize)
+
+	// Write the user keys.
+	hOff := blockHeaderSize(keyspanColUserKeys, keyspanHeaderSize)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.userKeys.Finish(w.userKeys.nKeys, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	// Write the start indices.
+	hOff = blockHeaderSize(keyspanColStartIndices, keyspanHeaderSize)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.startIndexes.Finish(w.keyCount, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	// Write the trailers.
+	hOff = blockHeaderSize(keyspanColTrailers, keyspanHeaderSize)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.trailers.Finish(w.keyCount, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	// Write the suffixes.
+	hOff = blockHeaderSize(keyspanColSuffixes, keyspanHeaderSize)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.suffixes.Finish(w.keyCount, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	// Write the values.
+	hOff = blockHeaderSize(keyspanColValues, keyspanHeaderSize)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.values.Finish(w.keyCount, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	w.buf[pageOffset] = keyspanBlockVersionTODO
+	return w.buf
 }
 
 // String returns a string representation of the pending block's state.
 func (w *KeyspanBlockWriter) String() string {
-	return w.bw.String()
+	var buf bytes.Buffer
+	size := uint32(w.Size())
+	fmt.Fprintf(&buf, "size=%d:\n", size)
+
+	fmt.Fprint(&buf, "0: user keys:      ")
+	w.userKeys.WriteDebug(&buf, w.userKeys.nKeys)
+	fmt.Fprintln(&buf)
+	fmt.Fprint(&buf, "1: start indices:  ")
+	w.startIndexes.WriteDebug(&buf, w.keyCount)
+	fmt.Fprintln(&buf)
+	fmt.Fprint(&buf, "2: trailers:       ")
+	w.trailers.WriteDebug(&buf, w.keyCount)
+	fmt.Fprintln(&buf)
+	fmt.Fprint(&buf, "3: suffixes:       ")
+	w.suffixes.WriteDebug(&buf, w.keyCount)
+	fmt.Fprintln(&buf)
+	fmt.Fprint(&buf, "4: values:         ")
+	w.values.WriteDebug(&buf, w.keyCount)
+	fmt.Fprintln(&buf)
+
+	return buf.String()
 }
 
 // A KeyspanReader exposes facilities for reading a keyspan block. A

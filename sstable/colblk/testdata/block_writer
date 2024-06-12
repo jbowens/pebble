@@ -1,22 +1,10 @@
 init schema=(prefixbytes,bytes)
 ----
-size=17 header=16:
-0:prefixbytes(16) allnull,rows=0,size=0,nulls=0
-1:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
 
 write
 apple       @3
-----
-size=41 header=16:
-0:prefixbytes(16) default,rows=1,size=14,nulls=0
-1:bytes        default,rows=1,size=9,nulls=0,n16=2,n32=0
-
-write
 avocado     @2
 ----
-size=53 header=16:
-0:prefixbytes(16) default,rows=2,size=22,nulls=0
-1:bytes        default,rows=2,size=13,nulls=0,n16=3,n32=0
 
 finish
 ----
@@ -49,8 +37,6 @@ finish
 
 init schema=(int64)
 ----
-size=12 header=11:
-0:int64        allnull,rows=0,size=0,nulls=0
 
 write
 0
@@ -64,8 +50,6 @@ write
 0
 0
 ----
-size=25 header=11:
-0:int64        constant,rows=10,size=15,nulls=0
 
 finish
 ----
@@ -84,8 +68,6 @@ finish
 
 init schema=(int64)
 ----
-size=12 header=11:
-0:int64        allnull,rows=0,size=0,nulls=0
 
 write
 9223372036854775807
@@ -101,8 +83,6 @@ write
 9223372036854775807
 9223372036854775807
 ----
-size=25 header=11:
-0:int64        constant,rows=12,size=15,nulls=0
 
 finish
 ----
@@ -114,7 +94,7 @@ finish
 07-11: x 0b000000         # page start 11
 # Data for column 0
 11-16: x 0000000000       # padding to align to 64-bit
-16-24: x ffffffffffffff7f # 64-bit constant: 4294967295
+16-24: x ffffffffffffff7f # 64-bit constant: 9223372036854775807
 24-25: x 00               # ???
 
 # Test an int64 column with a mix of values, but all values less than 256
@@ -122,8 +102,6 @@ finish
 
 init schema=(int64)
 ----
-size=12 header=11:
-0:int64        allnull,rows=0,size=0,nulls=0
 
 write
 4149660732785475244
@@ -132,8 +110,6 @@ write
 4149660732785475324
 4149660732785475390
 ----
-size=30 header=11:
-0:int64        delta8,rows=5,size=15,nulls=0
 
 finish
 ----
@@ -145,7 +121,7 @@ finish
 07-11: x 0b000000         # page start 11
 # Data for column 0
 11-16: x 0000000000       # padding to align to 64-bit
-16-24: x abbe105c738e9639 # 64-bit constant: 1544601259
+16-24: x abbe105c738e9639 # 64-bit constant: 4149660732785475243
 24-25: x 01               # data[0] = 1
 25-26: x 00               # data[1] = 0
 26-27: x 33               # data[2] = 51
@@ -158,8 +134,6 @@ finish
 
 init schema=(int64)
 ----
-size=12 header=11:
-0:int64        allnull,rows=0,size=0,nulls=0
 
 write
 4149660732785475244
@@ -169,8 +143,6 @@ write
 4149660732785475324
 4149660732785475390
 ----
-size=37 header=11:
-0:int64        delta16,rows=6,size=23,nulls=0
 
 finish
 ----
@@ -182,7 +154,7 @@ finish
 07-11: x 0b000000         # page start 11
 # Data for column 0
 11-16: x 0000000000       # padding to align to 64-bit
-16-24: x abbe105c738e9639 # 64-bit constant: 1544601259
+16-24: x abbe105c738e9639 # 64-bit constant: 4149660732785475243
 24-26: x 0100             # data[0] = 1
 26-28: x 0000             # data[1] = 0
 28-30: x 3300             # data[2] = 51
@@ -193,8 +165,6 @@ finish
 
 init schema=(int64)
 ----
-size=12 header=11:
-0:int64        allnull,rows=0,size=0,nulls=0
 
 write
 0
@@ -207,8 +177,6 @@ write
 2147483647
 65536
 ----
-size=61 header=11:
-0:int64        delta32,rows=9,size=47,nulls=0
 
 finish
 ----
@@ -234,9 +202,6 @@ finish
 
 init schema=(int32,int64)
 ----
-size=17 header=16:
-0:int32        allnull,rows=0,size=0,nulls=0
-1:int64        allnull,rows=0,size=0,nulls=0
 
 write
 0 0
@@ -250,9 +215,6 @@ write
 8 8
 9 9
 ----
-size=51 header=16:
-0:int32        delta8,rows=10,size=15,nulls=0
-1:int64        delta8,rows=10,size=24,nulls=0
 
 finish
 ----
@@ -294,17 +256,11 @@ finish
 
 init schema=(int32,int64)
 ----
-size=17 header=16:
-0:int32        allnull,rows=0,size=0,nulls=0
-1:int64        allnull,rows=0,size=0,nulls=0
 
 write
 12295 2592525825202
 1 1
 ----
-size=41 header=16:
-0:int32        delta16,rows=2,size=11,nulls=0
-1:int64        default,rows=2,size=20,nulls=0
 
 finish
 ----
@@ -328,8 +284,6 @@ finish
 
 init schema=(bool)
 ----
-size=12 header=11:
-0:bool         allnull,rows=0,size=0,nulls=0
 
 write
 t
@@ -357,8 +311,6 @@ f
 t
 t
 ----
-size=33 header=11:
-0:bool         default,rows=24,size=23,nulls=0
 
 finish
 ----

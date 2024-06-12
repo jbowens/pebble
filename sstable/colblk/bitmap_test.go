@@ -39,7 +39,7 @@ func TestBitmapFixed(t *testing.T) {
 				n++
 			}
 			data := make([]byte, bitmapRequiredSize(n))
-			_ = builder.Finish(n, 0, data)
+			_, _ = builder.Finish(n, 0, data)
 			bitmap = Bitmap{
 				data:  makeUnsafeRawSlice[uint64](unsafe.Pointer(&data[0])),
 				total: n,
@@ -83,7 +83,7 @@ func TestBitmapRandom(t *testing.T) {
 		}
 	}
 	data := make([]byte, bitmapRequiredSize(size))
-	_ = builder.Finish(size, 0, data)
+	_, _ = builder.Finish(size, 0, data)
 	bitmap := Bitmap{
 		data:  makeUnsafeRawSlice[uint64](unsafe.Pointer(&data[0])),
 		total: size,
@@ -113,7 +113,7 @@ func BenchmarkBitmapBuilder(b *testing.B) {
 				builder = builder.Set(i, v[i])
 			}
 		}
-		_ = builder.Finish(size, 0, data)
+		_, _ = builder.Finish(size, 0, data)
 	}
 }
 

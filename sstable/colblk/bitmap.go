@@ -5,6 +5,8 @@
 package colblk
 
 import (
+	"fmt"
+	"io"
 	"math/bits"
 	"unsafe"
 
@@ -115,15 +117,36 @@ func (b bitmapBuilder) Set(i int, v bool) bitmapBuilder {
 	return b
 }
 
+func (b *bitmapBuilder) Reset() {
+	for i := range *b {
+		(*b)[i] = 0
+	}
+	*b = (*b)[:0]
+}
+
+func (b *bitmapBuilder) Size(rows int, offset uint32) uint32 {
+	offset = align(offset, align64)
+	return offset + uint32(bitmapRequiredSize(rows))
+}
+
+// Invert inverts the bitmap, setting all bits that are not set and clearing all
+// bits that are set.
+func (b bitmapBuilder) Invert() {
+	for i := range b {
+		b[i] = ^b[i]
+	}
+}
+
 // Finish finalizes the bitmap, computing the per-word summary bitmap and
 // writing the resulting data to buf at offset.
-func (b bitmapBuilder) Finish(nRows int, offset uint32, buf []byte) uint32 {
+func (b *bitmapBuilder) Finish(nRows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	offset = alignWithZeroes(buf, offset, align64)
 	dest := makeUnsafeRawSlice[uint64](unsafe.Pointer(&buf[offset]))
-	offset += uint32(copy(dest.Slice(len(b)), b)) << align64Shift
+	offset += uint32(copy(dest.Slice(len(*b)), *b)) << align64Shift
 
 	// If the tail of b is sparse, fill in zeroes.
 	nBitmapWords := (nRows + 63) >> 6
-	for i := len(b); i < nBitmapWords; i++ {
+	for i := len(*b); i < nBitmapWords; i++ {
 		dest.set(i, 0)
 		offset += align64
 	}
@@ -132,17 +155,21 @@ func (b bitmapBuilder) Finish(nRows int, offset uint32, buf []byte) uint32 {
 	nSummaryWords := (nBitmapWords + 63) >> 6
 	for i := 0; i < nSummaryWords; i++ {
 		wordsOff := (i << 6) // i*64
-		nWords := min(64, len(b)-wordsOff)
+		nWords := min(64, len(*b)-wordsOff)
 		var summaryWord uint64
 		for j := 0; j < nWords; j++ {
-			if b[wordsOff+j] != 0 {
+			if (*b)[wordsOff+j] != 0 {
 				summaryWord |= 1 << j
 			}
 		}
 		dest.set(nBitmapWords+i, summaryWord)
 	}
 	offset += uint32(nSummaryWords) << align64Shift
-	return offset
+	return offset, ColumnDesc(DataTypeBool)
+}
+
+func (b *bitmapBuilder) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprint(w, "bitmap")
 }
 
 func bitmapToBinFormatter(f *binfmt.Formatter, rows int) int {
@@ -150,7 +177,7 @@ func bitmapToBinFormatter(f *binfmt.Formatter, rows int) int {
 	for i := 0; i < bitmapWords; i++ {
 		f.Line(8).Append("b ").Binary(8).Done("bitmap word %d", i)
 	}
-	summaryWords := (bitmapWords + 63) >> 6
+	summaryWords := (bitmapWords + 63) / 64
 	for i := 0; i < summaryWords; i++ {
 		f.Line(8).Append("b ").Binary(8).Done("bitmap summary word %d-%d", i*64, i*64+63)
 	}
@@ -277,7 +304,8 @@ func (b NullBitmap) Rank(i int) int {
 	// The rank of the i'th bit is the total in the lookup table sum (stored in
 	// the high 16 bits), plus the number of zeros in the low 16 bits that
 	// precede the bit.
-	return int(word>>nullBitmapHalfWordSize) + bits.OnesCount16(uint16(^word&(bit-1)))
+	v := int(word>>nullBitmapHalfWordSize) + bits.OnesCount16(uint16(^word&(bit-1)))
+	return v
 }
 
 // count returns the count of non-NULL values in the bitmap.

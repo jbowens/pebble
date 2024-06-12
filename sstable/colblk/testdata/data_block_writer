@@ -1,11 +1,11 @@
 init
 ----
-size=32 header=31:
-0:prefixbytes(16) allnull,rows=0,size=0,nulls=0
-1:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
-2:int64        allnull,rows=0,size=0,nulls=0
-3:bool         allnull,rows=0,size=0,nulls=0
-4:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+size=51:
+0: prefixes:       prefixbytes(16): 0 keys
+1: suffixes:       bytes: 0 slices
+2: trailers:       uint64: 0 rows
+3: prefix changed: bitmap
+4: values:         bytes: 0 slices
 
 write
 a@10#0,SET:apple
@@ -15,94 +15,96 @@ c@9#0,SETWITHDEL:coconut
 c@6#0,SET:cantelope
 c@1#0,SET:clementine
 ----
-size=171 header=31:
-0:prefixbytes(16) default,rows=6,size=22,nulls=0
-1:bytes        default,rows=6,size=30,nulls=0,n16=7,n32=0
-2:int64        delta8,rows=6,size=15,nulls=0
-3:bool         allnull,rows=0,size=0,nulls=0
-4:bytes        default,rows=6,size=68,nulls=0,n16=7,n32=0
+size=189:
+0: prefixes:       prefixbytes(16): 6 keys
+1: suffixes:       bytes: 6 slices
+2: trailers:       uint64: 6 rows
+3: prefix changed: bitmap
+4: values:         bytes: 6 slices
 
 write
 d@11#0,DEL:
 ----
-size=184 header=31:
-0:prefixbytes(16) default,rows=7,size=26,nulls=0
-1:bytes        default,rows=7,size=34,nulls=0,n16=8,n32=0
-2:int64        delta8,rows=7,size=19,nulls=0
-3:bool         allnull,rows=0,size=0,nulls=0
-4:bytes        default,rows=7,size=72,nulls=0,n16=8,n32=0
+size=200:
+0: prefixes:       prefixbytes(16): 7 keys
+1: suffixes:       bytes: 7 slices
+2: trailers:       uint64: 7 rows
+3: prefix changed: bitmap
+4: values:         bytes: 7 slices
 
 finish
 ----
 # columnar block header
-000-002: x 0500                 # 5 columns
-002-006: x 07000000             # 7 rows
+000-002: x 0500                                                             # 5 columns
+002-006: x 07000000                                                         # 7 rows
 # column 0
-006-007: b 00000111             # prefixbytes
-007-011: x 1f000000             # page start 31
+006-007: b 00000111                                                         # prefixbytes
+007-011: x 1f000000                                                         # page start 31
 # column 1
-011-012: b 00000110             # bytes
-012-016: x 38000000             # page start 56
+011-012: b 00000110                                                         # bytes
+012-016: x 38000000                                                         # page start 56
 # column 2
-016-017: b 01100101             # int64+delta8
-017-021: x 5a000000             # page start 90
+016-017: b 01100101                                                         # int64+delta8
+017-021: x 5a000000                                                         # page start 90
 # column 3
-021-022: b 00100001             # bool+allnull
-022-026: x 6f000000             # page start 111
+021-022: b 00000001                                                         # bool
+022-026: x 6f000000                                                         # page start 111
 # column 4
-026-027: b 00000110             # bytes
-027-031: x 6f000000             # page start 111
+026-027: b 00000110                                                         # bytes
+027-031: x 80000000                                                         # page start 128
 # Data for column 0
-031-041: x 04090000000000010002 # ???
-041-051: x 00020003000300030004 # ???
-051-056: x 0061626364           # ???
+031-041: x 04090000000000010002                                             # ???
+041-051: x 00020003000300030004                                             # ???
+051-056: x 0061626364                                                       # ???
 # Data for column 1
 # RawBytes
-056-058: x 0800                 # 16-bit offset count: 8
-058-060: x 0000                 # off[0]: 0 [overall 74]
-060-062: x 0300                 # off[1]: 3 [overall 77]
-062-064: x 0500                 # off[2]: 5 [overall 79]
-064-066: x 0700                 # off[3]: 7 [overall 81]
-066-068: x 0900                 # off[4]: 9 [overall 83]
-068-070: x 0b00                 # off[5]: 11 [overall 85]
-070-072: x 0d00                 # off[6]: 13 [overall 87]
-072-074: x 1000                 # off[7]: 16 [overall 90]
-074-077: x 403130               # data[0]: @10
-077-079: x 4035                 # data[1]: @5
-079-081: x 4032                 # data[2]: @2
-081-083: x 4039                 # data[3]: @9
-083-085: x 4036                 # data[4]: @6
-085-087: x 4031                 # data[5]: @1
-087-090: x 403131               # data[6]: @11
+056-058: x 0800                                                             # 16-bit offset count: 8
+058-060: x 0000                                                             # off[0]: 0 [overall 74]
+060-062: x 0300                                                             # off[1]: 3 [overall 77]
+062-064: x 0500                                                             # off[2]: 5 [overall 79]
+064-066: x 0700                                                             # off[3]: 7 [overall 81]
+066-068: x 0900                                                             # off[4]: 9 [overall 83]
+068-070: x 0b00                                                             # off[5]: 11 [overall 85]
+070-072: x 0d00                                                             # off[6]: 13 [overall 87]
+072-074: x 1000                                                             # off[7]: 16 [overall 90]
+074-077: x 403130                                                           # data[0]: @10
+077-079: x 4035                                                             # data[1]: @5
+079-081: x 4032                                                             # data[2]: @2
+081-083: x 4039                                                             # data[3]: @9
+083-085: x 4036                                                             # data[4]: @6
+085-087: x 4031                                                             # data[5]: @1
+087-090: x 403131                                                           # data[6]: @11
 # Data for column 2
-090-096: x 000000000000         # padding to align to 64-bit
-096-104: x 0000000000000000     # 64-bit constant: 0
-104-105: x 01                   # data[0] = 1
-105-106: x 01                   # data[1] = 1
-106-107: x 12                   # data[2] = 18
-107-108: x 12                   # data[3] = 18
-108-109: x 01                   # data[4] = 1
-109-110: x 01                   # data[5] = 1
-110-111: x 00                   # data[6] = 0
+090-096: x 000000000000                                                     # padding to align to 64-bit
+096-104: x 0000000000000000                                                 # 64-bit constant: 0
+104-105: x 01                                                               # data[0] = 1
+105-106: x 01                                                               # data[1] = 1
+106-107: x 12                                                               # data[2] = 18
+107-108: x 12                                                               # data[3] = 18
+108-109: x 01                                                               # data[4] = 1
+109-110: x 01                                                               # data[5] = 1
+110-111: x 00                                                               # data[6] = 0
 # Data for column 3
+111-112: x 00                                                               # padding to align to 64-bit
+112-120: b 0000000000000000000000000000000000000000000000000000000000000000 # bitmap word 0
+120-128: b 0000000000000000000000000000000000000000000000000000000000000000 # bitmap summary word 0-63
 # Data for column 4
 # RawBytes
-111-113: x 0800                 # 16-bit offset count: 8
-113-114: x 00                   # padding to align offsets table
-114-116: x 0000                 # off[0]: 0 [overall 130]
-116-118: x 0600                 # off[1]: 6 [overall 136]
-118-120: x 0d00                 # off[2]: 13 [overall 143]
-120-122: x 1700                 # off[3]: 23 [overall 153]
-122-124: x 1f00                 # off[4]: 31 [overall 161]
-124-126: x 2900                 # off[5]: 41 [overall 171]
-126-128: x 3400                 # off[6]: 52 [overall 182]
-128-130: x 3500                 # off[7]: 53 [overall 183]
-130-136: x 786170706c65         # data[0]: xapple
-136-143: x 7862616e616e61       # data[1]: xbanana
-143-153: x 78626c75656265727279 # data[2]: xblueberry
-153-161: x 78636f636f6e7574     # data[3]: xcoconut
-161-171: x 7863616e74656c6f7065 # data[4]: xcantelope
-171-181: x 78636c656d656e74696e # data[5]: xclementine
-181-182: x 65                   # data[5]: xclementine
-182-183: x 78                   # data[6]: x
-183-184: x 00                   # ???
+128-130: x 0800                                                             # 16-bit offset count: 8
+130-132: x 0000                                                             # off[0]: 0 [overall 146]
+132-134: x 0600                                                             # off[1]: 6 [overall 152]
+134-136: x 0d00                                                             # off[2]: 13 [overall 159]
+136-138: x 1700                                                             # off[3]: 23 [overall 169]
+138-140: x 1f00                                                             # off[4]: 31 [overall 177]
+140-142: x 2900                                                             # off[5]: 41 [overall 187]
+142-144: x 3400                                                             # off[6]: 52 [overall 198]
+144-146: x 3500                                                             # off[7]: 53 [overall 199]
+146-152: x 786170706c65                                                     # data[0]: xapple
+152-159: x 7862616e616e61                                                   # data[1]: xbanana
+159-169: x 78626c75656265727279                                             # data[2]: xblueberry
+169-177: x 78636f636f6e7574                                                 # data[3]: xcoconut
+177-187: x 7863616e74656c6f7065                                             # data[4]: xcantelope
+187-197: x 78636c656d656e74696e                                             # data[5]: xclementine
+197-198: x 65                                                               # data[5]: xclementine
+198-199: x 78                                                               # data[6]: x
+199-200: x 00                                                               # ???
