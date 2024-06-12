@@ -8,12 +8,15 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"math"
 	"math/bits"
 	"strings"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/binfmt"
 	"github.com/cockroachdb/pebble/internal/invariants"
+	"golang.org/x/exp/constraints"
 )
 
 // DataType describes the logical type of a column's values. Some data types
@@ -75,21 +78,6 @@ func (t DataType) fixedWidth() int {
 		return 8
 	default:
 		panic(fmt.Sprintf("non-fixed width type %s", t))
-	}
-}
-
-func (t DataType) readInteger(ptr unsafe.Pointer) uint64 {
-	switch t {
-	case DataTypeUint8:
-		return uint64(*(*uint8)(unsafe.Pointer(uintptr(ptr))))
-	case DataTypeUint16:
-		return uint64(*(*uint16)(unsafe.Pointer(uintptr(ptr))))
-	case DataTypeUint32:
-		return uint64(*(*uint32)(unsafe.Pointer(uintptr(ptr))))
-	case DataTypeUint64:
-		return *(*uint64)(unsafe.Pointer(uintptr(ptr)))
-	default:
-		panic(fmt.Sprintf("non-integer type %s", t))
 	}
 }
 
@@ -280,6 +268,47 @@ var encodingName [encodingTypeCount]string = [encodingTypeCount]string{
 	EncodingDeltaInt8:  "delta8",
 	EncodingDeltaInt16: "delta16",
 	EncodingDeltaInt32: "delta32",
+}
+
+// ColumnWriter is an interface implemented by column encoders that accumulate a
+// column's values and then serialize them.
+type ColumnWriter interface {
+	Encoder
+	// Finish serializes the column's values into the provided buffer at the
+	// provided offset, returning the new offset and the column's descriptor.
+	//
+	// The `rows` argument must be the current number of logical rows in the
+	// column.  Some implementations support defaults, and these implementations
+	// rely on the caller to inform them the current number of logical rows.
+	Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc)
+}
+
+type MultiColumnWriter interface {
+	Encoder
+	// NumColumns returns the number of columns the MultiColumnWriter will encode.
+	NumColumns() int
+	// Finish serializes the column at the specified index, writing the column's
+	// data to buf at offset, and returning the offset at which the next column
+	// should be encoded. Finish also returns a column descriptor describing the
+	// encoding of the column, which will be serialized within the block header.
+	//
+	// Finish is called for each index < NumColumns() in order.
+	Finish(col int, rows int, offset uint32, buf []byte) (uint32, ColumnDesc)
+}
+
+// Encoder is an interface implemented by column encoders.
+type Encoder interface {
+	// Reset clears the ColumnWriter's internal state, preparing it for reuse.
+	Reset()
+	// Size returns the size required to encode the column's current values.
+	//
+	// The `rows` argument must be the current number of logical rows in the
+	// column.  Some implementations support defaults, and these implementations
+	// rely on the caller to inform them the current number of logical rows.
+	Size(rows int, offset uint32) uint32
+	// WriteDebug writes a human-readable description of the current column
+	// state to the provided writer.
+	WriteDebug(w io.Writer, rows int)
 }
 
 // PrefixBytes holds an array of lexicograpghically ordered byte slices. It
@@ -664,8 +693,7 @@ type bytesBuilder struct {
 	maxOffset16               uint32 // configurable for testing purposes
 }
 
-// Reset TODO(peter) ...
-func (b *bytesBuilder) Reset(bundleSize int) {
+func (b *bytesBuilder) Init(bundleSize int) {
 	if bundleSize > 0 && (bundleSize&(bundleSize-1)) != 0 {
 		panicf("prefixbytes bundle size %d is not a power of 2", bundleSize)
 	}
@@ -678,6 +706,18 @@ func (b *bytesBuilder) Reset(bundleSize int) {
 	if b.bundleSize > 0 {
 		b.bundleShift = bits.TrailingZeros32(uint32(bundleSize))
 		b.maxShared = (1 << 16) - 1
+	}
+}
+
+// Reset TODO(peter) ...
+func (b *bytesBuilder) Reset() {
+	*b = bytesBuilder{
+		data:        b.data[:0],
+		bundleSize:  b.bundleSize,
+		bundleShift: b.bundleShift,
+		offsets:     b.offsets[:0],
+		maxOffset16: (1 << 16) - 1,
+		maxShared:   b.maxShared,
 	}
 }
 
@@ -907,8 +947,10 @@ func (b *bytesBuilder) prefixCompress() {
 // should use [Size] to size buf appropriately before calling Finish.
 //
 // TODO(peter) ...
-func (b *bytesBuilder) Finish(offset uint32, buf []byte) uint32 {
+func (b *bytesBuilder) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	desc := ColumnDesc(DataTypeBytes)
 	if b.bundleSize > 0 {
+		desc = ColumnDesc(DataTypePrefixBytes)
 		// Encode the bundle shift.
 		buf[offset] = byte(b.bundleShift)
 		offset++
@@ -971,7 +1013,7 @@ func (b *bytesBuilder) Finish(offset uint32, buf []byte) uint32 {
 		copy(dest32.Slice(nOffsets32), b.offsets[b.nOffsets16:])
 	}
 	offset += uint32(copy(buf[offset:], b.data))
-	return offset
+	return offset, desc
 }
 
 // Size computes the size required to encode the byte slices beginning at the
@@ -979,7 +1021,7 @@ func (b *bytesBuilder) Finish(offset uint32, buf []byte) uint32 {
 // returned int32 is the offset of the first byte after the end of the encoded
 // data. To compute the size in bytes, subtract the [offset] passed into Size
 // from the returned offset.
-func (b *bytesBuilder) Size(offset uint32) uint32 {
+func (b *bytesBuilder) Size(rows int, offset uint32) uint32 {
 	// The nOffsets16 count.
 	offset += align16
 
@@ -1004,4 +1046,526 @@ func (b *bytesBuilder) Size(offset uint32) uint32 {
 		offset += uint32(nOffsets32) << align32Shift
 	}
 	return offset + dataLen
+}
+
+func (b *bytesBuilder) WriteDebug(w io.Writer, rows int) {
+	if b.bundleSize > 0 {
+		fmt.Fprintf(w, "prefixbytes(%d): %d keys", b.bundleSize, b.nKeys)
+	} else {
+		fmt.Fprintf(w, "bytes: %d slices", b.nKeys)
+	}
+}
+
+func MakeNullable[W ColumnWriter](dataType DataType, w W) Nullable[W] {
+	return Nullable[W]{
+		dataType: dataType,
+		writer:   w,
+	}
+}
+
+type Nullable[W ColumnWriter] struct {
+	dataType  DataType
+	writer    W
+	nulls     nullBitmapBuilder
+	nullCount int
+}
+
+func (n *Nullable[W]) SetNull(row int) {
+	n.nulls = n.nulls.Set(row, true)
+	n.nullCount++
+}
+
+func (n *Nullable[W]) NotNull(row int) (W, int) {
+	return n.writer, row - n.nullCount
+}
+
+func (n *Nullable[W]) Reset() {
+	for i := range n.nulls {
+		n.nulls[i] = 0
+	}
+	n.nulls = n.nulls[:0]
+	n.nullCount = 0
+	n.writer.Reset()
+}
+
+func (n *Nullable[W]) Size(rows int, offset uint32) uint32 {
+	if n.nullCount == rows {
+		// All NULLs; doesn't need to be encoded into column data.
+		return offset
+	} else if n.nullCount > 0 {
+		offset = n.nulls.Size(offset)
+	}
+	return n.writer.Size(rows-n.nullCount, offset)
+}
+
+func (n *Nullable[W]) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	if n.nullCount == rows {
+		return offset, ColumnDesc(n.dataType).WithEncoding(EncodingAllNull)
+	} else if n.nullCount > 0 {
+		offset = n.nulls.Finish(offset, buf)
+		off, desc := n.writer.Finish(rows-n.nullCount, offset, buf)
+		return off, desc.WithNullBitmap()
+	}
+	return n.writer.Finish(rows-n.nullCount, offset, buf)
+}
+
+func (n *Nullable[W]) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprintf(w, "nullable[%d nulls](", n.nullCount)
+	n.writer.WriteDebug(w, rows-n.nullCount)
+	fmt.Fprintf(w, ")")
+}
+
+func MakeDefaultNull[W ColumnWriter](dataType DataType, w W) DefaultNull[W] {
+	return DefaultNull[W]{
+		dataType: dataType,
+		writer:   w,
+	}
+}
+
+type DefaultNull[W ColumnWriter] struct {
+	dataType     DataType
+	writer       W
+	nulls        nullBitmapBuilder
+	idx          int
+	notNullCount int
+}
+
+func (n *DefaultNull[W]) NotNull(row int) (W, int) {
+	for r := n.idx; r < row; r++ {
+		n.nulls = n.nulls.Set(r, true)
+	}
+	n.nulls = n.nulls.Set(row, false)
+	n.idx = row + 1
+	n.notNullCount++
+	return n.writer, n.notNullCount - 1
+}
+
+func (n *DefaultNull[W]) Reset() {
+	n.nulls = n.nulls[:0]
+	n.idx = 0
+	n.notNullCount = 0
+	n.writer.Reset()
+}
+
+func (n *DefaultNull[W]) Size(rows int, offset uint32) uint32 {
+	if n.notNullCount == 0 {
+		// All NULLs; doesn't need to be encoded into column data.
+		return offset
+	} else if n.notNullCount != rows {
+		// Need a null bitmap.
+		offset = n.nulls.Size(offset)
+	}
+	return n.writer.Size(n.notNullCount, offset)
+}
+
+func (n *DefaultNull[W]) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	if n.notNullCount == 0 {
+		return offset, ColumnDesc(n.dataType).WithEncoding(EncodingAllNull)
+	} else if n.notNullCount != rows {
+		offset = n.nulls.Finish(offset, buf)
+		offset, desc := n.writer.Finish(n.notNullCount, offset, buf)
+		return offset, desc.WithNullBitmap()
+	}
+	return n.writer.Finish(n.notNullCount, offset, buf)
+}
+
+func (n *DefaultNull[W]) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprintf(w, "defaultnull[%d not null](", n.notNullCount)
+	n.writer.WriteDebug(w, n.notNullCount)
+	fmt.Fprintf(w, ")")
+}
+
+// UintDefault configures the behavior of a [Uint64Builder], [Uint32Builder],
+// [Uint16Builder] or [Uint8Builder] with respect to unspecified values.
+type UintDefault int8
+
+const (
+	// UintDefaultNone indicates that there is no default value, and that the
+	// caller must call Set for every row.
+	UintDefaultNone UintDefault = iota
+	// UintDefaultZero indicates that there is a default value of 0. The caller
+	// may choose to omit calls to Set for rows with value zero. During delta
+	// encoding, all deltas will be computed relative to zero. This may result
+	// in a less efficient encoding if every value in the column is non-zero.
+	// UintDefaultZero may improve performance of encoding columns with many
+	// zero values by allowing the caller to omit Set calls.
+	UintDefaultZero
+)
+
+type Uint64Builder struct {
+	defaultConfig UintDefault
+	n             int
+	minimum       uint64
+	maximum       uint64
+	elems         UnsafeRawSlice[uint64]
+}
+
+func (b *Uint64Builder) Init(defaultConfig UintDefault) {
+	b.defaultConfig = defaultConfig
+	b.Reset()
+}
+
+func (b *Uint64Builder) Reset() {
+	if b.defaultConfig == UintDefaultZero {
+		b.minimum = 0
+		b.maximum = 0
+		for i := 0; i < b.n; i++ {
+			b.elems.set(i, 0)
+		}
+	} else {
+		b.minimum = math.MaxUint64
+		b.maximum = 0
+	}
+}
+
+func (b *Uint64Builder) Set(row int, v uint64) {
+	if b.n <= row {
+		// Double the size of the buffer, or initialize it to at least 256 bytes
+		// if this is the first allocation. Then double until there's sufficient
+		// space for n bytes.
+		n2 := max(b.n<<1, int(256>>align64Shift))
+		for n2 <= row {
+			n2 <<= 1 /* double the size */
+		}
+		newData := make([]byte, n2<<align64Shift)
+		newElems := makeUnsafeRawSlice[uint64](unsafe.Pointer(&newData[0]))
+		copy(newElems.Slice(b.n), b.elems.Slice(b.n))
+		b.elems = newElems
+		b.n = n2
+	}
+	if b.minimum > v {
+		b.minimum = v
+	}
+	if b.maximum < v {
+		b.maximum = v
+	}
+	b.elems.set(row, v)
+}
+
+func (b *Uint64Builder) Size(rows int, offset uint32) uint32 {
+	offset = align(offset, align64)
+	delta := b.maximum - b.minimum
+	switch {
+	case delta == 0:
+		return offset + align64
+	case delta < (1 << 8):
+		return offset + align64 + uint32(rows)
+	case delta < (1 << 16):
+		return offset + align64 + uint32(rows<<align16Shift)
+	case delta < (1 << 32):
+		return offset + align64 + uint32(rows<<align32Shift)
+	default:
+		return offset + uint32(rows<<align64Shift)
+	}
+}
+
+func (b *Uint64Builder) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	desc := ColumnDesc(DataTypeUint64)
+	offset = alignWithZeroes(buf, offset, align64)
+	writeMinimum := func() {
+		binary.LittleEndian.PutUint64(buf[offset:], b.minimum)
+		offset += align64
+	}
+	delta := b.maximum - b.minimum
+	switch {
+	case delta == 0:
+		desc = desc.WithEncoding(EncodingConstant)
+		writeMinimum()
+	case delta < (1 << 8):
+		desc = desc.WithEncoding(EncodingDeltaInt8)
+		writeMinimum()
+		dest := makeUnsafeRawSlice[uint8](unsafe.Pointer(&buf[offset]))
+		reduceUints[uint64, uint8](b.minimum, b.elems.Slice(rows), dest.Slice(rows))
+		offset += uint32(rows)
+	case delta < (1 << 16):
+		desc = desc.WithEncoding(EncodingDeltaInt16)
+		writeMinimum()
+		dest := makeUnsafeRawSlice[uint16](unsafe.Pointer(&buf[offset]))
+		reduceUints[uint64, uint16](b.minimum, b.elems.Slice(rows), dest.Slice(rows))
+		offset += uint32(rows << align16Shift)
+	case delta < (1 << 32):
+		desc = desc.WithEncoding(EncodingDeltaInt32)
+		writeMinimum()
+		dest := makeUnsafeRawSlice[uint32](unsafe.Pointer(&buf[offset]))
+		reduceUints[uint64, uint32](b.minimum, b.elems.Slice(rows), dest.Slice(rows))
+		offset += uint32(rows << align32Shift)
+	default:
+		offset += uint32(copy(buf[offset:], unsafe.Slice((*byte)(b.elems.ptr), rows<<align64Shift)))
+	}
+	return offset, desc
+}
+
+func (b *Uint64Builder) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprintf(w, "uint64: %d rows", rows)
+}
+
+type Uint32Builder struct {
+	defaultConfig UintDefault
+	n             int
+	minimum       uint32
+	maximum       uint32
+	elems         UnsafeRawSlice[uint32]
+}
+
+func (b *Uint32Builder) Init(defaultConfig UintDefault) {
+	b.defaultConfig = defaultConfig
+	b.Reset()
+}
+
+func (b *Uint32Builder) Reset() {
+	if b.defaultConfig == UintDefaultZero {
+		b.minimum = 0
+		b.maximum = 0
+		for i := 0; i < b.n; i++ {
+			b.elems.set(i, 0)
+		}
+	} else {
+		b.minimum = math.MaxUint32
+		b.maximum = 0
+	}
+}
+
+func (b *Uint32Builder) Set(row int, v uint32) {
+	if b.n <= row {
+		// Double the size of the buffer, or initialize it to at least 256 bytes
+		// if this is the first allocation. Then double until there's sufficient
+		// space for n bytes.
+		n2 := max(b.n<<1, int(256>>align32Shift))
+		for n2 <= row {
+			n2 <<= 1 /* double the size */
+		}
+		newData := make([]byte, n2<<align32Shift)
+		newElems := makeUnsafeRawSlice[uint32](unsafe.Pointer(&newData[0]))
+		copy(newElems.Slice(b.n), b.elems.Slice(b.n))
+		b.elems = newElems
+		b.n = n2
+	}
+	if b.minimum > v {
+		b.minimum = v
+	}
+	if b.maximum < v {
+		b.maximum = v
+	}
+	b.elems.set(row, v)
+}
+
+func (b *Uint32Builder) Size(rows int, offset uint32) uint32 {
+	offset = align(offset, align32)
+	delta := b.maximum - b.minimum
+	switch {
+	case delta == 0:
+		return offset + align32
+	case delta < (1 << 8):
+		return offset + align32 + uint32(rows)
+	case delta < (1 << 16):
+		return offset + align32 + uint32(rows<<align16Shift)
+	default:
+		return offset + uint32(rows<<align32Shift)
+	}
+}
+
+func (b *Uint32Builder) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	desc := ColumnDesc(DataTypeUint32)
+	offset = alignWithZeroes(buf, offset, align32)
+	writeMinimum := func() {
+		binary.LittleEndian.PutUint32(buf[offset:], b.minimum)
+		offset += align32
+	}
+	delta := b.maximum - b.minimum
+	switch {
+	case delta == 0:
+		desc = desc.WithEncoding(EncodingConstant)
+		writeMinimum()
+	case delta < (1 << 8):
+		desc = desc.WithEncoding(EncodingDeltaInt8)
+		writeMinimum()
+		dest := makeUnsafeRawSlice[uint8](unsafe.Pointer(&buf[offset]))
+		reduceUints[uint32, uint8](b.minimum, b.elems.Slice(rows), dest.Slice(rows))
+		offset += uint32(rows)
+	case delta < (1 << 16):
+		desc = desc.WithEncoding(EncodingDeltaInt16)
+		writeMinimum()
+		dest := makeUnsafeRawSlice[uint16](unsafe.Pointer(&buf[offset]))
+		reduceUints[uint32, uint16](b.minimum, b.elems.Slice(rows), dest.Slice(rows))
+		offset += uint32(rows << align16Shift)
+	default:
+		offset += uint32(copy(buf[offset:], unsafe.Slice((*byte)(b.elems.ptr), rows<<align32Shift)))
+	}
+	return offset, desc
+}
+
+func (b *Uint32Builder) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprintf(w, "uint32: %d rows", rows)
+}
+
+type Uint16Builder struct {
+	defaultConfig UintDefault
+	n             int
+	minimum       uint16
+	maximum       uint16
+	elems         UnsafeRawSlice[uint16]
+}
+
+func (b *Uint16Builder) Init(defaultConfig UintDefault) {
+	b.defaultConfig = defaultConfig
+	b.Reset()
+}
+
+func (b *Uint16Builder) Reset() {
+	if b.defaultConfig == UintDefaultZero {
+		b.minimum = 0
+		b.maximum = 0
+		for i := 0; i < b.n; i++ {
+			b.elems.set(i, 0)
+		}
+	} else {
+		b.minimum = math.MaxUint16
+		b.maximum = 0
+	}
+}
+
+func (b *Uint16Builder) Set(row int, v uint16) {
+	if b.n <= row {
+		// Double the size of the buffer, or initialize it to at least 256 bytes
+		// if this is the first allocation. Then double until there's sufficient
+		// space for n bytes.
+		n2 := max(b.n<<1, int(256>>align16Shift))
+		for n2 <= row {
+			n2 <<= 1 /* double the size */
+		}
+		newData := make([]byte, n2<<align16Shift)
+		newElems := makeUnsafeRawSlice[uint16](unsafe.Pointer(&newData[0]))
+		copy(newElems.Slice(b.n), b.elems.Slice(b.n))
+		b.elems = newElems
+		b.n = n2
+	}
+	if b.minimum > v {
+		b.minimum = v
+	}
+	if b.maximum < v {
+		b.maximum = v
+	}
+	b.elems.set(row, v)
+}
+
+func (b *Uint16Builder) Size(rows int, offset uint32) uint32 {
+	offset = align(offset, align16)
+	delta := b.maximum - b.minimum
+	switch {
+	case delta == 0:
+		return offset + align16
+	case delta < (1 << 8):
+		return offset + align16 + uint32(rows)
+	default:
+		return offset + uint32(rows<<align16Shift)
+	}
+}
+
+func (b *Uint16Builder) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	desc := ColumnDesc(DataTypeUint16)
+	offset = alignWithZeroes(buf, offset, align16)
+	writeMinimum := func() {
+		binary.LittleEndian.PutUint16(buf[offset:], b.minimum)
+		offset += align16
+	}
+	delta := b.maximum - b.minimum
+	switch {
+	case delta == 0:
+		desc = desc.WithEncoding(EncodingConstant)
+		writeMinimum()
+	case delta < (1 << 8):
+		desc = desc.WithEncoding(EncodingDeltaInt8)
+		writeMinimum()
+		dest := makeUnsafeRawSlice[uint8](unsafe.Pointer(&buf[offset]))
+		reduceUints[uint16, uint8](b.minimum, b.elems.Slice(rows), dest.Slice(rows))
+		offset += uint32(rows)
+	default:
+		offset += uint32(copy(buf[offset:], unsafe.Slice((*byte)(b.elems.ptr), rows<<align16Shift)))
+	}
+	return offset, desc
+}
+
+func (b *Uint16Builder) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprintf(w, "uint16: %d rows", rows)
+}
+
+type Uint8Builder struct {
+	defaultConfig UintDefault
+	n             int
+	minimum       uint8
+	maximum       uint8
+	elems         UnsafeRawSlice[uint8]
+}
+
+func (b *Uint8Builder) Init(defaultConfig UintDefault) {
+	b.defaultConfig = defaultConfig
+	b.Reset()
+}
+
+func (b *Uint8Builder) Reset() {
+	if b.defaultConfig == UintDefaultZero {
+		b.minimum = 0
+		b.maximum = 0
+		for i := 0; i < b.n; i++ {
+			b.elems.set(i, 0)
+		}
+	} else {
+		b.minimum = math.MaxUint8
+		b.maximum = 0
+	}
+}
+
+func (b *Uint8Builder) Set(row int, v uint8) {
+	if b.n <= row {
+		// Double the size of the buffer, or initialize it to at least 256 bytes
+		// if this is the first allocation. Then double until there's sufficient
+		// space for n bytes.
+		n2 := max(b.n<<1, 256)
+		for n2 <= row {
+			n2 <<= 1 /* double the size */
+		}
+		newData := make([]byte, n2)
+		newElems := makeUnsafeRawSlice[uint8](unsafe.Pointer(&newData[0]))
+		copy(newElems.Slice(b.n), b.elems.Slice(b.n))
+		b.elems = newElems
+		b.n = n2
+	}
+	if b.minimum > v {
+		b.minimum = v
+	}
+	if b.maximum < v {
+		b.maximum = v
+	}
+	b.elems.set(row, v)
+}
+
+func (b *Uint8Builder) Size(rows int, offset uint32) uint32 {
+	switch {
+	case b.maximum-b.minimum == 0:
+		return offset + 1
+	default:
+		return offset + uint32(rows)
+	}
+}
+
+func (b *Uint8Builder) Finish(rows int, offset uint32, buf []byte) (uint32, ColumnDesc) {
+	desc := ColumnDesc(DataTypeUint8)
+	if b.maximum-b.minimum == 0 {
+		buf[offset] = b.minimum
+		desc = desc.WithEncoding(EncodingConstant)
+		offset++
+	} else {
+		offset += uint32(copy(buf[offset:], unsafe.Slice((*byte)(b.elems.ptr), rows)))
+	}
+	return offset, desc
+}
+
+func (b *Uint8Builder) WriteDebug(w io.Writer, rows int) {
+	fmt.Fprintf(w, "uint8: %d rows", rows)
+}
+
+func reduceUints[O constraints.Integer, N constraints.Integer](minimum O, values []O, dst []N) {
+	for i := 0; i < len(values); i++ {
+		dst[i] = N(values[i] - minimum)
+	}
 }

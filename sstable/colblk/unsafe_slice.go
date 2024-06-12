@@ -73,14 +73,14 @@ func (s UnsafeIntegerSlice[T]) At(i int) T {
 	case 1:
 		return s.base + T(*(*int8)(unsafe.Pointer(uintptr(s.deltaPtr) + uintptr(i))))
 	case 2:
-		return s.base + T(*(*int16)(unsafe.Pointer(uintptr(s.deltaPtr) + 2*uintptr(i))))
+		return s.base + T(*(*int16)(unsafe.Pointer(uintptr(s.deltaPtr) + uintptr(i)<<align16Shift)))
 	case 4:
-		return s.base + T(*(*int32)(unsafe.Pointer(uintptr(s.deltaPtr) + 4*uintptr(i))))
+		return s.base + T(*(*int32)(unsafe.Pointer(uintptr(s.deltaPtr) + uintptr(i)<<align32Shift)))
 	case 8:
 		// NB: The slice encodes 64-bit integers, there is no base (it doesn't
 		// save any bits to compute a delta) and T must be a 64-bit integer. We
 		// cast directly into a *T pointer and don't add the base.
-		return (*(*T)(unsafe.Pointer(uintptr(s.deltaPtr) + 8*uintptr(i))))
+		return (*(*T)(unsafe.Pointer(uintptr(s.deltaPtr) + uintptr(i)<<align64Shift)))
 	default:
 		panic("unreachable")
 	}

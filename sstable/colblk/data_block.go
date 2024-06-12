@@ -5,8 +5,11 @@
 package colblk
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/cockroachdb/pebble/internal/base"
 )
@@ -20,8 +23,50 @@ import (
 // store the short attributes inlined within the data block. Otherwise, for
 // inlined-values, the user-defined value columns would be implicitly null.
 type KeySchema struct {
-	Columns  []ColumnConfig
-	WriteKey func(key []byte, w ColumnWriter) (samePrefix bool)
+	Columns        []ColumnConfig
+	NewKeyWriter   func() KeyWriter
+	NewKeyIterator func() KeyIterator
+}
+
+// A KeyWriter maintains ColumnWriters for a data block for writing user keys
+// into the database-specific key schema. Users may define their own key schema
+// and implement KeyWriter to encode keys into custom columns that are aware of
+// the structure of user keys.
+type KeyWriter interface {
+	MultiColumnWriter
+	// WriteKey writes a user key into the KeyWriter's columns. It must return
+	// true if the key's prefix (as defined by (base.Comparer).Split) is the
+	// same as the previously-written key.
+	//
+	// WriteKey is guaranteed to be called sequentially with increasing row
+	// indexes, beginning at zero.
+	WriteKey(row int, key []byte) (samePrefix bool)
+	// Release releases any resources held by the KeyWriter. It is called when
+	// Pebble will no longer use the KeyWriter. Implementations may use Release
+	// to pool KeyWriters.
+	Release()
+}
+
+// KeyIterator iterates over the keys in a columnar data block.
+//
+// Users of Pebble who define their own key schema and must implement
+// KeyIterator to seek over their decomposed keys.
+//
+// For the SeekGE and SeekLT operations, implementations are expected to return
+// the re-constituted key and the zero-based index of the row to which it
+// belongs.
+type KeyIterator interface {
+	// Init ... TODO(jackson)
+	Init(b BlockReader) error
+	// SeekGE ... TODO(jackson)
+	SeekGE(key []byte) (resultKey []byte, row int)
+	// SeekLT ... TODO(jackson)
+	SeekLT(key []byte) (resultKey []byte, row int)
+	// SetRow positions the iterator at the specified row, returning the key
+	// at the row.
+	SetRow(row int) []byte
+
+	fmt.Stringer
 }
 
 const (
@@ -37,23 +82,92 @@ func DefaultKeySchema(split base.Split) KeySchema {
 			defaultKeySchemaColumnPrefix: {DataType: DataTypePrefixBytes, BundleSize: 16},
 			defaultKeySchemaColumnSuffix: {DataType: DataTypeBytes},
 		},
-		WriteKey: func(key []byte, w ColumnWriter) (samePrefix bool) {
-			s := split(key)
-			samePrefix = w.PutPrefixBytes(defaultKeySchemaColumnPrefix, key[:s])
-			w.PutRawBytes(defaultKeySchemaColumnSuffix, key[s:])
-			return samePrefix
+		NewKeyWriter: func() KeyWriter {
+			kw := &defaultKeyWriter{
+				split:    split,
+				prefixes: bytesBuilder{},
+				suffixes: bytesBuilder{},
+			}
+			kw.prefixes.Init(16)
+			kw.suffixes.Init(0)
+			return kw
 		},
 	}
+}
+
+type defaultKeyWriter struct {
+	split    base.Split
+	prefixes bytesBuilder
+	suffixes bytesBuilder
+}
+
+func (w *defaultKeyWriter) WriteKey(row int, key []byte) (samePrefix bool) {
+	s := w.split(key)
+	samePrefix = w.prefixes.PutOrdered(key[:s])
+	w.suffixes.Put(key[s:])
+	return samePrefix
+}
+
+func (w *defaultKeyWriter) NumColumns() int {
+	return 2
+}
+
+func (w *defaultKeyWriter) Reset() {
+	w.prefixes.Reset()
+	w.suffixes.Reset()
+}
+
+func (w *defaultKeyWriter) WriteDebug(dst io.Writer, rows int) {
+	fmt.Fprint(dst, "0: prefixes:       ")
+	w.prefixes.WriteDebug(dst, rows)
+	fmt.Fprintln(dst)
+	fmt.Fprint(dst, "1: suffixes:       ")
+	w.suffixes.WriteDebug(dst, rows)
+	fmt.Fprintln(dst)
+}
+
+func (w *defaultKeyWriter) Size(rows int, offset uint32) uint32 {
+	offset = w.prefixes.Size(rows, offset)
+	return w.suffixes.Size(rows, offset)
+}
+
+func (w *defaultKeyWriter) Finish(
+	col int, rows int, offset uint32, buf []byte,
+) (uint32, ColumnDesc) {
+	switch col {
+	case defaultKeySchemaColumnPrefix:
+		return w.prefixes.Finish(rows, offset, buf)
+	case defaultKeySchemaColumnSuffix:
+		return w.suffixes.Finish(rows, offset, buf)
+	default:
+		panic(fmt.Sprintf("unknown default key column: %d", col))
+	}
+}
+
+func (w *defaultKeyWriter) Release() {
+	// TODO(jackson): pool
 }
 
 // DataBlockWriter writes columnar data blocks, encoding keys using a
 // user-defined schema.
 type DataBlockWriter struct {
-	bw          blockWriter
-	schema      KeySchema
-	lastPrefix  []byte
-	valuePrefix [1]byte
-	schemaAlloc [dataBlockColumnMax + 4]ColumnConfig
+	// user key
+	schema    KeySchema
+	keyWriter KeyWriter
+	// trailers is the column writer for InternalKey uint64 trailers.
+	trailers Uint64Builder
+	// prefixSame is the column writer for the prefix-changed bitmap that
+	// indicates when a new key prefix begins. During block building, the bitmap
+	// represents when the prefix stays the same, which is expected to be a
+	// rarer case. Before Finish-ing the column, we invert the bitmap.
+	prefixSame bitmapBuilder
+	// values is the column writer for values. Every value is prefixed with a
+	// single-byte value prefix.
+	values bytesBuilder
+
+	buf            []byte
+	rows           int
+	valuePrefixBuf [1]byte
 }
 
 const (
@@ -63,74 +177,118 @@ const (
 	dataBlockColumnMax
 )
 
-var dataBlockColumnConfigs = []ColumnConfig{
-	dataBlockColumnTrailer:       {DataType: DataTypeUint64}, // trailer
-	dataBlockColumnPrefixChanged: {DataType: DataTypeBool},   // prefix-changed
-	dataBlockColumnValue:         {DataType: DataTypeBytes},  // value
-}
-
 // Init initializes the data block writer.
 func (w *DataBlockWriter) Init(schema KeySchema) {
-	schemaAlloc := append(append(schema.Columns, w.schemaAlloc[:0]...), dataBlockColumnConfigs...)
-	w.bw.init(0, 0, schemaAlloc)
 	w.schema = schema
-	w.lastPrefix = w.lastPrefix[:0]
-	w.valuePrefix[0] = 'x' // TODO(jackson): Deal with the value prefix.
+	w.keyWriter = schema.NewKeyWriter()
+	w.trailers.Init(UintDefaultNone)
+	w.valuePrefixBuf[0] = 'x' // TODO(jackson): Deal with the value prefix.
+	w.values.Init(0)
 }
 
 // Reset resets the data block writer to its initial state, retaining buffers.
 func (w *DataBlockWriter) Reset() {
-	w.lastPrefix = w.lastPrefix[:0]
-	w.bw.reset()
+	w.keyWriter.Reset()
+	w.trailers.Reset()
+	w.prefixSame.Reset()
+	w.values.Reset()
+	w.rows = 0
+	w.buf = w.buf[:0]
 }
 
 // String outputs a human-readable summary of internal DataBlockWriter state.
 func (w *DataBlockWriter) String() string {
-	return w.bw.String()
+	var buf bytes.Buffer
+	size := uint32(w.Size())
+	fmt.Fprintf(&buf, "size=%d:\n", size)
+	w.keyWriter.WriteDebug(&buf, w.rows)
+
+	fmt.Fprintf(&buf, "%d: trailers:       ", len(w.schema.Columns)+dataBlockColumnTrailer)
+	w.trailers.WriteDebug(&buf, w.rows)
+	fmt.Fprintln(&buf)
+
+	fmt.Fprintf(&buf, "%d: prefix changed: ", len(w.schema.Columns)+dataBlockColumnPrefixChanged)
+	w.prefixSame.WriteDebug(&buf, w.rows)
+	fmt.Fprintln(&buf)
+
+	fmt.Fprintf(&buf, "%d: values:         ", len(w.schema.Columns)+dataBlockColumnValue)
+	w.values.WriteDebug(&buf, w.rows)
+	fmt.Fprintln(&buf)
+
+	return buf.String()
 }
 
 // Add TODO(peter) ...
 func (w *DataBlockWriter) Add(ikey base.InternalKey, value []byte) {
-	if w.schema.WriteKey(ikey.UserKey, &w.bw) {
-		w.bw.PutBitmap(len(w.schema.Columns)+dataBlockColumnPrefixChanged, true)
+	if w.keyWriter.WriteKey(w.rows, ikey.UserKey) {
+		w.prefixSame = w.prefixSame.Set(w.rows, true)
 	}
-	w.bw.PutUint64(len(w.schema.Columns)+dataBlockColumnTrailer, ikey.Trailer)
-	w.bw.PutRawBytesConcat(len(w.schema.Columns)+dataBlockColumnValue, w.valuePrefix[:], value)
+	w.trailers.Set(w.rows, ikey.Trailer)
+	w.values.PutConcat(w.valuePrefixBuf[:], value)
+	w.rows++
 }
 
 // Size returns the size of the current pending data block.
 func (w *DataBlockWriter) Size() int {
-	return w.bw.Size()
+	off := blockHeaderSize(len(w.schema.Columns)+dataBlockColumnMax, 0)
+	off = w.keyWriter.Size(w.rows, off)
+	off = w.trailers.Size(w.rows, off)
+	off = w.prefixSame.Size(w.rows, off)
+	off = w.values.Size(w.rows, off)
+	off += 1
+	return int(off)
 }
 
 // Finish serializes the pending data block.
 func (w *DataBlockWriter) Finish() []byte {
-	return w.bw.Finish(w.bw.cols[dataBlockColumnTrailer].count)
-}
+	size := w.Size()
+	if cap(w.buf) < size {
+		w.buf = make([]byte, size)
+	}
+	w.buf = w.buf[:size]
 
-// KeyIterator iterates over the keys in a columnar data block.
-//
-// Users of Pebble who define their own key schema and must implement
-// KeyIterator to seek over their decomposed keys.
-//
-// For the SeekGE and SeekLT operations, implementations are expected to return
-// the re-constituted key and the zero-based index of the row to which it
-// belongs.
-type KeyIterator interface {
-	// Init ... TODO(jackson)
-	Init(b BlockReader) error
+	cols := len(w.schema.Columns) + dataBlockColumnMax
+	WriteHeader(w.buf, Header{
+		Columns: uint16(cols),
+		Rows:    uint32(w.rows),
+	})
+	var desc ColumnDesc
+	pageOffset := blockHeaderSize(cols, 0)
 
-	// SeekGE ... TODO(jackson)
-	SeekGE(key []byte) (resultKey []byte, row int)
+	// Write the user-defined key columns.
+	for i := range w.schema.Columns {
+		columnTagOff := blockHeaderSize(i, 0)
+		binary.LittleEndian.PutUint32(w.buf[1+columnTagOff:], pageOffset)
 
-	// SeekLT ... TODO(jackson)
-	SeekLT(key []byte) (resultKey []byte, row int)
+		pageOffset, desc = w.keyWriter.Finish(i, w.rows, pageOffset, w.buf)
+		w.buf[columnTagOff] = byte(desc)
+	}
 
-	// SetRow positions the iterator at the specified row, returning the key
-	// at the row.
-	SetRow(row int) []byte
+	// Write the trailers.
+	hOff := blockHeaderSize(len(w.schema.Columns)+dataBlockColumnTrailer, 0)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.trailers.Finish(w.rows, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
 
-	fmt.Stringer
+	// Write the prefix-same bitmap.
+	// Invert it before writing it out, because we want it to represent when the
+	// prefix changes.
+	w.prefixSame.Invert()
+	hOff = blockHeaderSize(len(w.schema.Columns)+dataBlockColumnPrefixChanged, 0)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.prefixSame.Finish(w.rows, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	// Write the value column.
+	hOff = blockHeaderSize(len(w.schema.Columns)+dataBlockColumnValue, 0)
+	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
+	pageOffset, desc = w.values.Finish(w.rows, pageOffset, w.buf)
+	w.buf[hOff] = byte(desc)
+
+	w.buf[pageOffset] = 0x00
+	pageOffset++
+
+	return w.buf
 }
 
 type dataBlockIter struct {

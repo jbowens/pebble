@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -115,7 +114,7 @@ func TestPrefixCompress(t *testing.T) {
 			var bundleSize int
 			td.ScanArgs(t, "bundle-size", &bundleSize)
 			var b bytesBuilder
-			b.Reset(bundleSize)
+			b.Init(bundleSize)
 			for _, r := range td.Input {
 				switch r {
 				case '|':
@@ -146,29 +145,29 @@ func TestRawBytes(t *testing.T) {
 		out.Reset()
 		switch td.Cmd {
 		case "build":
-			builder.Reset(0 /* bundleSize */)
+			builder.Init(0 /* bundleSize */)
 
 			var startOffset int
 			td.ScanArgs(t, "offset", &startOffset)
 			td.MaybeScanArgs(t, "max-offset-16", &builder.maxOffset16)
 
-			var count uint32
+			var count int
 			for _, k := range strings.Split(strings.TrimSpace(td.Input), "\n") {
 				builder.Put([]byte(k))
 				count++
 			}
 
-			size := builder.Size(uint32(startOffset))
+			size := builder.Size(count, uint32(startOffset))
 			fmt.Fprintf(&out, "Size: %d\n", size-uint32(startOffset))
 
 			buf := make([]byte, uint32(startOffset)+size+align64)
-			endOffset := builder.Finish(uint32(startOffset), buf)
+			endOffset, _ := builder.Finish(count, uint32(startOffset), buf)
 
 			// Validate that builder.Size() was correct in its estimate.
 			require.Equal(t, size, endOffset)
 			f := binfmt.New(buf).LineWidth(20)
 			f.HexBytesln(startOffset, "start offset")
-			rawBytesToBinFormatter(f, count, nil)
+			rawBytesToBinFormatter(f, uint32(count), nil)
 			return f.String()
 		default:
 			panic(fmt.Sprintf("unrecognized command %q", td.Cmd))
@@ -180,7 +179,7 @@ func TestPrefixBytes(t *testing.T) {
 	var out bytes.Buffer
 	var pb PrefixBytes
 	var builder bytesBuilder
-
+	var keys int
 	var getBuf []byte
 
 	datadriven.RunTest(t, "testdata/prefix_bytes", func(t *testing.T, td *datadriven.TestData) string {
@@ -189,20 +188,22 @@ func TestPrefixBytes(t *testing.T) {
 		case "init":
 			var bundleSize int
 			td.ScanArgs(t, "bundle-size", &bundleSize)
-			builder.Reset(bundleSize)
+			builder.Init(bundleSize)
 			td.MaybeScanArgs(t, "max-offset-16", &builder.maxOffset16)
 
-			fmt.Fprintf(&out, "Size: %d", builder.Size(0))
+			keys = 0
+			fmt.Fprintf(&out, "Size: %d", builder.Size(keys, 0))
 			return out.String()
 		case "put":
 			for _, k := range strings.Split(strings.TrimSpace(td.Input), "\n") {
 				builder.PutOrdered([]byte(k))
+				keys++
 			}
 			fmt.Fprint(&out, builder.debugString(0))
 			return out.String()
 		case "finish":
-			buf := make([]byte, builder.Size(0))
-			offset := builder.Finish(0, buf)
+			buf := make([]byte, builder.Size(keys, 0))
+			offset, _ := builder.Finish(keys, 0, buf)
 			require.Equal(t, uint32(len(buf)), offset)
 			hexDump(&out, buf)
 			fmt.Fprintln(&out)
@@ -259,16 +260,16 @@ func TestPrefixBytesRandomized(t *testing.T) {
 	slices.SortFunc(userKeys, bytes.Compare)
 
 	var bb bytesBuilder
-	bb.Reset(1 << randInt(1, 4))
+	bb.Init(1 << randInt(1, 4))
 	for i := 0; i < len(userKeys); i++ {
 		bb.PutOrdered(userKeys[i])
 	}
 
 	//t.Log(bb.debugString(0, data))
 
-	size := bb.Size(0)
+	size := bb.Size(len(userKeys), 0)
 	buf := make([]byte, size)
-	offset := bb.Finish(0, buf)
+	offset, _ := bb.Finish(len(userKeys), 0, buf)
 	t.Logf("%d 16-bit offsets; %d 32-bit offsets", bb.nOffsets16, len(bb.offsets)-int(bb.nOffsets16))
 
 	if uint32(size) != offset {
@@ -302,45 +303,6 @@ func dataTypeFromName(name string) DataType {
 	return DataTypeInvalid
 }
 
-func writeColumnValue(dataType DataType, colIdx int, stringValue string, w ColumnWriter) {
-	panicIfErr := func(dataType DataType, stringValue string, err error) {
-		if err != nil {
-			panicf("unable to decode %q as value for data type %s: %s", stringValue, dataType, err)
-		}
-	}
-	switch dataType {
-	case DataTypeBool:
-		b, err := strconv.ParseBool(stringValue)
-		if stringValue == "1" {
-			b, err = true, nil
-		}
-		panicIfErr(dataType, stringValue, err)
-		w.PutBitmap(colIdx, b)
-	case DataTypeUint8:
-		v, err := strconv.ParseInt(stringValue, 10, 8)
-		panicIfErr(dataType, stringValue, err)
-		w.PutUint8(colIdx, uint8(v))
-	case DataTypeUint16:
-		v, err := strconv.ParseInt(stringValue, 10, 16)
-		panicIfErr(dataType, stringValue, err)
-		w.PutUint16(colIdx, uint16(v))
-	case DataTypeUint32:
-		v, err := strconv.ParseInt(stringValue, 10, 32)
-		panicIfErr(dataType, stringValue, err)
-		w.PutUint32(colIdx, uint32(v))
-	case DataTypeUint64:
-		v, err := strconv.ParseInt(stringValue, 10, 64)
-		panicIfErr(dataType, stringValue, err)
-		w.PutUint64(colIdx, uint64(v))
-	case DataTypeBytes:
-		w.PutRawBytes(colIdx, []byte(stringValue))
-	case DataTypePrefixBytes:
-		w.PutPrefixBytes(colIdx, []byte(stringValue))
-	default:
-		panicf("unknown data type type %s [%d]", dataType, dataType)
-	}
-}
-
 func hexDump(w io.Writer, b []byte) {
 	for len(b) > 0 {
 		n := min(32, len(b))
@@ -366,7 +328,7 @@ func wrapStr(w io.Writer, s string, width int) {
 
 func (b *bytesBuilder) debugString(offset uint32) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Size: %d", b.Size(offset))
+	fmt.Fprintf(&sb, "Size: %d", b.Size(b.nKeys, offset))
 	fmt.Fprintf(&sb, "\nnKeys=%d; bundleSize=%d; nOffsets16=%d", b.nKeys, b.bundleSize, b.nOffsets16)
 	if b.bundleSize > 0 {
 		fmt.Fprintf(&sb, "\nnBundles=%d; blockPrefixLen=%d; currentBundleLen=%d; currentBundleKeys=%d",
@@ -417,17 +379,17 @@ func BenchmarkPrefixBytes(b *testing.B) {
 	var bb bytesBuilder
 	var buf []byte
 	build := func(n int) []byte {
-		bb.Reset(16)
+		bb.Init(16)
 		for i := 0; i < n; i++ {
 			bb.PutOrdered(userKeys[i])
 		}
-		size := bb.Size(0)
+		size := bb.Size(n, 0)
 		if cap(buf) < int(size) {
 			buf = make([]byte, size)
 		} else {
 			buf = buf[:size]
 		}
-		_ = bb.Finish(0, buf)
+		_, _ = bb.Finish(n, 0, buf)
 		return buf
 	}
 

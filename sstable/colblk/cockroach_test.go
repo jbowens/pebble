@@ -6,6 +6,7 @@ package colblk
 
 import (
 	"fmt"
+	"io"
 	"slices"
 	"testing"
 	"time"
@@ -30,21 +31,94 @@ var cockroachKeySchema = KeySchema{
 		cockroachColMVCCLogical:   {DataType: DataTypeUint32},
 		cockroachColUntypedSuffix: {DataType: DataTypeBytes},
 	},
-	WriteKey: func(key []byte, w ColumnWriter) bool {
-		userKey, untypedSuffix, wallTime, logical := crdbtest.DecodeTimestamp(key)
-		samePrefix := w.PutPrefixBytes(cockroachColPrefix, userKey)
-		if untypedSuffix != nil {
-			w.PutNull(cockroachColMVCCWallTime)
-			w.PutNull(cockroachColMVCCLogical)
-			w.PutRawBytes(cockroachColUntypedSuffix, untypedSuffix)
-		} else {
-			w.PutUint64(cockroachColMVCCWallTime, wallTime)
-			w.PutUint32(cockroachColMVCCLogical, logical)
-			w.PutNull(cockroachColUntypedSuffix)
-		}
-		return samePrefix
+	NewKeyWriter: func() KeyWriter {
+		kw := &cockroachKeyWriter{}
+		kw.prefixes.Init(16)
+		kw.wallTimes.Init(UintDefaultNone)
+		kw.logicalTimes.Init(UintDefaultZero)
+		kw.untypedSuffixesValues.Init(0)
+		kw.untypedSuffixes = MakeDefaultNull(DataTypeBytes, &kw.untypedSuffixesValues)
+		return kw
 	},
 }
+
+type cockroachKeyWriter struct {
+	prefixes              bytesBuilder
+	wallTimes             Uint64Builder
+	logicalTimes          Uint32Builder
+	untypedSuffixes       DefaultNull[*bytesBuilder]
+	untypedSuffixesValues bytesBuilder
+}
+
+func (w *cockroachKeyWriter) WriteKey(row int, key []byte) (samePrefix bool) {
+	prefix, untypedSuffix, wallTime, logicalTime := crdbtest.DecodeTimestamp(key)
+	samePrefix = w.prefixes.PutOrdered(prefix)
+	w.wallTimes.Set(row, wallTime)
+	// The w.logicalTimes builder was initialized with UintDefaultZero, so if we
+	// don't set a value, the column value is implicitly zero. We only need to
+	// Set anything for non-zero values.
+	if logicalTime > 0 {
+		w.logicalTimes.Set(row, logicalTime)
+	}
+	if untypedSuffix != nil {
+		bw, _ := w.untypedSuffixes.NotNull(row)
+		bw.Put(untypedSuffix)
+	}
+	return samePrefix
+}
+
+func (w *cockroachKeyWriter) Reset() {
+	w.prefixes.Reset()
+	w.untypedSuffixes.Reset()
+	w.wallTimes.Reset()
+	w.logicalTimes.Reset()
+}
+
+func (kw *cockroachKeyWriter) WriteDebug(dst io.Writer, rows int) {
+	fmt.Fprint(dst, "prefixes: ")
+	kw.prefixes.WriteDebug(dst, rows)
+	fmt.Fprintln(dst)
+	fmt.Fprint(dst, "wall times: ")
+	kw.wallTimes.WriteDebug(dst, rows)
+	fmt.Fprintln(dst)
+	fmt.Fprint(dst, "logical times: ")
+	kw.logicalTimes.WriteDebug(dst, rows)
+	fmt.Fprintln(dst)
+	fmt.Fprint(dst, "untyped suffixes: ")
+	kw.untypedSuffixes.WriteDebug(dst, rows)
+	fmt.Fprintln(dst)
+}
+
+func (kw *cockroachKeyWriter) NumColumns() int {
+	return cockroachColCount
+}
+
+func (kw *cockroachKeyWriter) Size(rows int, offset uint32) uint32 {
+	offset = kw.prefixes.Size(rows, offset)
+	offset = kw.wallTimes.Size(rows, offset)
+	offset = kw.logicalTimes.Size(rows, offset)
+	offset = kw.untypedSuffixes.Size(rows, offset)
+	return offset
+}
+
+func (kw *cockroachKeyWriter) Finish(
+	col int, rows int, offset uint32, buf []byte,
+) (uint32, ColumnDesc) {
+	switch col {
+	case cockroachColPrefix:
+		return kw.prefixes.Finish(rows, offset, buf)
+	case cockroachColMVCCWallTime:
+		return kw.wallTimes.Finish(rows, offset, buf)
+	case cockroachColMVCCLogical:
+		return kw.logicalTimes.Finish(rows, offset, buf)
+	case cockroachColUntypedSuffix:
+		return kw.untypedSuffixes.Finish(rows, offset, buf)
+	default:
+		panic(fmt.Sprintf("unknown default key column: %d", col))
+	}
+}
+
+func (kw *cockroachKeyWriter) Release() {}
 
 func BenchmarkCockroachDataBlockWriter(b *testing.B) {
 	for _, prefixSize := range []int{8, 32, 128} {

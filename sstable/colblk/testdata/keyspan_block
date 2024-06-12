@@ -1,51 +1,51 @@
 init
 ----
-size=36 header=35:
-0:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
-1:int32        allnull,rows=0,size=0,nulls=0
-2:int64        allnull,rows=0,size=0,nulls=0
-3:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
-4:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+size=57:
+0: user keys:      bytes: 0 slices
+1: start indices:  uint32: 0 rows
+2: trailers:       uint64: 0 rows
+3: suffixes:       defaultnull[0 not null](bytes: 0 slices)
+4: values:         defaultnull[0 not null](bytes: 0 slices)
 
 add
 a-b:{(#0,RANGEDEL)}
 ----
-size=65 header=35:
-0:bytes        default,rows=2,size=11,nulls=0,n16=3,n32=0
-1:int32        constant,rows=1,size=4,nulls=0
-2:int64        constant,rows=1,size=8,nulls=0
-3:bytes        allnull,rows=1,size=0,nulls=1,n16=0,n32=0
-4:bytes        allnull,rows=1,size=0,nulls=1,n16=0,n32=0
+size=65:
+0: user keys:      bytes: 2 slices
+1: start indices:  uint32: 1 rows
+2: trailers:       uint64: 1 rows
+3: suffixes:       defaultnull[0 not null](bytes: 0 slices)
+4: values:         defaultnull[0 not null](bytes: 0 slices)
 
 add
 b-c:{(#100,RANGEDEL) (#20,RANGEDEL) (#0,RANGEDEL)}
 ----
-size=81 header=35:
-0:bytes        default,rows=3,size=14,nulls=0,n16=4,n32=0
-1:int32        delta8,rows=4,size=9,nulls=0
-2:int64        delta16,rows=4,size=16,nulls=0
-3:bytes        allnull,rows=4,size=0,nulls=4,n16=0,n32=0
-4:bytes        allnull,rows=4,size=0,nulls=4,n16=0,n32=0
+size=81:
+0: user keys:      bytes: 3 slices
+1: start indices:  uint32: 4 rows
+2: trailers:       uint64: 4 rows
+3: suffixes:       defaultnull[0 not null](bytes: 0 slices)
+4: values:         defaultnull[0 not null](bytes: 0 slices)
 
 add
 c-d:{(#100,RANGEDEL) (#0,RANGEDEL)}
 ----
-size=85 header=35:
-0:bytes        default,rows=4,size=17,nulls=0,n16=5,n32=0
-1:int32        delta8,rows=6,size=12,nulls=0
-2:int64        delta16,rows=6,size=26,nulls=0
-3:bytes        allnull,rows=6,size=0,nulls=6,n16=0,n32=0
-4:bytes        allnull,rows=6,size=0,nulls=6,n16=0,n32=0
+size=85:
+0: user keys:      bytes: 4 slices
+1: start indices:  uint32: 6 rows
+2: trailers:       uint64: 6 rows
+3: suffixes:       defaultnull[0 not null](bytes: 0 slices)
+4: values:         defaultnull[0 not null](bytes: 0 slices)
 
 add
 d-e:{(#0,RANGEDEL)}
 ----
-size=95 header=35:
-0:bytes        default,rows=5,size=20,nulls=0,n16=6,n32=0
-1:int32        delta8,rows=7,size=12,nulls=0
-2:int64        delta16,rows=7,size=23,nulls=0
-3:bytes        allnull,rows=7,size=0,nulls=7,n16=0,n32=0
-4:bytes        allnull,rows=7,size=0,nulls=7,n16=0,n32=0
+size=95:
+0: user keys:      bytes: 5 slices
+1: start indices:  uint32: 7 rows
+2: trailers:       uint64: 7 rows
+3: suffixes:       defaultnull[0 not null](bytes: 0 slices)
+4: values:         defaultnull[0 not null](bytes: 0 slices)
 
 finish
 ----
@@ -194,22 +194,22 @@ d-e:{(#0,RANGEDEL)}
 
 init
 ----
-size=36 header=35:
-0:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
-1:int32        allnull,rows=0,size=0,nulls=0
-2:int64        allnull,rows=0,size=0,nulls=0
-3:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
-4:bytes        allnull,rows=0,size=0,nulls=0,n16=0,n32=0
+size=57:
+0: user keys:      bytes: 0 slices
+1: start indices:  uint32: 0 rows
+2: trailers:       uint64: 0 rows
+3: suffixes:       defaultnull[0 not null](bytes: 0 slices)
+4: values:         defaultnull[0 not null](bytes: 0 slices)
 
 add
 b-d:{(#4,RANGEKEYSET,@3,coconut)}
 ----
-size=86 header=35:
-0:bytes        default,rows=2,size=10,nulls=0,n16=3,n32=0
-1:int32        constant,rows=1,size=4,nulls=0
-2:int64        constant,rows=1,size=12,nulls=0
-3:bytes        default,rows=1,size=8,nulls=0,n16=2,n32=0
-4:bytes        default,rows=1,size=13,nulls=0,n16=2,n32=0
+size=86:
+0: user keys:      bytes: 2 slices
+1: start indices:  uint32: 1 rows
+2: trailers:       uint64: 1 rows
+3: suffixes:       defaultnull[1 not null](bytes: 1 slices)
+4: values:         defaultnull[1 not null](bytes: 1 slices)
 
 finish
 ----
