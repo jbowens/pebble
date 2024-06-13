@@ -15,42 +15,60 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/binfmt"
+	"github.com/cockroachdb/pebble/internal/itertest"
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"golang.org/x/exp/rand"
 )
 
-var testKeysSchema = DefaultKeySchema(testkeys.Comparer.Split)
+var testKeysSchema = DefaultKeySchema(testkeys.Comparer, 16)
 
-func TestDataBlockWriter(t *testing.T) {
+func TestDataBlock(t *testing.T) {
 	var buf bytes.Buffer
 	var w DataBlockWriter
-	datadriven.RunTest(t, "testdata/data_block_writer", func(t *testing.T, td *datadriven.TestData) string {
-		buf.Reset()
-		switch td.Cmd {
-		case "init":
-			w.Init(testKeysSchema)
-			fmt.Fprint(&buf, &w)
-			return buf.String()
-		case "write":
-			for _, line := range strings.Split(td.Input, "\n") {
-				j := strings.IndexRune(line, ':')
-				ik := base.ParsePrettyInternalKey(line[:j])
-				w.Add(ik, []byte(line[j+1:]))
+	var r DataBlockReader
+	var it DataBlockIter
+	valuePrefix := []byte{'x'}
+	datadriven.Walk(t, "testdata/data_block", func(t *testing.T, path string) {
+		datadriven.RunTest(t, path, func(t *testing.T, td *datadriven.TestData) string {
+			buf.Reset()
+			switch td.Cmd {
+			case "init":
+				var bundleSize int
+				if td.MaybeScanArgs(t, "bundle-size", &bundleSize) {
+					w.Init(DefaultKeySchema(testkeys.Comparer, bundleSize))
+				} else {
+					w.Init(testKeysSchema)
+				}
+				fmt.Fprint(&buf, &w)
+				return buf.String()
+			case "write":
+				for _, line := range strings.Split(td.Input, "\n") {
+					j := strings.IndexRune(line, ':')
+					ik := base.ParsePrettyInternalKey(line[:j])
+
+					kcmp := w.KeyWriter.ComparePrev(ik.UserKey)
+					v := []byte(line[j+1:])
+					vp := valuePrefix[:min(1, len(v))] // Omit the prefix if the value is empty.
+					w.Add(ik, vp, v, kcmp)
+				}
+				fmt.Fprint(&buf, &w)
+				return buf.String()
+			case "finish":
+				block := w.Finish()
+				r.Init(testKeysSchema, block)
+				f := binfmt.New(r.r.data()).LineWidth(20)
+				r.r.headerToBinFormatter(f)
+				for i := 0; i < int(r.r.header.Columns); i++ {
+					r.r.columnToBinFormatter(f, i, int(r.r.header.Rows))
+				}
+				return f.String()
+			case "iter":
+				it.Init(&r, testKeysSchema.NewKeyIterator())
+				return itertest.RunInternalIterCmd(t, td, &it)
+			default:
+				return fmt.Sprintf("unknown command: %s", td.Cmd)
 			}
-			fmt.Fprint(&buf, &w)
-			return buf.String()
-		case "finish":
-			block := w.Finish()
-			r := NewBlockReader(block, 0)
-			f := binfmt.New(r.data()).LineWidth(20)
-			r.headerToBinFormatter(f)
-			for i := 0; i < int(r.header.Columns); i++ {
-				r.columnToBinFormatter(f, i, int(r.header.Rows))
-			}
-			return f.String()
-		default:
-			return fmt.Sprintf("unknown command: %s", td.Cmd)
-		}
+		})
 	})
 }
 
@@ -73,13 +91,15 @@ func benchmarkDataBlockWriter(b *testing.B, prefixSize, valueSize int) {
 	var w DataBlockWriter
 	w.Init(testKeysSchema)
 	b.ResetTimer()
+	valuePrefix := []byte{'x'}
 
 	for i := 0; i < b.N; i++ {
 		w.Reset()
 		var j int
 		for w.Size() < targetBlockSize {
-			ik := base.MakeInternalKey(keys[j], rng.Uint64n(base.InternalKeySeqNumMax), base.InternalKeyKindSet)
-			w.Add(ik, values[j])
+			ik := base.MakeInternalKey(keys[j], base.SeqNum(rng.Uint64n(uint64(base.SeqNumMax))), base.InternalKeyKindSet)
+			kcmp := w.KeyWriter.ComparePrev(ik.UserKey)
+			w.Add(ik, valuePrefix, values[j], kcmp)
 			j++
 		}
 		w.Finish()

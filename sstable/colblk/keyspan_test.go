@@ -31,7 +31,8 @@ func TestKeyspanBlock(t *testing.T) {
 			return buf.String()
 		case "add":
 			for _, line := range strings.Split(td.Input, "\n") {
-				w.AddSpan(keyspan.ParseSpan(line))
+				s := keyspan.ParseSpan(line)
+				w.AddSpan(&s)
 			}
 			fmt.Fprint(&buf, &w)
 			return buf.String()
@@ -85,10 +86,10 @@ func benchmarkKeyspanBlockRangeDeletions(b *testing.B, numSpans, keysPerSpan, ke
 			Keys:  s.Keys[:0],
 		}
 		for j := 0; j < keysPerSpan; j++ {
-			t := base.MakeTrailer(uint64(j), base.InternalKeyKindRangeDelete)
+			t := base.MakeTrailer(base.SeqNum(j), base.InternalKeyKindRangeDelete)
 			s.Keys = append(s.Keys, keyspan.Key{Trailer: t})
 		}
-		w.AddSpan(s)
+		w.AddSpan(&s)
 	}
 	block := w.Finish()
 	avgRowSize := float64(w.Size()) / float64(numSpans*keysPerSpan)
@@ -106,7 +107,7 @@ func benchmarkKeyspanBlockRangeDeletions(b *testing.B, numSpans, keysPerSpan, ke
 		for i := 0; i < b.N; i++ {
 			if s, _ := it.SeekGE(keys[rng.Intn(len(keys))]); s != nil {
 				for _, k := range s.Keys {
-					sum += k.Trailer
+					sum += uint64(k.Trailer)
 				}
 			}
 		}
@@ -124,7 +125,7 @@ func benchmarkKeyspanBlockRangeDeletions(b *testing.B, numSpans, keysPerSpan, ke
 				s, _ = it.First()
 			}
 			for _, k := range s.Keys {
-				sum += k.Trailer
+				sum += uint64(k.Trailer)
 			}
 		}
 		b.StopTimer()

@@ -366,6 +366,25 @@ func (w *layoutWriter) WritePrecompressedDataBlock(
 	return bh, nil
 }
 
+// WritePrecompressedIndexBlock writes a pre-compressed index block and its
+// pre-computed trailer to the writer, returning its block handle.
+func (w *layoutWriter) WritePrecompressedIndexBlock(
+	blk []byte, trailer block.Trailer,
+) (block.Handle, error) {
+	// Write the bytes to the file.
+	if err := w.writable.Write(blk); err != nil {
+		return block.Handle{}, err
+	}
+	bh := block.Handle{Offset: w.offset, Length: uint64(len(blk))}
+	w.lastIndexBlockHandle = bh
+	w.offset += uint64(len(blk))
+	if err := w.writable.Write(trailer[:]); err != nil {
+		return block.Handle{}, err
+	}
+	w.offset += block.TrailerLen
+	return bh, nil
+}
+
 // WriteIndexBlock constructs a trailer for the provided index (first or
 // second-level) and writes the block and trailer to the writer. It remembers
 // the last-written index block's handle and adds it to the file's meta index

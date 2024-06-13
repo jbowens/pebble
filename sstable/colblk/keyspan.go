@@ -45,13 +45,13 @@ var keyspanSchema = [keyspanColumnCount]ColumnConfig{
 type KeyspanBlockWriter struct {
 	equal base.Equal
 
-	userKeys      bytesBuilder
+	userKeys      BytesBuilder
 	startIndexes  Uint32Builder
 	trailers      Uint64Builder
-	suffixes      DefaultNull[*bytesBuilder]
-	suffixesBytes bytesBuilder
-	values        DefaultNull[*bytesBuilder]
-	valuesBytes   bytesBuilder
+	suffixes      DefaultNull[*BytesBuilder]
+	suffixesBytes BytesBuilder
+	values        DefaultNull[*BytesBuilder]
+	valuesBytes   BytesBuilder
 
 	buf               []byte
 	keyCount          int
@@ -82,7 +82,7 @@ func (w *KeyspanBlockWriter) Reset() {
 
 // AddSpan appends a new Span to the pending block. Spans must already be
 // fragmented (non-overlapping) and added in sorted order.
-func (w *KeyspanBlockWriter) AddSpan(s keyspan.Span) {
+func (w *KeyspanBlockWriter) AddSpan(s *keyspan.Span) {
 	// When keyspans are fragmented, abutting spans share a user key. One span's
 	// end key is the next span's start key.  Check if the previous user key
 	// equals this span's start key, and avoid encoding it again if so.
@@ -102,7 +102,7 @@ func (w *KeyspanBlockWriter) AddSpan(s keyspan.Span) {
 	// Encode each keyspan.Key in the span.
 	for i := range s.Keys {
 		w.startIndexes.Set(w.keyCount, uint32(startIdx))
-		w.trailers.Set(w.keyCount, s.Keys[i].Trailer)
+		w.trailers.Set(w.keyCount, uint64(s.Keys[i].Trailer))
 		if len(s.Keys[i].Suffix) > 0 {
 			sw, _ := w.suffixes.NotNull(w.keyCount)
 			sw.Put(s.Keys[i].Suffix)
@@ -151,31 +151,31 @@ func (w *KeyspanBlockWriter) Finish() []byte {
 	// Write the user keys.
 	hOff := blockHeaderSize(keyspanColUserKeys, keyspanHeaderSize)
 	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
-	pageOffset, desc = w.userKeys.Finish(w.userKeys.nKeys, pageOffset, w.buf)
+	pageOffset, desc = w.userKeys.Finish(0, w.userKeys.nKeys, pageOffset, w.buf)
 	w.buf[hOff] = byte(desc)
 
 	// Write the start indices.
 	hOff = blockHeaderSize(keyspanColStartIndices, keyspanHeaderSize)
 	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
-	pageOffset, desc = w.startIndexes.Finish(w.keyCount, pageOffset, w.buf)
+	pageOffset, desc = w.startIndexes.Finish(0, w.keyCount, pageOffset, w.buf)
 	w.buf[hOff] = byte(desc)
 
 	// Write the trailers.
 	hOff = blockHeaderSize(keyspanColTrailers, keyspanHeaderSize)
 	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
-	pageOffset, desc = w.trailers.Finish(w.keyCount, pageOffset, w.buf)
+	pageOffset, desc = w.trailers.Finish(0, w.keyCount, pageOffset, w.buf)
 	w.buf[hOff] = byte(desc)
 
 	// Write the suffixes.
 	hOff = blockHeaderSize(keyspanColSuffixes, keyspanHeaderSize)
 	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
-	pageOffset, desc = w.suffixes.Finish(w.keyCount, pageOffset, w.buf)
+	pageOffset, desc = w.suffixes.Finish(0, w.keyCount, pageOffset, w.buf)
 	w.buf[hOff] = byte(desc)
 
 	// Write the values.
 	hOff = blockHeaderSize(keyspanColValues, keyspanHeaderSize)
 	binary.LittleEndian.PutUint32(w.buf[1+hOff:], pageOffset)
-	pageOffset, desc = w.values.Finish(w.keyCount, pageOffset, w.buf)
+	pageOffset, desc = w.values.Finish(0, w.keyCount, pageOffset, w.buf)
 	w.buf[hOff] = byte(desc)
 
 	w.buf[pageOffset] = keyspanBlockVersionTODO
@@ -433,7 +433,7 @@ func (i *KeyspanIter) Prev() (*keyspan.Span, error) {
 // TODO(jackson): improve documentation
 func (i *KeyspanIter) gatherKeysForward(startIndex int) {
 	for {
-		k := keyspan.Key{Trailer: i.r.trailers.At(i.i)}
+		k := keyspan.Key{Trailer: base.InternalKeyTrailer(i.r.trailers.At(i.i))}
 		if j := i.r.suffixes.Rank(i.i); j >= 0 {
 			k.Suffix = i.r.suffixesRawBytes.At(j)
 		}
@@ -454,7 +454,7 @@ func (i *KeyspanIter) gatherKeysForward(startIndex int) {
 // TODO(jackson): improve documentation
 func (i *KeyspanIter) gatherKeysBackward(startIndex int) {
 	for {
-		k := keyspan.Key{Trailer: i.r.trailers.At(i.i)}
+		k := keyspan.Key{Trailer: base.InternalKeyTrailer(i.r.trailers.At(i.i))}
 		if j := i.r.suffixes.Rank(i.i); j >= 0 {
 			k.Suffix = i.r.suffixesRawBytes.At(j)
 		}
@@ -475,8 +475,8 @@ func (i *KeyspanIter) gatherKeysBackward(startIndex int) {
 	}
 }
 
-// Close closes the iterator and returns any accumulated error.
-func (i *KeyspanIter) Close() error { return nil }
+// Close closes the iterator.
+func (i *KeyspanIter) Close() {}
 
 // WrapChildren implements keyspan.FragmentIterator.
 func (i *KeyspanIter) WrapChildren(keyspan.WrapFn) {}

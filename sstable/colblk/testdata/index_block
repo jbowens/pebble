@@ -1,0 +1,196 @@
+build-first-level
+apple       24   24
+applied    141  112
+atone      195   49
+bacitracin 412  212
+banana     632  215
+bonifide   963  326
+----
+000-008: x 0000000000000000     # firstStartOffset = 0
+# columnar block header
+008-010: x 0300                 # 3 columns
+010-014: x 06000000             # 6 rows
+# column 0
+014-015: b 00000110             # bytes
+015-019: x 1d000000             # page start 29
+# column 1
+019-020: b 10000101             # int64+delta16
+020-024: x 57000000             # page start 87
+# column 2
+024-025: b 00100101             # int64+allnull
+025-029: x 6c000000             # page start 108
+# Data for column 0
+# RawBytes
+029-031: x 0700                 # 16-bit offset count: 7
+031-032: x 00                   # padding to align offsets table
+032-034: x 0000                 # off[0]: 0 [overall 46]
+034-036: x 0500                 # off[1]: 5 [overall 51]
+036-038: x 0c00                 # off[2]: 12 [overall 58]
+038-040: x 1100                 # off[3]: 17 [overall 63]
+040-042: x 1b00                 # off[4]: 27 [overall 73]
+042-044: x 2100                 # off[5]: 33 [overall 79]
+044-046: x 2900                 # off[6]: 41 [overall 87]
+046-051: x 6170706c65           # data[0]: apple
+051-058: x 6170706c696564       # data[1]: applied
+058-063: x 61746f6e65           # data[2]: atone
+063-073: x 6261636974726163696e # data[3]: bacitracin
+073-079: x 62616e616e61         # data[4]: banana
+079-087: x 626f6e6966696465     # data[5]: bonifide
+# Data for column 1
+087-088: x 00                   # padding to align to 64-bit
+088-096: x 1800000000000000     # 64-bit constant: 24
+096-098: x 0000                 # data[0] = 0
+098-100: x 7500                 # data[1] = 117
+100-102: x ab00                 # data[2] = 171
+102-104: x 8401                 # data[3] = 388
+104-106: x 6002                 # data[4] = 608
+106-108: x ab03                 # data[5] = 939
+# Data for column 2
+
+iter
+seek-ge zoo
+seek-ge bitter
+seek-ge abbey
+seek-ge banana
+seek-ge babble
+seek-ge assumption
+----
+.
+data block 5: 637-963
+data block 0: 0-24
+data block 4: 417-632
+data block 3: 200-412
+data block 2: 146-195
+
+iter
+first
+next
+next
+next
+next
+next
+next
+----
+data block 0: 0-24
+data block 1: 29-141
+data block 2: 146-195
+data block 3: 200-412
+data block 4: 417-632
+data block 5: 637-963
+.
+
+iter
+last
+prev
+prev
+prev
+prev
+prev
+prev
+----
+data block 5: 637-963
+data block 4: 417-632
+data block 3: 200-412
+data block 2: 146-195
+data block 1: 29-141
+data block 0: 0-24
+.
+
+build-second-level
+cat           2052   3201
+catastrophe  91251   1899
+catatonic   102422  20442
+cephalopod  122864   9104
+coat        293128  32104
+----
+000-008: x 0000000000000000     # firstStartOffset = 0
+# columnar block header
+008-010: x 0300                 # 3 columns
+010-014: x 05000000             # 5 rows
+# column 0
+014-015: b 00000110             # bytes
+015-019: x 1d000000             # page start 29
+# column 1
+019-020: b 10100101             # int64+delta32
+020-024: x 51000000             # page start 81
+# column 2
+024-025: b 10000101             # int64+delta16
+025-029: x 74000000             # page start 116
+# Data for column 0
+# RawBytes
+029-031: x 0600                 # 16-bit offset count: 6
+031-032: x 00                   # padding to align offsets table
+032-034: x 0000                 # off[0]: 0 [overall 44]
+034-036: x 0300                 # off[1]: 3 [overall 47]
+036-038: x 0e00                 # off[2]: 14 [overall 58]
+038-040: x 1700                 # off[3]: 23 [overall 67]
+040-042: x 2100                 # off[4]: 33 [overall 77]
+042-044: x 2500                 # off[5]: 37 [overall 81]
+044-047: x 636174               # data[0]: cat
+047-057: x 636174617374726f7068 # data[1]: catastrophe
+057-058: x 65                   # (continued...)
+058-067: x 63617461746f6e6963   # data[2]: catatonic
+067-077: x 63657068616c6f706f64 # data[3]: cephalopod
+077-081: x 636f6174             # data[4]: coat
+# Data for column 1
+081-088: x 00000000000000       # padding to align to 64-bit
+088-096: x 0408000000000000     # 64-bit constant: 2052
+096-100: x 00000000             # data[0] = 0
+100-104: x 6f5c0100             # data[1] = 89199
+104-108: x 12880100             # data[2] = 100370
+108-112: x ecd70100             # data[3] = 120812
+112-116: x 04710400             # data[4] = 291076
+# Data for column 2
+116-120: x 00000000             # padding to align to 64-bit
+120-128: x 6b07000000000000     # 64-bit constant: 1899
+128-130: x 1605                 # data[0] = 1302
+130-132: x 0000                 # data[1] = 0
+132-134: x 6f48                 # data[2] = 18543
+134-136: x 251c                 # data[3] = 7205
+136-138: x fd75                 # data[4] = 30205
+138-139: x 00                   # ???
+
+iter
+first
+next
+next
+next
+next
+next
+----
+index block 0: 2057-5258
+index block 1: 91256-93155
+index block 2: 102427-122869
+index block 3: 122869-131973
+index block 4: 293133-325237
+.
+
+iter
+last
+prev
+prev
+prev
+prev
+prev
+----
+index block 4: 293133-325237
+index block 3: 122869-131973
+index block 2: 102427-122869
+index block 1: 91256-93155
+index block 0: 2057-5258
+.
+
+iter
+seek-ge alpha
+seek-ge c
+seek-ge cat
+seek-ge cata
+seek-ge catatonic
+seek-ge ceph
+----
+index block 0: 2057-5258
+index block 0: 2057-5258
+index block 0: 2057-5258
+index block 1: 91256-93155
+index block 2: 102427-122869
+index block 3: 122869-131973
