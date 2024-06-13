@@ -7,6 +7,7 @@ Encoded:
 0-2: x 0200 # 16-bit offset count: 2
 2-4: x 0000 # off[0]: 0 [overall 6]
 4-6: x 0000 # off[1]: 0 [overall 6]
+6-6: x      # data[0]: (0, 0, 0, 0)
 Decoded:
   0000  0000  0000  0000
 
@@ -19,6 +20,7 @@ Encoded:
 0-2: x 0200 # 16-bit offset count: 2
 2-4: x 0000 # off[0]: 0 [overall 6]
 4-6: x 0000 # off[1]: 0 [overall 6]
+6-6: x      # data[0]: (0, 0, 0, 0)
 Decoded:
   0000  0000
 
@@ -32,6 +34,8 @@ Encoded:
 2-4: x 0000 # off[0]: 0 [overall 8]
 4-6: x 0000 # off[1]: 0 [overall 8]
 6-8: x 0000 # off[2]: 0 [overall 8]
+8-8: x      # data[0]: (0, 0, 0, 0)
+8-8: x      # data[1]: (0, 0, 0, 0)
 Decoded:
   0000  0000  0000  0000  0000
 

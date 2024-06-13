@@ -7,17 +7,13 @@ package colblk
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"slices"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
-	"unsafe"
 
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/internal/binfmt"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/rand"
 )
 
 func TestColumnDesc(t *testing.T) {
@@ -102,198 +98,6 @@ func TestColumnDesc(t *testing.T) {
 	}
 }
 
-func TestPrefixCompress(t *testing.T) {
-	var data bytes.Buffer
-	var out bytes.Buffer
-	datadriven.RunTest(t, "testdata/prefix_compress", func(t *testing.T, td *datadriven.TestData) string {
-		switch td.Cmd {
-		case "compress":
-			data.Reset()
-			out.Reset()
-
-			var bundleSize int
-			td.ScanArgs(t, "bundle-size", &bundleSize)
-			var b bytesBuilder
-			b.Init(bundleSize)
-			for _, r := range td.Input {
-				switch r {
-				case '|':
-					b.addOffset(uint32(data.Len()))
-				case ' ', '\n':
-					continue
-				default:
-					data.WriteRune(r)
-				}
-			}
-			b.currentBundlePrefixOffset = 1 + (b.bundleSize+1)*(max(0, (len(b.offsets)-3))>>b.bundleShift)
-			b.data = data.Bytes()
-			fmt.Fprintln(&out, b.debugString(0))
-			fmt.Fprintln(&out, "-")
-			b.prefixCompress()
-			wrapStr(&out, string(b.data), 80)
-			return out.String()
-		default:
-			panic(fmt.Sprintf("unrecognized command %q", td.Cmd))
-		}
-	})
-}
-
-func TestRawBytes(t *testing.T) {
-	var out bytes.Buffer
-	var builder bytesBuilder
-	datadriven.RunTest(t, "testdata/raw_bytes", func(t *testing.T, td *datadriven.TestData) string {
-		out.Reset()
-		switch td.Cmd {
-		case "build":
-			builder.Init(0 /* bundleSize */)
-
-			var startOffset int
-			td.ScanArgs(t, "offset", &startOffset)
-			td.MaybeScanArgs(t, "max-offset-16", &builder.maxOffset16)
-
-			var count int
-			for _, k := range strings.Split(strings.TrimSpace(td.Input), "\n") {
-				builder.Put([]byte(k))
-				count++
-			}
-
-			size := builder.Size(count, uint32(startOffset))
-			fmt.Fprintf(&out, "Size: %d\n", size-uint32(startOffset))
-
-			buf := make([]byte, uint32(startOffset)+size+align64)
-			endOffset, _ := builder.Finish(count, uint32(startOffset), buf)
-
-			// Validate that builder.Size() was correct in its estimate.
-			require.Equal(t, size, endOffset)
-			f := binfmt.New(buf).LineWidth(20)
-			f.HexBytesln(startOffset, "start offset")
-			rawBytesToBinFormatter(f, uint32(count), nil)
-			return f.String()
-		default:
-			panic(fmt.Sprintf("unrecognized command %q", td.Cmd))
-		}
-	})
-}
-
-func TestPrefixBytes(t *testing.T) {
-	var out bytes.Buffer
-	var pb PrefixBytes
-	var builder bytesBuilder
-	var keys int
-	var getBuf []byte
-
-	datadriven.RunTest(t, "testdata/prefix_bytes", func(t *testing.T, td *datadriven.TestData) string {
-		out.Reset()
-		switch td.Cmd {
-		case "init":
-			var bundleSize int
-			td.ScanArgs(t, "bundle-size", &bundleSize)
-			builder.Init(bundleSize)
-			td.MaybeScanArgs(t, "max-offset-16", &builder.maxOffset16)
-
-			keys = 0
-			fmt.Fprintf(&out, "Size: %d", builder.Size(keys, 0))
-			return out.String()
-		case "put":
-			for _, k := range strings.Split(strings.TrimSpace(td.Input), "\n") {
-				builder.PutOrdered([]byte(k))
-				keys++
-			}
-			fmt.Fprint(&out, builder.debugString(0))
-			return out.String()
-		case "finish":
-			buf := make([]byte, builder.Size(keys, 0))
-			offset, _ := builder.Finish(keys, 0, buf)
-			require.Equal(t, uint32(len(buf)), offset)
-			hexDump(&out, buf)
-			fmt.Fprintln(&out)
-
-			pb = makePrefixBytes(uint32(builder.nKeys), unsafe.Pointer(unsafe.SliceData(buf)))
-			fmt.Fprint(&out, pb.DebugString())
-			return out.String()
-		case "get":
-			var indices []int
-			td.ScanArgs(t, "indices", &indices)
-
-			getBuf = append(getBuf[:0], pb.SharedPrefix()...)
-			l := len(getBuf)
-			for _, i := range indices {
-				getBuf = append(append(getBuf[:l], pb.BundlePrefix(i)...), pb.RowSuffix(i)...)
-				fmt.Fprintf(&out, "%s\n", getBuf)
-			}
-			return out.String()
-
-		default:
-			panic(fmt.Sprintf("unrecognized command %q", td.Cmd))
-		}
-	})
-}
-
-func TestPrefixBytesRandomized(t *testing.T) {
-	seed := uint64(time.Now().UnixNano())
-	t.Logf("Seed: %d", seed)
-	rng := rand.New(rand.NewSource(seed))
-	randInt := func(lo, hi int) int {
-		return lo + rng.Intn(hi-lo)
-	}
-	minLen := randInt(4, 128)
-	maxLen := randInt(4, 128)
-	if maxLen < minLen {
-		minLen, maxLen = maxLen, minLen
-	}
-	blockPrefixLen := randInt(1, minLen+1)
-	userKeys := make([][]byte, randInt(1, 10000))
-	// Create the first user key.
-	userKeys[0] = make([]byte, randInt(minLen, maxLen+1))
-	for j := range userKeys[0] {
-		userKeys[0][j] = byte(randInt(int('a'), int('z')+1))
-	}
-	// Create the remainder of the user keys, giving them the same block prefix
-	// of length [blockPrefixLen].
-	for i := 1; i < len(userKeys); i++ {
-		userKeys[i] = make([]byte, randInt(minLen, maxLen+1))
-		copy(userKeys[i], userKeys[0][:blockPrefixLen])
-		for j := blockPrefixLen; j < len(userKeys[i]); j++ {
-			userKeys[i][j] = byte(randInt(int('a'), int('z')+1))
-		}
-	}
-	slices.SortFunc(userKeys, bytes.Compare)
-
-	var bb bytesBuilder
-	bb.Init(1 << randInt(1, 4))
-	for i := 0; i < len(userKeys); i++ {
-		bb.PutOrdered(userKeys[i])
-	}
-
-	//t.Log(bb.debugString(0, data))
-
-	size := bb.Size(len(userKeys), 0)
-	buf := make([]byte, size)
-	offset, _ := bb.Finish(len(userKeys), 0, buf)
-	t.Logf("%d 16-bit offsets; %d 32-bit offsets", bb.nOffsets16, len(bb.offsets)-int(bb.nOffsets16))
-
-	if uint32(size) != offset {
-		t.Fatalf("bb.Size(...) computed %d, but bb.Finish(...) produced slice of len %d (%d is string data)",
-			size, offset, len(bb.data))
-	}
-
-	require.Equal(t, uint32(len(buf)), offset)
-
-	pb := makePrefixBytes(uint32(bb.nKeys), unsafe.Pointer(unsafe.SliceData(buf)))
-	// t.Log("Prefix bytes table:\n" + pb.DebugString())
-
-	k := append([]byte(nil), pb.SharedPrefix()...)
-	l := len(k)
-	for i := 0; i < min(10000, len(userKeys)); i++ {
-		j := rand.Intn(len(userKeys))
-		k = append(append(k[:l], pb.BundlePrefix(j)...), pb.RowSuffix(j)...)
-		if !bytes.Equal(k, userKeys[j]) {
-			t.Fatalf("Constructed key %q (%q, %q, %q) for index %d; expected %q",
-				k, pb.SharedPrefix(), pb.BundlePrefix(j), pb.RowSuffix(j), j, userKeys[j])
-		}
-	}
-}
-
 func dataTypeFromName(name string) DataType {
 	for dt, n := range dataTypeName {
 		if n == name {
@@ -303,120 +107,116 @@ func dataTypeFromName(name string) DataType {
 	return DataTypeInvalid
 }
 
-func hexDump(w io.Writer, b []byte) {
-	for len(b) > 0 {
-		n := min(32, len(b))
-		l := b[:n]
-		b = b[n:]
-		fmt.Fprintf(w, "%x", l)
-		if len(b) > 0 {
-			fmt.Fprintln(w)
-		}
-	}
+type uintColumnWriter interface {
+	ColumnWriter
+	Init(UintDefault)
 }
 
-func wrapStr(w io.Writer, s string, width int) {
-	for len(s) > 0 {
-		n := min(width, len(s))
-		fmt.Fprint(w, s[:n])
-		s = s[n:]
-		if len(s) > 0 {
-			fmt.Fprintln(w)
-		}
-	}
-}
+func TestUints(t *testing.T) {
+	var b8 Uint8Builder
+	var b16 Uint16Builder
+	var b32 Uint32Builder
+	var b64 Uint64Builder
 
-func (b *bytesBuilder) debugString(offset uint32) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Size: %d", b.Size(b.nKeys, offset))
-	fmt.Fprintf(&sb, "\nnKeys=%d; bundleSize=%d; nOffsets16=%d", b.nKeys, b.bundleSize, b.nOffsets16)
-	if b.bundleSize > 0 {
-		fmt.Fprintf(&sb, "\nnBundles=%d; blockPrefixLen=%d; currentBundleLen=%d; currentBundleKeys=%d",
-			b.nBundles, b.blockPrefixLen, b.currentBundleLen, b.currentBundleKeys)
-	}
-	fmt.Fprint(&sb, "\nOffsets:")
-	for i := range b.offsets {
-		if i%10 == 0 {
-			fmt.Fprintf(&sb, "\n  %04d", b.offsets[i])
-		} else {
-			fmt.Fprintf(&sb, "  %04d", b.offsets[i])
-		}
-	}
-	fmt.Fprintf(&sb, "\nData (len=%d):\n", len(b.data))
-	wrapStr(&sb, string(b.data), 60)
-	return sb.String()
-}
-
-func BenchmarkPrefixBytes(b *testing.B) {
-	seed := uint64(205295296)
-	rng := rand.New(rand.NewSource(seed))
-	randInt := func(lo, hi int) int {
-		return lo + rng.Intn(hi-lo)
-	}
-	minLen := 8
-	maxLen := 128
-	if maxLen < minLen {
-		minLen, maxLen = maxLen, minLen
-	}
-	blockPrefixLen := 6
-	userKeys := make([][]byte, 1000)
-	// Create the first user key.
-	userKeys[0] = make([]byte, randInt(minLen, maxLen+1))
-	for j := range userKeys[0] {
-		userKeys[0][j] = byte(randInt(int('a'), int('z')+1))
-	}
-	// Create the remainder of the user keys, giving them the same block prefix
-	// of length [blockPrefixLen].
-	for i := 1; i < len(userKeys); i++ {
-		userKeys[i] = make([]byte, randInt(minLen, maxLen+1))
-		copy(userKeys[i], userKeys[0][:blockPrefixLen])
-		for j := blockPrefixLen; j < len(userKeys[i]); j++ {
-			userKeys[i][j] = byte(randInt(int('a'), int('z')+1))
-		}
-	}
-	slices.SortFunc(userKeys, bytes.Compare)
-
-	var bb bytesBuilder
-	var buf []byte
-	build := func(n int) []byte {
-		bb.Init(16)
-		for i := 0; i < n; i++ {
-			bb.PutOrdered(userKeys[i])
-		}
-		size := bb.Size(n, 0)
-		if cap(buf) < int(size) {
-			buf = make([]byte, size)
-		} else {
-			buf = buf[:size]
-		}
-		_, _ = bb.Finish(n, 0, buf)
-		return buf
-	}
-
-	b.Run("building", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			data := build(len(userKeys))
-			fmt.Fprint(io.Discard, data)
-		}
-	})
-
-	b.Run("iteration", func(b *testing.B) {
-		n := len(userKeys)
-		buf = build(n)
-		pb := makePrefixBytes(uint32(n), unsafe.Pointer(unsafe.SliceData(buf)))
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			k := append([]byte(nil), pb.SharedPrefix()...)
-			l := len(k)
-			for i := 0; i < n; i++ {
-				j := rand.Intn(n)
-				k = append(append(k[:l], pb.BundlePrefix(j)...), pb.RowSuffix(j)...)
-				if !bytes.Equal(k, userKeys[j]) {
-					b.Fatalf("Constructed key %q (%q, %q, %q) for index %d; expected %q",
-						k, pb.SharedPrefix(), pb.BundlePrefix(j), pb.RowSuffix(j), j, userKeys[j])
+	var out bytes.Buffer
+	var widths []int
+	var writers []uintColumnWriter
+	datadriven.RunTest(t, "testdata/uints", func(t *testing.T, td *datadriven.TestData) string {
+		out.Reset()
+		switch td.Cmd {
+		case "init":
+			widths = widths[:0]
+			writers = writers[:0]
+			td.ScanArgs(t, "widths", &widths)
+			var defaultConfig UintDefault
+			if td.HasArg("default-zero") {
+				defaultConfig = UintDefaultZero
+			}
+			for _, w := range widths {
+				switch w {
+				case 8:
+					writers = append(writers, &b8)
+				case 16:
+					writers = append(writers, &b16)
+				case 32:
+					writers = append(writers, &b32)
+				case 64:
+					writers = append(writers, &b64)
+				default:
+					panic(fmt.Sprintf("unknown width: %d", w))
+				}
+				fmt.Fprintf(&out, "b%d\n", w)
+				writers[len(writers)-1].Init(defaultConfig)
+			}
+			return out.String()
+		case "write":
+			for _, f := range strings.Fields(td.Input) {
+				delim := strings.IndexByte(f, ':')
+				i, err := strconv.Atoi(f[:delim])
+				if err != nil {
+					return err.Error()
+				}
+				for _, width := range widths {
+					v, err := strconv.ParseUint(f[delim+1:], 10, width)
+					if err != nil {
+						return err.Error()
+					}
+					switch width {
+					case 8:
+						b8.Set(i, uint8(v))
+					case 16:
+						b16.Set(i, uint16(v))
+					case 32:
+						b32.Set(i, uint32(v))
+					case 64:
+						b64.Set(i, v)
+					default:
+						panic(fmt.Sprintf("unknown width: %d", width))
+					}
 				}
 			}
+			return out.String()
+		case "size":
+			var rowCounts []int
+			td.ScanArgs(t, "rows", &rowCounts)
+			for wIdx, w := range writers {
+				fmt.Fprintf(&out, "b%d:\n", widths[wIdx])
+				for _, rows := range rowCounts {
+					fmt.Fprintf(&out, "  %d: %T.Size(%d, 0) = %d\n", widths[wIdx], w, rows, w.Size(rows, 0))
+				}
+			}
+			return out.String()
+		case "finish":
+			var rows int
+			var finishWidths []int
+			td.ScanArgs(t, "rows", &rows)
+			td.ScanArgs(t, "widths", &finishWidths)
+			var newWriters []uintColumnWriter
+			var newWidths []int
+			for wIdx, width := range widths {
+				var shouldFinish bool
+				for _, fw := range finishWidths {
+					shouldFinish = shouldFinish || width == fw
+				}
+				if shouldFinish {
+					buf := make([]byte, writers[wIdx].Size(rows, 0))
+					off, desc := writers[wIdx].Finish(0, rows, 0, buf)
+					fmt.Fprintf(&out, "b%d: %T:\n", width, writers[wIdx])
+					f := binfmt.New(buf).LineWidth(20)
+					vec := makeVec(rows, desc, f.Pointer(0), 0, off)
+					uintsToBinFormatter(f, rows, vec)
+					fmt.Fprintf(&out, "%s", f.String())
+				} else {
+					fmt.Fprintf(&out, "Keeping b%d open\n", width)
+					newWidths = append(newWidths, width)
+					newWriters = append(newWriters, writers[wIdx])
+				}
+			}
+			writers = newWriters
+			widths = newWidths
+			return out.String()
+		default:
+			panic(fmt.Sprintf("unknown command: %s", td.Cmd))
 		}
 	})
 }

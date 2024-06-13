@@ -52,20 +52,26 @@ func WriteHeader(dest []byte, h Header) {
 // should manually construct their own block.
 func FinishBlock(rows int, writers []ColumnWriter) []byte {
 	size := blockHeaderSize(len(writers), 0)
+	nCols := 0
 	for _, cw := range writers {
 		size = cw.Size(rows, size)
+		nCols += cw.NumColumns()
 	}
 	size++ // +1 for the trailing version byte.
 
 	buf := make([]byte, size)
-	WriteHeader(buf, Header{Columns: uint16(len(writers)), Rows: uint32(rows)})
+	WriteHeader(buf, Header{Columns: uint16(nCols), Rows: uint32(rows)})
 	pageOffset := blockHeaderSize(len(writers), 0)
-	for col, cw := range writers {
-		hi := blockHeaderSize(col, 0)
-		binary.LittleEndian.PutUint32(buf[hi+1:], pageOffset)
-		var desc ColumnDesc
-		pageOffset, desc = cw.Finish(rows, pageOffset, buf)
-		buf[hi] = byte(desc)
+	col := 0
+	for _, cw := range writers {
+		for i := 0; i < cw.NumColumns(); i++ {
+			hi := blockHeaderSize(col, 0)
+			binary.LittleEndian.PutUint32(buf[hi+1:], pageOffset)
+			var desc ColumnDesc
+			pageOffset, desc = cw.Finish(i, rows, pageOffset, buf)
+			buf[hi] = byte(desc)
+			col++
+		}
 	}
 	return buf
 }
@@ -142,10 +148,17 @@ func (r *BlockReader) column(col, n int) Vec {
 	tag := r.columnTag(col)
 	start := r.pageStart(col)
 	end := r.pageStart(col + 1)
+	return makeVec(n, ColumnDesc(tag), r.start, start, end)
+}
 
+func makePointer(base unsafe.Pointer, offset uint32) unsafe.Pointer {
+	return unsafe.Pointer(uintptr(base) + uintptr(offset))
+}
+
+func makeVec(n int, desc ColumnDesc, base unsafe.Pointer, start, end uint32) Vec {
 	var v Vec
 	v.N = uint32(n)
-	v.Desc = ColumnDesc(tag)
+	v.Desc = desc
 	v.DataType = v.Desc.DataType()
 	v.Encoding = v.Desc.Encoding()
 
@@ -157,10 +170,10 @@ func (r *BlockReader) column(col, n int) Vec {
 		v.NullBitmap = makeNullBitmap(nil)
 	default:
 		start = align(start, align32)
-		v.NullBitmap = makeNullBitmapRaw(r.pointer(start))
+		v.NullBitmap = makeNullBitmapRaw(makePointer(base, start))
 		// Skip over the null bitmap. The /16 and *4 cancel out to a shift by 2 (/4).
-		// start += 4 * (uint32(r.header.Rows+15) / 16)
-		start += uint32(r.header.Rows+15) >> 2
+		// start += 4 * (uint32(n+15) / 16)
+		start += uint32(n+15) >> 2
 	}
 
 	start = align(start, v.Desc.Alignment())
@@ -170,13 +183,13 @@ func (r *BlockReader) column(col, n int) Vec {
 	case EncodingConstant, EncodingDeltaInt8, EncodingDeltaInt16, EncodingDeltaInt32:
 		switch v.DataType {
 		case DataTypeUint8:
-			v.Min = uint64(*(*uint8)(r.pointer(start)))
+			v.Min = uint64(*(*uint8)(makePointer(base, start)))
 		case DataTypeUint16:
-			v.Min = uint64(*(*uint16)(r.pointer(start)))
+			v.Min = uint64(*(*uint16)(makePointer(base, start)))
 		case DataTypeUint32:
-			v.Min = uint64(*(*uint32)(r.pointer(start)))
+			v.Min = uint64(*(*uint32)(makePointer(base, start)))
 		case DataTypeUint64:
-			v.Min = *(*uint64)(r.pointer(start))
+			v.Min = *(*uint64)(makePointer(base, start))
 		default:
 			panic(fmt.Sprintf("non-integer type %s", v.DataType))
 		}
@@ -191,7 +204,7 @@ func (r *BlockReader) column(col, n int) Vec {
 	if end-start == 0 {
 		v.start = unsafe.Pointer(unsafe.SliceData(emptyBytesData))
 	} else {
-		v.start = r.pointer(start)
+		v.start = makePointer(base, start)
 	}
 	return v
 }
@@ -248,20 +261,11 @@ func (r *BlockReader) columnToBinFormatter(f *binfmt.Formatter, col, rows int) {
 	case DataTypeBool:
 		bitmapToBinFormatter(f, rows)
 	case DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
-		logicalWidth := dt.fixedWidth()
-		if desc.Encoding() != EncodingDefault {
-			f.HexBytesln(logicalWidth, "%d-bit constant: %d", logicalWidth*8, vec.Min)
-		}
-		if w := desc.RowWidth(); w > 0 {
-			for i := 0; i < nonNullRows; i++ {
-				f.HexBytesln(w, "data[%d] = %d", i, f.PeekInt(w))
-			}
-		}
+		uintsToBinFormatter(f, nonNullRows, vec)
 	case DataTypeBytes:
 		rawBytesToBinFormatter(f, uint32(nonNullRows), nil)
-
-		// case DataTypePrefixBytes:
-		// TODO(jackson): DataTypePrefixBytes
+	case DataTypePrefixBytes:
+		prefixBytesToBinFormatter(f, uint32(nonNullRows), nil)
 	}
 
 	switch v := endOff - f.Offset(); cmp.Compare[int](v, 0) {

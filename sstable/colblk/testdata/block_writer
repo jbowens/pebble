@@ -9,28 +9,36 @@ avocado     @2
 finish
 ----
 # columnar block header
-00-02: x 0200                 # 2 columns
-02-06: x 02000000             # 2 rows
+00-02: x 0200         # 2 columns
+02-06: x 02000000     # 2 rows
 # column 0
-06-07: b 00000111             # prefixbytes
-07-11: x 10000000             # page start 16
+06-07: b 00000111     # prefixbytes
+07-11: x 10000000     # page start 16
 # column 1
-11-12: b 00000110             # bytes
-12-16: x 27000000             # page start 39
+11-12: b 00000110     # bytes
+12-16: x 27000000     # page start 39
 # Data for column 0
-16-26: x 04040000010001000500 # ???
-26-36: x 0b006170706c65766f63 # ???
-36-39: x 61646f               # ???
+# PrefixBytes
+16-18: x 0404         # 16-bit offset count: 4
+18-20: x 0000         # padding to align offsets table
+20-22: x 0100         # off[0]: 1 [overall 28]
+22-24: x 0100         # off[1]: 1 [overall 28]
+24-26: x 0500         # off[2]: 5 [overall 32]
+26-28: x 0b00         # off[3]: 11 [overall 38]
+28-29: x 61           # data[00]: a (block prefix)
+29-29: x              # data[01]: . (bundle prefix)
+29-33: x 70706c65     # data[02]: .pple
+33-39: x 766f6361646f # data[03]: .vocado
 # Data for column 1
 # RawBytes
-39-41: x 0300                 # 16-bit offset count: 3
-41-42: x 00                   # padding to align offsets table
-42-44: x 0000                 # off[0]: 0 [overall 48]
-44-46: x 0200                 # off[1]: 2 [overall 50]
-46-48: x 0400                 # off[2]: 4 [overall 52]
-48-50: x 4033                 # data[0]: @3
-50-52: x 4032                 # data[1]: @2
-52-53: x 00                   # ???
+39-41: x 0300         # 16-bit offset count: 3
+41-42: x 00           # padding to align offsets table
+42-44: x 0000         # off[0]: 0 [overall 48]
+44-46: x 0200         # off[1]: 2 [overall 50]
+46-48: x 0400         # off[2]: 4 [overall 52]
+48-50: x 4033         # data[0]: @3
+50-52: x 4032         # data[1]: @2
+52-53: x 00           # ???
 
 # Test an int64 column with all zeroes. It should be encoded as a single 64-bit
 # constant.
