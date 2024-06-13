@@ -9,6 +9,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/cache"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/cockroachdb/pebble/sstable/rowblk"
 )
 
@@ -270,6 +271,8 @@ type WriterOptions struct {
 	// writer's flushing policy to select block sizes that preemptively reduce
 	// internal fragmentation when loaded into the block cache.
 	AllocatorSizeClasses []int
+
+	KeySchema colblk.KeySchema
 }
 
 func (o WriterOptions) ensureDefaults() WriterOptions {

@@ -57,7 +57,23 @@ Offsets:
 Data (len=19):
 abcabcdabceabddabde
 
-finish
+# Try finishing just the n-1 rows.
+
+finish rows=4
+----
+02060000020002000300050007000900616263636463656464
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      2 | ab
+     1 |       |      2 | ..
+     2 |     0 |      3 | ..c
+     3 |     1 |      5 | ..cd
+     4 |     2 |      7 | ..ce
+     5 |     3 |      9 | ..dd
+
+# Finish the entirety of all put rows.
+
+finish rows=5
 ----
 020800000200020003000500070009000b000b006162636364636564646465
  idx   | row   | offset | data
@@ -78,6 +94,38 @@ abcd
 abce
 abdd
 abde
+
+search
+a
+ab
+abaaaa
+abc
+abcc
+abccaat
+abcd
+abcda
+----
+Search("a") = (0, false)
+Search("ab") = (0, false)
+Search("abaaaa") = (0, false)
+Search("abc") = (0, true)
+Search("abcc") = (1, false)
+Search("abccaat") = (1, false)
+Search("abcd") = (1, true)
+Search("abcda") = (2, false)
+
+search
+abce
+abdd
+abde
+abdeee
+abdf
+----
+Search("abce") = (2, true)
+Search("abdd") = (3, true)
+Search("abde") = (4, true)
+Search("abdeee") = (5, false)
+Search("abdf") = (5, false)
 
 # Set max-offset-16 to force the use of 32-bit offsets.
 
@@ -100,7 +148,7 @@ Offsets:
 Data (len=19):
 abcabcdabceabddabde
 
-finish
+finish rows=5
 ----
 020000000200000002000000030000000500000007000000090000000b000000
 0b0000006162636364636564646465
@@ -122,6 +170,38 @@ abcd
 abce
 abdd
 abde
+
+search
+a
+ab
+abaaaa
+abc
+abcc
+abccaat
+abcd
+abcda
+----
+Search("a") = (0, false)
+Search("ab") = (0, false)
+Search("abaaaa") = (0, false)
+Search("abc") = (0, true)
+Search("abcc") = (1, false)
+Search("abccaat") = (1, false)
+Search("abcd") = (1, true)
+Search("abcda") = (2, false)
+
+search
+abce
+abdd
+abde
+abdeee
+abdf
+----
+Search("abce") = (2, true)
+Search("abdd") = (3, true)
+Search("abde") = (4, true)
+Search("abdeee") = (5, false)
+Search("abdf") = (5, false)
 
 init bundle-size=4
 ----
@@ -281,7 +361,47 @@ Data (len=80):
 aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbeffaaabbeaaa
 bbeef*aaabcaabcceef*
 
-finish
+finish rows=1
+----
+0203000007000700070061616162626263
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      7 | aaabbbc
+     1 |       |      7 | .......
+     2 |     0 |      7 | .......
+
+finish rows=2
+----
+0204000007000700070008006161616262626363
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      7 | aaabbbc
+     1 |       |      7 | .......
+     2 |     0 |      7 | .......
+     3 |     1 |      8 | .......c
+
+finish rows=10
+----
+020e000004000700070008000a000b000d001100110011001400140016001700
+616161626262636364656562626465652a656666626562
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      4 | aaab
+     1 |       |      7 | ....bbc
+     2 |     0 |      7 | .......
+     3 |     1 |      8 | .......c
+     4 |     2 |     10 | .......de
+     5 |     3 |     11 | .......e
+     6 |       |     13 | ....bb
+     7 |     4 |     17 | ......dee*
+     8 |     5 |     17 | ......
+     9 |     6 |     17 | ......
+    10 |     7 |     20 | ......eff
+    11 |       |     20 | ....
+    12 |     8 |     22 | ....be
+    13 |     9 |     23 | ....b
+
+finish rows=14
 ----
 0213000002000700070008000a000b000f00130013001300160018001a001f00
 1f0020002700270027006161616262626363646565616262626465652a656666
@@ -326,6 +446,37 @@ aaabc
 aabcceef*
 aabcceef*
 
+search
+a
+aaabb
+aaabbbc
+aaabbbca
+aaabbbcc
+aaabbbcca
+aaabbbcde
+----
+Search("a") = (0, false)
+Search("aaabb") = (0, false)
+Search("aaabbbc") = (0, true)
+Search("aaabbbca") = (1, false)
+Search("aaabbbcc") = (1, true)
+Search("aaabbbcca") = (2, false)
+Search("aaabbbcde") = (2, true)
+
+search
+aaabbbcef
+aaabbbdee
+aaabbbdee*
+aaabbee
+aabcceef*
+aabcceef**
+----
+Search("aaabbbcef") = (4, false)
+Search("aaabbbdee") = (4, false)
+Search("aaabbbdee*") = (4, true)
+Search("aaabbee") = (9, false)
+Search("aabcceef*") = (12, true)
+Search("aabcceef**") = (14, false)
 
 init bundle-size=2
 ----
@@ -359,7 +510,38 @@ Data (len=108):
 aaabbbcaaabbbccaaabbbcdeaaabbbceaaabbbdee*aaabbbdee*aaabbbef
 faaabbeaaabbeef*aaabbeef*aaabcaabcceef*aabcceef*
 
-finish
+finish rows=14
+----
+0116000002000700070008000d000f0010001800180018001c00200023002700
+27002a002c003100320039003900390061616162626263636162626263646565
+616262626465652a616262626465652a6566666162626565662a616262656566
+2a636263636565662a
+ idx   | row   | offset | data
+-------+-------+--------+------
+     0 |       |      2 | aa
+     1 |       |      7 | ..abbbc
+     2 |     0 |      7 | .......
+     3 |     1 |      8 | .......c
+     4 |       |     13 | ..abbbc
+     5 |     2 |     15 | .......de
+     6 |     3 |     16 | .......e
+     7 |       |     24 | ..abbbdee*
+     8 |     4 |     24 | ..........
+     9 |     5 |     24 | ..........
+    10 |       |     28 | ..abbb
+    11 |     6 |     32 | ......dee*
+    12 |     7 |     35 | ......eff
+    13 |       |     39 | ..abbe
+    14 |     8 |     39 | ......
+    15 |     9 |     42 | ......ef*
+    16 |       |     44 | ..ab
+    17 |    10 |     49 | ....beef*
+    18 |    11 |     50 | ....c
+    19 |       |     57 | ..bcceef*
+    20 |    12 |     57 | .........
+    21 |    13 |     57 | .........
+
+finish rows=15
 ----
 0118000002000700070008000d000f0010001800180018001c00200023002700
 27002a002c003100320039003900390040004000616161626262636361626262

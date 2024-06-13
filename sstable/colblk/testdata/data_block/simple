@@ -1,0 +1,432 @@
+init
+----
+size=51:
+0: prefixes:       prefixbytes(16): 0 keys
+1: suffixes:       bytes: 0 slices
+2: trailers:       uint64: 0 rows
+3: prefix changed: bitmap
+4: values:         bytes: 0 slices
+
+write
+a@10#0,SET:apple
+b@5#0,SET:banana
+b@2#0,SETWITHDEL:blueberry
+c@9#0,SETWITHDEL:coconut
+c@6#0,SET:cantelope
+c@1#0,SET:clementine
+----
+size=189:
+0: prefixes:       prefixbytes(16): 6 keys
+1: suffixes:       bytes: 6 slices
+2: trailers:       uint64: 6 rows
+3: prefix changed: bitmap
+4: values:         bytes: 6 slices
+
+write
+d@11#0,DEL:
+----
+size=199:
+0: prefixes:       prefixbytes(16): 7 keys
+1: suffixes:       bytes: 7 slices
+2: trailers:       uint64: 7 rows
+3: prefix changed: bitmap
+4: values:         bytes: 7 slices
+
+finish
+----
+# columnar block header
+000-002: x 0500                                                             # 5 columns
+002-006: x 07000000                                                         # 7 rows
+# column 0
+006-007: b 00000111                                                         # prefixbytes
+007-011: x 1f000000                                                         # page start 31
+# column 1
+011-012: b 00000110                                                         # bytes
+012-016: x 38000000                                                         # page start 56
+# column 2
+016-017: b 01100101                                                         # int64+delta8
+017-021: x 5a000000                                                         # page start 90
+# column 3
+021-022: b 00000001                                                         # bool
+022-026: x 6f000000                                                         # page start 111
+# column 4
+026-027: b 00000110                                                         # bytes
+027-031: x 80000000                                                         # page start 128
+# Data for column 0
+# PrefixBytes
+031-033: x 0409                                                             # 16-bit offset count: 9
+033-034: x 00                                                               # padding to align offsets table
+034-036: x 0000                                                             # off[0]: 0 [overall 51]
+036-038: x 0000                                                             # off[1]: 0 [overall 51]
+038-040: x 0100                                                             # off[2]: 1 [overall 52]
+040-042: x 0200                                                             # off[3]: 2 [overall 53]
+042-044: x 0200                                                             # off[4]: 2 [overall 53]
+044-046: x 0300                                                             # off[5]: 3 [overall 54]
+046-048: x 0300                                                             # off[6]: 3 [overall 54]
+048-050: x 0300                                                             # off[7]: 3 [overall 54]
+050-052: x 0400                                                             # off[8]: 4 [overall 55]
+052-052: x                                                                  # data[00]:  (block prefix)
+052-052: x                                                                  # data[01]:  (bundle prefix)
+052-053: x 61                                                               # data[02]: a
+053-054: x 62                                                               # data[03]: b
+054-054: x                                                                  # data[04]: .
+054-055: x 63                                                               # data[05]: c
+055-055: x                                                                  # data[06]: .
+055-055: x                                                                  # data[07]: .
+055-056: x 64                                                               # data[08]: d
+# Data for column 1
+# RawBytes
+056-058: x 0800                                                             # 16-bit offset count: 8
+058-060: x 0000                                                             # off[0]: 0 [overall 74]
+060-062: x 0300                                                             # off[1]: 3 [overall 77]
+062-064: x 0500                                                             # off[2]: 5 [overall 79]
+064-066: x 0700                                                             # off[3]: 7 [overall 81]
+066-068: x 0900                                                             # off[4]: 9 [overall 83]
+068-070: x 0b00                                                             # off[5]: 11 [overall 85]
+070-072: x 0d00                                                             # off[6]: 13 [overall 87]
+072-074: x 1000                                                             # off[7]: 16 [overall 90]
+074-077: x 403130                                                           # data[0]: @10
+077-079: x 4035                                                             # data[1]: @5
+079-081: x 4032                                                             # data[2]: @2
+081-083: x 4039                                                             # data[3]: @9
+083-085: x 4036                                                             # data[4]: @6
+085-087: x 4031                                                             # data[5]: @1
+087-090: x 403131                                                           # data[6]: @11
+# Data for column 2
+090-096: x 000000000000                                                     # padding to align to 64-bit
+096-104: x 0000000000000000                                                 # 64-bit constant: 0
+104-105: x 01                                                               # data[0] = 1
+105-106: x 01                                                               # data[1] = 1
+106-107: x 12                                                               # data[2] = 18
+107-108: x 12                                                               # data[3] = 18
+108-109: x 01                                                               # data[4] = 1
+109-110: x 01                                                               # data[5] = 1
+110-111: x 00                                                               # data[6] = 0
+# Data for column 3
+111-112: x 00                                                               # padding to align to 64-bit
+112-120: b 0100101100000000000000000000000000000000000000000000000000000000 # bitmap word 0
+120-128: b 0000000100000000000000000000000000000000000000000000000000000000 # bitmap summary word 0-63
+# Data for column 4
+# RawBytes
+128-130: x 0800                                                             # 16-bit offset count: 8
+130-132: x 0000                                                             # off[0]: 0 [overall 146]
+132-134: x 0600                                                             # off[1]: 6 [overall 152]
+134-136: x 0d00                                                             # off[2]: 13 [overall 159]
+136-138: x 1700                                                             # off[3]: 23 [overall 169]
+138-140: x 1f00                                                             # off[4]: 31 [overall 177]
+140-142: x 2900                                                             # off[5]: 41 [overall 187]
+142-144: x 3400                                                             # off[6]: 52 [overall 198]
+144-146: x 3400                                                             # off[7]: 52 [overall 198]
+146-152: x 786170706c65                                                     # data[0]: xapple
+152-159: x 7862616e616e61                                                   # data[1]: xbanana
+159-169: x 78626c75656265727279                                             # data[2]: xblueberry
+169-177: x 78636f636f6e7574                                                 # data[3]: xcoconut
+177-187: x 7863616e74656c6f7065                                             # data[4]: xcantelope
+187-197: x 78636c656d656e74696e                                             # data[5]: xclementine
+197-198: x 65                                                               # (continued...)
+198-198: x                                                                  # data[6]:
+198-199: x 00                                                               # ???
+
+iter
+first
+next
+next
+next
+next
+next
+next
+next
+----
+a@10:xapple
+b@5:xbanana
+b@2:xblueberry
+c@9:xcoconut
+c@6:xcantelope
+c@1:xclementine
+d@11:
+.
+
+iter
+last
+prev
+prev
+prev
+prev
+prev
+prev
+prev
+----
+d@11:
+c@1:xclementine
+c@6:xcantelope
+c@9:xcoconut
+b@2:xblueberry
+b@5:xbanana
+a@10:xapple
+.
+
+iter
+seek-ge a
+seek-ge a@10
+seek-ge a@3
+seek-ge a@1
+seek-ge b
+seek-ge b@999999
+seek-ge b@5
+seek-ge b@4
+seek-ge b@3
+seek-ge b@2
+seek-ge b@1
+seek-ge c
+----
+a@10:xapple
+a@10:xapple
+b@5:xbanana
+b@5:xbanana
+b@5:xbanana
+b@5:xbanana
+b@5:xbanana
+b@2:xblueberry
+b@2:xblueberry
+b@2:xblueberry
+c@9:xcoconut
+c@9:xcoconut
+
+iter
+seek-ge c@10
+seek-ge c@9
+seek-ge c@8
+seek-ge c@7
+seek-ge c@6
+seek-ge c@5
+seek-ge c@4
+seek-ge c@3
+seek-ge c@2
+seek-ge c@1
+seek-ge c@0
+seek-ge d
+seek-ge d@11
+seek-ge d@10
+----
+c@9:xcoconut
+c@9:xcoconut
+c@6:xcantelope
+c@6:xcantelope
+c@6:xcantelope
+c@1:xclementine
+c@1:xclementine
+c@1:xclementine
+c@1:xclementine
+c@1:xclementine
+d@11:
+d@11:
+d@11:
+.
+
+init
+----
+size=51:
+0: prefixes:       prefixbytes(16): 0 keys
+1: suffixes:       bytes: 0 slices
+2: trailers:       uint64: 0 rows
+3: prefix changed: bitmap
+4: values:         bytes: 0 slices
+
+write
+aaaaaaaaaaaaaaappalling@10#0,SET:a
+aaaaaaaaaaaaaaapparel@10#0,SET:a
+aaaaaaaaaaaaaaapparition@10#0,SET:a
+aaaaaaaaaaaaaaappearing@10#0,SET:a
+aaaaaaaaaaaaaaappend@10#0,SET:a
+aaaaaaaaaaaaaaappendage@10#0,SET:a
+aaaaaaaaaaaaaaappendix@10#0,SET:a
+aaaaaaaaaaaaaaapparel@10#0,SET:a
+aaaaaaaaaaaaaaapplaud@10#0,SET:a
+aaaaaaaaaaaaaaapple@10#0,SET:a
+aaaaaaaaaaaaaaapplication@10#0,SET:a
+aaaaaaaaaaaaaaapplied@10#0,SET:a
+aaaaaaaaaaaaaaapplying@10#0,SET:a
+aaaaaaaaaaaaaaappoint@10#0,SET:a
+aaaaaaaaaaaaaaapposes@10#0,SET:a
+aaaaaaaaaaaaaaapproves@10#0,SET:a
+aaaaaaaaaaaaaaarresting@10#0,SET:a
+aaaaaaaaaaaaaaarrived@10#0,SET:a
+----
+size=381:
+0: prefixes:       prefixbytes(16): 18 keys
+1: suffixes:       bytes: 18 slices
+2: trailers:       uint64: 18 rows
+3: prefix changed: bitmap
+4: values:         bytes: 18 slices
+
+finish
+----
+# columnar block header
+000-002: x 0500                                                             # 5 columns
+002-006: x 12000000                                                         # 18 rows
+# column 0
+006-007: b 00000111                                                         # prefixbytes
+007-011: x 1f000000                                                         # page start 31
+# column 1
+011-012: b 00000110                                                         # bytes
+012-016: x b6000000                                                         # page start 182
+# column 2
+016-017: b 01000101                                                         # int64+constant
+017-021: x 14010000                                                         # page start 276
+# column 3
+021-022: b 00000001                                                         # bool
+022-026: x 20010000                                                         # page start 288
+# column 4
+026-027: b 00000110                                                         # bytes
+027-031: x 30010000                                                         # page start 304
+# Data for column 0
+# PrefixBytes
+031-033: x 0415                                                             # 16-bit offset count: 21
+033-034: x 00                                                               # padding to align offsets table
+034-036: x 0f00                                                             # off[0]: 15 [overall 90]
+036-038: x 1100                                                             # off[1]: 17 [overall 92]
+038-040: x 1700                                                             # off[2]: 23 [overall 98]
+040-042: x 1b00                                                             # off[3]: 27 [overall 102]
+042-044: x 2200                                                             # off[4]: 34 [overall 109]
+044-046: x 2800                                                             # off[5]: 40 [overall 115]
+046-048: x 2b00                                                             # off[6]: 43 [overall 118]
+048-050: x 3100                                                             # off[7]: 49 [overall 124]
+050-052: x 3600                                                             # off[8]: 54 [overall 129]
+052-054: x 3a00                                                             # off[9]: 58 [overall 133]
+054-056: x 3e00                                                             # off[10]: 62 [overall 137]
+056-058: x 4000                                                             # off[11]: 64 [overall 139]
+058-060: x 4800                                                             # off[12]: 72 [overall 147]
+060-062: x 4c00                                                             # off[13]: 76 [overall 151]
+062-064: x 5100                                                             # off[14]: 81 [overall 156]
+064-066: x 5500                                                             # off[15]: 85 [overall 160]
+066-068: x 5900                                                             # off[16]: 89 [overall 164]
+068-070: x 5e00                                                             # off[17]: 94 [overall 169]
+070-072: x 6000                                                             # off[18]: 96 [overall 171]
+072-074: x 6600                                                             # off[19]: 102 [overall 177]
+074-076: x 6a00                                                             # off[20]: 106 [overall 181]
+076-086: x 61616161616161616161                                             # data[00]: aaaaaaaaaaaaaaa (block prefix)
+086-091: x 6161616161                                                       # (continued...)
+091-093: x 7070                                                             # data[01]: ...............pp (bundle prefix)
+093-099: x 616c6c696e67                                                     # data[02]: .................alling
+099-103: x 6172656c                                                         # data[03]: .................arel
+103-110: x 61726974696f6e                                                   # data[04]: .................arition
+110-116: x 656172696e67                                                     # data[05]: .................earing
+116-119: x 656e64                                                           # data[06]: .................end
+119-125: x 656e64616765                                                     # data[07]: .................endage
+125-130: x 656e646978                                                       # data[08]: .................endix
+130-134: x 6172656c                                                         # data[09]: .................arel
+134-138: x 6c617564                                                         # data[10]: .................laud
+138-140: x 6c65                                                             # data[11]: .................le
+140-148: x 6c69636174696f6e                                                 # data[12]: .................lication
+148-152: x 6c696564                                                         # data[13]: .................lied
+152-157: x 6c79696e67                                                       # data[14]: .................lying
+157-161: x 6f696e74                                                         # data[15]: .................oint
+161-165: x 6f736573                                                         # data[16]: .................oses
+165-170: x 726f766573                                                       # data[17]: .................roves
+170-172: x 7272                                                             # data[18]: ...............rr (bundle prefix)
+172-178: x 657374696e67                                                     # data[19]: .................esting
+178-182: x 69766564                                                         # data[20]: .................ived
+# Data for column 1
+# RawBytes
+182-184: x 1300                                                             # 16-bit offset count: 19
+184-186: x 0000                                                             # off[0]: 0 [overall 222]
+186-188: x 0300                                                             # off[1]: 3 [overall 225]
+188-190: x 0600                                                             # off[2]: 6 [overall 228]
+190-192: x 0900                                                             # off[3]: 9 [overall 231]
+192-194: x 0c00                                                             # off[4]: 12 [overall 234]
+194-196: x 0f00                                                             # off[5]: 15 [overall 237]
+196-198: x 1200                                                             # off[6]: 18 [overall 240]
+198-200: x 1500                                                             # off[7]: 21 [overall 243]
+200-202: x 1800                                                             # off[8]: 24 [overall 246]
+202-204: x 1b00                                                             # off[9]: 27 [overall 249]
+204-206: x 1e00                                                             # off[10]: 30 [overall 252]
+206-208: x 2100                                                             # off[11]: 33 [overall 255]
+208-210: x 2400                                                             # off[12]: 36 [overall 258]
+210-212: x 2700                                                             # off[13]: 39 [overall 261]
+212-214: x 2a00                                                             # off[14]: 42 [overall 264]
+214-216: x 2d00                                                             # off[15]: 45 [overall 267]
+216-218: x 3000                                                             # off[16]: 48 [overall 270]
+218-220: x 3300                                                             # off[17]: 51 [overall 273]
+220-222: x 3600                                                             # off[18]: 54 [overall 276]
+222-225: x 403130                                                           # data[0]: @10
+225-228: x 403130                                                           # data[1]: @10
+228-231: x 403130                                                           # data[2]: @10
+231-234: x 403130                                                           # data[3]: @10
+234-237: x 403130                                                           # data[4]: @10
+237-240: x 403130                                                           # data[5]: @10
+240-243: x 403130                                                           # data[6]: @10
+243-246: x 403130                                                           # data[7]: @10
+246-249: x 403130                                                           # data[8]: @10
+249-252: x 403130                                                           # data[9]: @10
+252-255: x 403130                                                           # data[10]: @10
+255-258: x 403130                                                           # data[11]: @10
+258-261: x 403130                                                           # data[12]: @10
+261-264: x 403130                                                           # data[13]: @10
+264-267: x 403130                                                           # data[14]: @10
+267-270: x 403130                                                           # data[15]: @10
+270-273: x 403130                                                           # data[16]: @10
+273-276: x 403130                                                           # data[17]: @10
+# Data for column 2
+276-280: x 00000000                                                         # padding to align to 64-bit
+280-288: x 0100000000000000                                                 # 64-bit constant: 1
+# Data for column 3
+288-296: b 1111111111111111000000110000000000000000000000000000000000000000 # bitmap word 0
+296-304: b 0000000100000000000000000000000000000000000000000000000000000000 # bitmap summary word 0-63
+# Data for column 4
+# RawBytes
+304-306: x 1300                                                             # 16-bit offset count: 19
+306-308: x 0000                                                             # off[0]: 0 [overall 344]
+308-310: x 0200                                                             # off[1]: 2 [overall 346]
+310-312: x 0400                                                             # off[2]: 4 [overall 348]
+312-314: x 0600                                                             # off[3]: 6 [overall 350]
+314-316: x 0800                                                             # off[4]: 8 [overall 352]
+316-318: x 0a00                                                             # off[5]: 10 [overall 354]
+318-320: x 0c00                                                             # off[6]: 12 [overall 356]
+320-322: x 0e00                                                             # off[7]: 14 [overall 358]
+322-324: x 1000                                                             # off[8]: 16 [overall 360]
+324-326: x 1200                                                             # off[9]: 18 [overall 362]
+326-328: x 1400                                                             # off[10]: 20 [overall 364]
+328-330: x 1600                                                             # off[11]: 22 [overall 366]
+330-332: x 1800                                                             # off[12]: 24 [overall 368]
+332-334: x 1a00                                                             # off[13]: 26 [overall 370]
+334-336: x 1c00                                                             # off[14]: 28 [overall 372]
+336-338: x 1e00                                                             # off[15]: 30 [overall 374]
+338-340: x 2000                                                             # off[16]: 32 [overall 376]
+340-342: x 2200                                                             # off[17]: 34 [overall 378]
+342-344: x 2400                                                             # off[18]: 36 [overall 380]
+344-346: x 7861                                                             # data[0]: xa
+346-348: x 7861                                                             # data[1]: xa
+348-350: x 7861                                                             # data[2]: xa
+350-352: x 7861                                                             # data[3]: xa
+352-354: x 7861                                                             # data[4]: xa
+354-356: x 7861                                                             # data[5]: xa
+356-358: x 7861                                                             # data[6]: xa
+358-360: x 7861                                                             # data[7]: xa
+360-362: x 7861                                                             # data[8]: xa
+362-364: x 7861                                                             # data[9]: xa
+364-366: x 7861                                                             # data[10]: xa
+366-368: x 7861                                                             # data[11]: xa
+368-370: x 7861                                                             # data[12]: xa
+370-372: x 7861                                                             # data[13]: xa
+372-374: x 7861                                                             # data[14]: xa
+374-376: x 7861                                                             # data[15]: xa
+376-378: x 7861                                                             # data[16]: xa
+378-380: x 7861                                                             # data[17]: xa
+380-381: x 00                                                               # ???
+
+iter
+seek-ge aaa
+seek-ge aaaaaaaaa
+seek-ge aaaaaaaaaaaaaaapp
+seek-ge aaaaaaaaaaaaaaapparel@10
+seek-ge aaaaaaaaaaaaaaapparh
+seek-ge aaaaaaaaaaaaaaarresting@10
+seek-ge aaaaaaaaaaaaaaarrived@10
+----
+aaaaaaaaaaaaaaappalling@10:xa
+aaaaaaaaaaaaaaappalling@10:xa
+aaaaaaaaaaaaaaappalling@10:xa
+aaaaaaaaaaaaaaapparel@10:xa
+aaaaaaaaaaaaaaapparition@10:xa
+aaaaaaaaaaaaaaarresting@10:xa
+aaaaaaaaaaaaaaarrived@10:xa

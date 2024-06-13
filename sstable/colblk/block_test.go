@@ -49,7 +49,7 @@ func TestBlockWriter(t *testing.T) {
 				}
 				switch colConfigs[i].DataType {
 				case DataTypeBool:
-					colWriters[i] = &bitmapBuilder{}
+					colWriters[i] = &BitmapBuilder{}
 				case DataTypeUint8:
 					colWriters[i] = &Uint8Builder{}
 				case DataTypeUint16:
@@ -59,11 +59,11 @@ func TestBlockWriter(t *testing.T) {
 				case DataTypeUint64:
 					colWriters[i] = &Uint64Builder{}
 				case DataTypeBytes:
-					bb := &bytesBuilder{}
+					bb := &BytesBuilder{}
 					bb.Init(0)
 					colWriters[i] = bb
 				case DataTypePrefixBytes:
-					bb := &bytesBuilder{}
+					bb := &BytesBuilder{}
 					bb.Init(colConfigs[i].BundleSize)
 					colWriters[i] = bb
 				default:
@@ -83,7 +83,7 @@ func TestBlockWriter(t *testing.T) {
 			for c, cfg := range colConfigs {
 				switch cfg.DataType {
 				case DataTypeBool:
-					bb := colWriters[c].(*bitmapBuilder)
+					bb := colWriters[c].(*BitmapBuilder)
 					for r := range lineFields {
 						v, err := strconv.ParseBool(lineFields[r][c])
 						panicIfErr(cfg.DataType, lineFields[r][c], err)
@@ -119,14 +119,18 @@ func TestBlockWriter(t *testing.T) {
 						b.Set(r, v)
 					}
 				case DataTypeBytes:
-					b := colWriters[c].(*bytesBuilder)
+					b := colWriters[c].(*BytesBuilder)
 					for r := range lineFields {
 						b.Put([]byte(lineFields[r][c]))
 					}
 				case DataTypePrefixBytes:
-					b := colWriters[c].(*bytesBuilder)
+					b := colWriters[c].(*BytesBuilder)
 					for r := range lineFields {
-						b.PutOrdered([]byte(lineFields[r][c]))
+						var shared int
+						if r > 0 {
+							shared = bytesSharedPrefix([]byte(lineFields[r-1][c]), []byte(lineFields[r][c]))
+						}
+						b.PutOrdered([]byte(lineFields[r][c]), shared)
 					}
 				default:
 					panicf("unsupported data type: %s", cfg.DataType)
@@ -217,7 +221,7 @@ func buildBlock(schema []ColumnConfig, rows int, data []interface{}) []byte {
 		var cw ColumnWriter
 		switch schema[col].DataType {
 		case DataTypeBool:
-			var bb bitmapBuilder
+			var bb BitmapBuilder
 			for row, v := range data[col].([]bool) {
 				bb = bb.Set(row, v)
 			}
@@ -247,16 +251,21 @@ func buildBlock(schema []ColumnConfig, rows int, data []interface{}) []byte {
 			}
 			cw = &b
 		case DataTypeBytes:
-			var b bytesBuilder
+			var b BytesBuilder
 			for _, v := range data[col].([][]byte) {
 				b.Put(v)
 			}
 			cw = &b
 		case DataTypePrefixBytes:
-			var b bytesBuilder
+			var b BytesBuilder
 			b.Init(16)
-			for _, v := range data[col].([][]byte) {
-				b.PutOrdered(v)
+			s := data[col].([][]byte)
+			for i, v := range s {
+				var shared int
+				if i > 0 {
+					shared = bytesSharedPrefix(s[i-1], v)
+				}
+				b.PutOrdered(v, shared)
 			}
 			cw = &b
 		}
@@ -269,7 +278,7 @@ func buildBlock(schema []ColumnConfig, rows int, data []interface{}) []byte {
 		hi := blockHeaderSize(col, 0)
 		binary.LittleEndian.PutUint32(buf[hi+1:], uint32(pageOffset))
 		var desc ColumnDesc
-		pageOffset, desc = cw.Finish(rows, pageOffset, buf)
+		pageOffset, desc = cw.Finish(0, rows, pageOffset, buf)
 		buf[hi] = byte(desc)
 	}
 	buf = append(buf, 0x00)
@@ -341,7 +350,7 @@ func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []ColumnConf
 				vals2 := make([][]byte, rows)
 				vals := c.PrefixBytes()
 				for i := range vals2 {
-					vals2[i] = append(append(append([]byte{}, vals.SharedPrefix()...), vals.BundlePrefix(i)...), vals.RowSuffix(i)...)
+					vals2[i] = append(append(append([]byte{}, vals.SharedPrefix()...), vals.RowBundlePrefix(i)...), vals.RowSuffix(i)...)
 				}
 				got = vals2
 			}

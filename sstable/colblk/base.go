@@ -36,6 +36,7 @@ const (
 // When multiplying or dividing by align{16,32,64}, it's faster to shift to the
 // left to multiply or shift to the right to divide. The below constants define
 // the shift amounts corresponding to the above align constants.
+// (eg, alignNShift = log(alignN)).
 const (
 	align16Shift = 1
 	align32Shift = 2

@@ -38,7 +38,7 @@ func (u *Uvarint32) Get(i int) uint32 {
 const maxVarint32Len = 17
 
 type uvarint32Builder struct {
-	bb  bytesBuilder
+	bb  BytesBuilder
 	grp [4]uint32
 	buf [maxVarint32Len]byte
 	n   uint32
@@ -77,7 +77,7 @@ func (vb *uvarint32Builder) Finish(offset uint32, buf []byte) uint32 {
 			vb.bb.Put(encodeGroupVarint32(vb.buf[:], vb.grp[:]))
 		}
 	}
-	off, _ := vb.bb.Finish(int((vb.n+3)/4), offset, buf)
+	off, _ := vb.bb.Finish(0, int((vb.n+3)/4), offset, buf)
 	return off
 }
 

@@ -6,6 +6,46 @@ Binary representation:
 00-08: b 1101010101110001000000000000000000000000000000000000000000000000 # bitmap word 0
 08-16: b 0000000100000000000000000000000000000000000000000000000000000000 # bitmap summary word 0-63
 
+successor indexes=(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)
+----
+bitmap.Successor(0) = 0
+bitmap.Successor(1) = 2
+bitmap.Successor(2) = 2
+bitmap.Successor(3) = 4
+bitmap.Successor(4) = 4
+bitmap.Successor(5) = 6
+bitmap.Successor(6) = 6
+bitmap.Successor(7) = 7
+bitmap.Successor(8) = 8
+bitmap.Successor(9) = 12
+bitmap.Successor(10) = 12
+bitmap.Successor(11) = 12
+bitmap.Successor(12) = 12
+bitmap.Successor(13) = 13
+bitmap.Successor(14) = 14
+bitmap.Successor(15) = 17
+bitmap.Successor(16) = 17
+
+predecessor indexes=(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)
+----
+bitmap.Predecessor(0) = 0
+bitmap.Predecessor(1) = 0
+bitmap.Predecessor(2) = 2
+bitmap.Predecessor(3) = 2
+bitmap.Predecessor(4) = 4
+bitmap.Predecessor(5) = 4
+bitmap.Predecessor(6) = 6
+bitmap.Predecessor(7) = 7
+bitmap.Predecessor(8) = 8
+bitmap.Predecessor(9) = 8
+bitmap.Predecessor(10) = 8
+bitmap.Predecessor(11) = 8
+bitmap.Predecessor(12) = 12
+bitmap.Predecessor(13) = 13
+bitmap.Predecessor(14) = 14
+bitmap.Predecessor(15) = 14
+bitmap.Predecessor(16) = 14
+
 build
 1
 ----

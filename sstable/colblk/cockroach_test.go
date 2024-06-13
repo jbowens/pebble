@@ -5,6 +5,7 @@
 package colblk
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"slices"
@@ -43,16 +44,76 @@ var cockroachKeySchema = KeySchema{
 }
 
 type cockroachKeyWriter struct {
-	prefixes              bytesBuilder
+	prefixes              BytesBuilder
 	wallTimes             Uint64Builder
 	logicalTimes          Uint32Builder
-	untypedSuffixes       DefaultNull[*bytesBuilder]
-	untypedSuffixesValues bytesBuilder
+	untypedSuffixes       DefaultNull[*BytesBuilder]
+	untypedSuffixesValues BytesBuilder
+	prevSuffix            []byte
 }
 
-func (w *cockroachKeyWriter) WriteKey(row int, key []byte) (samePrefix bool) {
+func (w *cockroachKeyWriter) ComparePrev(key []byte) KeyComparison {
+	pp := w.prefixes.PrevKey()
+	var cmpv KeyComparison
+	cmpv.PrefixLen = crdbtest.Split(key) // TODO(jackson): Inline
+	cmpv.PrefixLenShared = bytesSharedPrefix(pp, key[:cmpv.PrefixLen])
+	if cmpv.PrefixLenShared == cmpv.PrefixLen {
+		cmpv.UserKeyComparison = crdbtest.Compare(key[cmpv.PrefixLen:], w.prevSuffix)
+		return cmpv
+	}
+	// The keys have different MVCC prefixes. We haven't determined which is
+	// greater, but we know the index at which they diverge. The base.Comparer
+	// contract dictates that prefixes must be lexicograrphically ordered.
+	if len(pp) == cmpv.PrefixLenShared {
+		// cmpv.PrefixLen > cmpv.PrefixLenShared; key is greater.
+		cmpv.UserKeyComparison = +1
+	} else if cmpv.PrefixLen == cmpv.PrefixLenShared {
+		// len(pp) > cmpv.PrefixLenShared; key is less.
+		cmpv.UserKeyComparison = -1
+	} else {
+		// Both keys have at least 1 additional byte at which they diverge.
+		// Compare the diverging byte.
+		cmpv.UserKeyComparison = cmp.Compare(key[cmpv.PrefixLenShared], pp[cmpv.PrefixLenShared])
+	}
+	return cmpv
+}
+
+func (w *cockroachKeyWriter) SeparatePrev(buf, key []byte, kcmp KeyComparison) []byte {
+	pp := w.prefixes.PrevKey()
+	switch {
+	case key == nil:
+		// If key is nil, this is the last block. Use successor.
+		buf = crdbtest.Comparer.Successor(buf, pp)
+		if len(buf) <= len(pp) {
+			// Shorter than the previous prefix; use it.
+			return buf
+		}
+		return pp
+	case kcmp.PrefixLen != kcmp.PrefixLenShared:
+		sep := crdbtest.Comparer.Separator(buf, pp, key)
+		if len(sep) <= len(pp) {
+			// Shorter than the previous prefix; use it.
+			return sep
+		}
+		return pp
+	case kcmp.UserKeyComparison == 0:
+		// The previous key and `key` are identical. There is no shorter
+		// separator than just key itself.
+		return key
+	default:
+		// The keys share the same MVCC prefix, but the suffixes differ.
+		buf := append(append(buf[:0], pp...), w.prevSuffix...)
+		return crdbtest.Comparer.Separator(buf, buf, key)
+	}
+}
+
+func (w *cockroachKeyWriter) WriteKey(
+	row int, key []byte, keyPrefixLen, keyPrefixLenSharedWithPrev int,
+) []byte {
+	// TODO: Avoid copying the previous suffix. Use keyPrefixLen to speed up decoding.
 	prefix, untypedSuffix, wallTime, logicalTime := crdbtest.DecodeTimestamp(key)
-	samePrefix = w.prefixes.PutOrdered(prefix)
+	w.prevSuffix = append(w.prevSuffix[:0], key[keyPrefixLen:]...)
+	copiedPrefix := w.prefixes.PutOrdered(prefix, keyPrefixLenSharedWithPrev)
 	w.wallTimes.Set(row, wallTime)
 	// The w.logicalTimes builder was initialized with UintDefaultZero, so if we
 	// don't set a value, the column value is implicitly zero. We only need to
@@ -64,7 +125,7 @@ func (w *cockroachKeyWriter) WriteKey(row int, key []byte) (samePrefix bool) {
 		bw, _ := w.untypedSuffixes.NotNull(row)
 		bw.Put(untypedSuffix)
 	}
-	return samePrefix
+	return copiedPrefix
 }
 
 func (w *cockroachKeyWriter) Reset() {
@@ -106,13 +167,13 @@ func (kw *cockroachKeyWriter) Finish(
 ) (uint32, ColumnDesc) {
 	switch col {
 	case cockroachColPrefix:
-		return kw.prefixes.Finish(rows, offset, buf)
+		return kw.prefixes.Finish(0, rows, offset, buf)
 	case cockroachColMVCCWallTime:
-		return kw.wallTimes.Finish(rows, offset, buf)
+		return kw.wallTimes.Finish(0, rows, offset, buf)
 	case cockroachColMVCCLogical:
-		return kw.logicalTimes.Finish(rows, offset, buf)
+		return kw.logicalTimes.Finish(0, rows, offset, buf)
 	case cockroachColUntypedSuffix:
-		return kw.untypedSuffixes.Finish(rows, offset, buf)
+		return kw.untypedSuffixes.Finish(0, rows, offset, buf)
 	default:
 		panic(fmt.Sprintf("unknown default key column: %d", col))
 	}
@@ -136,6 +197,7 @@ func benchmarkCockroachDataBlockWriter(b *testing.B, prefixSize, valueSize int) 
 	rng := rand.New(rand.NewSource(seed))
 	keys, values := makeCockroachRandomKVs(rng, prefixSize, valueSize, targetBlockSize)
 
+	var valuePrefix [1]byte
 	var w DataBlockWriter
 	w.Init(cockroachKeySchema)
 	b.ResetTimer()
@@ -144,8 +206,9 @@ func benchmarkCockroachDataBlockWriter(b *testing.B, prefixSize, valueSize int) 
 		w.Reset()
 		var j int
 		for w.Size() < targetBlockSize {
-			ik := base.MakeInternalKey(keys[j], rng.Uint64n(base.InternalKeySeqNumMax), base.InternalKeyKindSet)
-			w.Add(ik, values[j])
+			ik := base.MakeInternalKey(keys[j], base.SeqNum(rng.Uint64n(uint64(base.SeqNumMax))), base.InternalKeyKindSet)
+			kcmp := w.KeyWriter.ComparePrev(ik.UserKey)
+			w.Add(ik, valuePrefix[:], values[j], kcmp)
 			j++
 		}
 		w.Finish()
