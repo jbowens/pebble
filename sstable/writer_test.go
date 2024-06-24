@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
-	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
@@ -422,28 +421,12 @@ func TestWriterWithValueBlocks(t *testing.T) {
 	})
 }
 
-func testBlockBufClear(t *testing.T, b1, b2 *blockBuf) {
-	require.Equal(t, b1.tmp, b2.tmp)
-}
-
-func TestBlockBufClear(t *testing.T) {
-	b1 := &blockBuf{}
-	b1.tmp[0] = 1
-	b1.compressedBuf = make([]byte, 1)
-	b1.clear()
-	testBlockBufClear(t, b1, &blockBuf{})
-}
-
 func TestClearDataBlockBuf(t *testing.T) {
-	d := newDataBlockBuf(1, block.ChecksumTypeCRC32c)
-	d.blockBuf.compressedBuf = make([]byte, 1)
+	d := newDataBlockBuf(1)
 	d.dataBlock.add(ikey("apple"), nil)
 	d.dataBlock.add(ikey("banana"), nil)
-
 	d.clear()
 	testBlockCleared(t, &d.dataBlock, &blockWriter{})
-	testBlockBufClear(t, &d.blockBuf, &blockBuf{})
-
 	dataBlockBufPool.Put(d)
 }
 

@@ -6,6 +6,7 @@ package block
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/cespare/xxhash/v2"
@@ -13,6 +14,123 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/crc"
 )
+
+func Load(
+	checksumType ChecksumType, blk Value, transform LoadTransform, bufferPool *BufferPool,
+) (loaded Value, err error) {
+	// A serialized sstable block is wrappen in a light envelope. At the tail is
+	// 5-byte trailer consisting of a 1-byte block type (compression type) and a
+	// 4-byte checksum. Depending on the block type, the compression payload may
+	// be prefixed with an integer indicating the length of the decompressed
+	// payload so that block loading can allocate a buffer exactly the right
+	// size.
+	//
+	//     +=====================================================+
+	//     |				  Block contents                     |
+	//     |                                                     |
+	//     | [ decompressed length ]                             |
+	//     |                                                     |
+	//     |   .... compressed block data ...                    |
+	//     |                                                     |
+	//     +=============+=======================================+ <-- trailerIndex
+	//     |                  Block trailer                      |
+	//     |                                                     |
+	//     | 1-byte Type |            4-byte checksum            |
+	//     +=====================================================+
+	//
+	compressedWithTrailer := blk.Get()
+	trailerIndex := len(compressedWithTrailer) - TrailerLen
+
+	// Verify the checksum. The checksum is the last 4 bytes of the block.
+	if err := checkChecksum(checksumType, compressedWithTrailer, trailerIndex); err != nil {
+		return Value{}, err
+	}
+
+	// The block type (the first byte of the trailer) tells us how to decompress
+	// the block.
+	typ := Type(compressedWithTrailer[trailerIndex])
+
+	// If the type indicates the block is not compressed, just return the
+	// compressed cache value with the trailer removed through truncation.
+	if typ == NoCompressionBlockType {
+		blk.Truncate(trailerIndex)
+		return blk, nil
+	}
+
+	defer blk.Release()
+	// Decode the prefix that encodes the length of the decompressed value, and
+	// allocate a buffer to exactly fit the decompressed block.
+	decodedLen, prefixLen, err := decompressedLen(typ, compressedWithTrailer[:trailerIndex])
+	if err != nil {
+		return Value{}, err
+	}
+	loaded = Alloc(decodedLen, bufferPool)
+	if err := decompressInto(typ, compressedWithTrailer[prefixLen:trailerIndex], loaded.Get()); err != nil {
+		return Value{}, err
+	}
+
+	// Apply the LoadTransform if one is provided. Transforming blocks is very
+	// rare, so the extra copy of the transformed data is not problematic.
+	if transform != nil {
+		tmpTransformed, err := transform(loaded.Get())
+		if err != nil {
+			loaded.Release()
+			return Value{}, err
+		}
+		transformed := Alloc(decodedLen, bufferPool)
+		copy(transformed.Get(), tmpTransformed)
+		loaded.Release()
+		loaded = transformed
+	}
+
+	return loaded, nil
+}
+
+func LoadIntoBuffer(
+	checksumType ChecksumType, blk []byte, dst []byte,
+) (loaded []byte, buf []byte, err error) {
+	trailerIndex := len(blk) - TrailerLen
+	if err := checkChecksum(checksumType, blk, trailerIndex); err != nil {
+		return nil, buf, err
+	}
+	typ := Type(blk[trailerIndex])
+	blk = blk[:trailerIndex]
+	if typ == NoCompressionBlockType {
+		return blk, buf, nil
+	}
+	decompressedLen, prefix, err := decompressedLen(typ, blk)
+	if err != nil {
+		return nil, buf, err
+	}
+	buf = dst
+	if cap(buf) < decompressedLen {
+		buf = make([]byte, decompressedLen)
+	}
+	loaded = buf[:decompressedLen]
+	err = decompressInto(typ, blk[prefix:], loaded)
+	return loaded, buf, err
+
+}
+
+func checkChecksum(
+	checksumType ChecksumType, compressedWithTrailer []byte, trailerIndex int,
+) error {
+	expectedChecksum := binary.LittleEndian.Uint32(compressedWithTrailer[trailerIndex+1:])
+	var recomputedChecksum uint32
+	switch checksumType {
+	case ChecksumTypeCRC32c:
+		recomputedChecksum = crc.New(compressedWithTrailer[:trailerIndex+1]).Value()
+	case ChecksumTypeXXHash64:
+		recomputedChecksum = uint32(xxhash.Sum64(compressedWithTrailer[:trailerIndex+1]))
+	default:
+		return errors.Errorf("unsupported checksum type: %d", checksumType)
+	}
+	if expectedChecksum != recomputedChecksum {
+		return base.CorruptionErrorf(
+			"checksum mismatch; %x and %x", expectedChecksum, recomputedChecksum)
+	}
+	return nil
+}
 
 // ChecksumType specifies the checksum used for blocks.
 type ChecksumType byte
@@ -67,6 +185,10 @@ func (c *Checksummer) Checksum(block []byte, blockType []byte) (checksum uint32)
 	}
 	return checksum
 }
+
+// LoadTransform allows transformation of a block's contents when the block is
+// loaded into the block cache.
+type LoadTransform func([]byte) ([]byte, error)
 
 // IterTransforms allow on-the-fly transformation of data at iteration time.
 //

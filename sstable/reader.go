@@ -83,8 +83,6 @@ const (
 	loadBlockIrrelevant
 )
 
-type blockTransform func([]byte) ([]byte, error)
-
 // ReaderOption provide an interface to do work on Reader while it is being
 // opened.
 type ReaderOption interface {
@@ -183,7 +181,7 @@ type Reader struct {
 	filterBH          BlockHandle
 	rangeDelBH        BlockHandle
 	rangeKeyBH        BlockHandle
-	rangeDelTransform blockTransform
+	rangeDelTransform block.LoadTransform
 	valueBIH          valueBlocksIndexHandle
 	propertiesBH      BlockHandle
 	metaIndexBH       BlockHandle
@@ -510,7 +508,7 @@ var deterministicReadBlockDurationForTesting = false
 func (r *Reader) readBlock(
 	ctx context.Context,
 	bh BlockHandle,
-	transform blockTransform,
+	transform block.LoadTransform,
 	readHandle objstorage.ReadHandle,
 	stats *base.InternalIteratorStats,
 	iterStats *iterStatsAccumulator,
@@ -519,7 +517,7 @@ func (r *Reader) readBlock(
 	if h := r.opts.Cache.Get(r.cacheID, r.fileNum, bh.Offset); h.Get() != nil {
 		// Cache hit.
 		if readHandle != nil {
-			readHandle.RecordCacheHit(ctx, int64(bh.Offset), int64(bh.Length+blockTrailerLen))
+			readHandle.RecordCacheHit(ctx, int64(bh.Offset), int64(bh.Length+block.TrailerLen))
 		}
 		if stats != nil {
 			stats.BlockBytes += bh.Length
@@ -543,12 +541,7 @@ func (r *Reader) readBlock(
 		defer sema.Release(1)
 	}
 
-	var compressed block.CacheValueOrBuf
-	if bufferPool != nil {
-		compressed = block.MakeBlockBuf(bufferPool.Alloc(int(bh.Length + blockTrailerLen)))
-	} else {
-		compressed = block.MakeCacheValue(cache.Alloc(int(bh.Length + blockTrailerLen)))
-	}
+	compressed := block.Alloc(int(bh.Length), bufferPool)
 
 	readStartTime := time.Now()
 	var err error
@@ -568,7 +561,7 @@ func (r *Reader) readBlock(
 	// interface{}, unless necessary.
 	if readDuration >= slowReadTracingThreshold && r.opts.LoggerAndTracer.IsTracingEnabled(ctx) {
 		r.opts.LoggerAndTracer.Eventf(ctx, "reading %d bytes took %s",
-			int(bh.Length+blockTrailerLen), readDuration.String())
+			int(bh.Length+block.TrailerLen), readDuration.String())
 	}
 	if stats != nil {
 		stats.BlockBytes += bh.Length
@@ -578,66 +571,19 @@ func (r *Reader) readBlock(
 		compressed.Release()
 		return block.BufferHandle{}, err
 	}
-	if err := checkChecksum(r.checksumType, compressed.Get(), bh, r.fileNum); err != nil {
-		compressed.Release()
-		return block.BufferHandle{}, err
+
+	// Load the block from the compressed payload. Load validates the block's
+	// checksum, and decompresses and transforms if necessary.
+	loaded, err := block.Load(r.checksumType, compressed, transform, bufferPool)
+	if err != nil {
+		return block.BufferHandle{}, errors.Wrapf(err,
+			"pebble/table: invalid table %s loading block %d/%d",
+			r.fileNum, errors.Safe(bh.Offset), errors.Safe(bh.Length))
 	}
-
-	typ := blockType(compressed.Get()[bh.Length])
-	compressed.Truncate(int(bh.Length))
-
-	var decompressed block.CacheValueOrBuf
-	if typ == noCompressionBlockType {
-		decompressed = compressed
-	} else {
-		// Decode the length of the decompressed value.
-		decodedLen, prefixLen, err := decompressedLen(typ, compressed.Get())
-		if err != nil {
-			compressed.Release()
-			return block.BufferHandle{}, err
-		}
-
-		if bufferPool != nil {
-			decompressed = block.MakeBlockBuf(bufferPool.Alloc(decodedLen))
-		} else {
-			decompressed = block.MakeCacheValue(cache.Alloc(decodedLen))
-		}
-		if err := decompressInto(typ, compressed.Get()[prefixLen:], decompressed.Get()); err != nil {
-			compressed.Release()
-			return block.BufferHandle{}, err
-		}
-		compressed.Release()
-	}
-
-	if transform != nil {
-		// Transforming blocks is very rare, so the extra copy of the
-		// transformed data is not problematic.
-		tmpTransformed, err := transform(decompressed.Get())
-		if err != nil {
-			decompressed.Release()
-			return block.BufferHandle{}, err
-		}
-
-		var transformed block.CacheValueOrBuf
-		if bufferPool != nil {
-			transformed = block.MakeBlockBuf(bufferPool.Alloc(len(tmpTransformed)))
-		} else {
-			transformed = block.MakeCacheValue(cache.Alloc(len(tmpTransformed)))
-		}
-		copy(transformed.Get(), tmpTransformed)
-		decompressed.Release()
-		decompressed = transformed
-	}
-
 	if iterStats != nil {
 		iterStats.reportStats(bh.Length, 0, readDuration)
 	}
-	pooledBuf, cacheV := decompressed.Unpack()
-	if pooledBuf.Valid() {
-		return block.PooledBufferHandle(pooledBuf), nil
-	}
-	h := r.opts.Cache.Set(r.cacheID, r.fileNum, bh.Offset, cacheV)
-	return block.CacheBufferHandle(h), nil
+	return loaded.MakeHandle(r.opts.Cache, r.cacheID, r.fileNum, bh.Offset), nil
 }
 
 func (r *Reader) transformRangeDelV1(b []byte) ([]byte, error) {
@@ -1087,7 +1033,7 @@ func (r *Reader) EstimateDiskUsage(start, end []byte) (uint64, error) {
 		return 0, errCorruptIndexEntry(err)
 	}
 	return includeInterpolatedValueBlocksSize(
-		endBH.Offset + endBH.Length + blockTrailerLen - startBH.Offset), nil
+		endBH.Offset + endBH.Length + block.TrailerLen - startBH.Offset), nil
 }
 
 // TableFormat returns the format version for the table.

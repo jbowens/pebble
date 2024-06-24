@@ -2,7 +2,7 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package sstable
+package block
 
 import (
 	"encoding/binary"
@@ -27,7 +27,7 @@ func TestCompressionRoundtrip(t *testing.T) {
 			// not sufficient, compressBlock should allocate one that is.
 			compressedBuf := make([]byte, rng.Intn(1<<10 /* 1 KiB */))
 
-			btyp, compressed := compressBlock(compression, payload, compressedBuf)
+			btyp, compressed := compress(compression, payload, compressedBuf)
 			v, err := decompressBlock(btyp, compressed)
 			require.NoError(t, err)
 			got := payload

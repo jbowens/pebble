@@ -176,10 +176,10 @@ func (l *Layout) Describe(
 		}
 
 		formatTrailer := func() {
-			trailer := make([]byte, blockTrailerLen)
+			var trailer block.Trailer
 			offset := int64(b.Offset + b.Length)
-			_ = r.readable.ReadAt(ctx, trailer, offset)
-			bt := blockType(trailer[0])
+			_ = r.readable.ReadAt(ctx, trailer[:], offset)
+			bt := block.Type(trailer[0])
 			checksum := binary.LittleEndian.Uint32(trailer[1:])
 			fmt.Fprintf(w, "%10d    [trailer compression=%s checksum=0x%04x]\n", offset, bt, checksum)
 		}

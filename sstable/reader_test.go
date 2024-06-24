@@ -949,7 +949,7 @@ func TestCompactionIteratorSetupForCompaction(t *testing.T) {
 	for _, blockSize := range blockSizes {
 		for _, indexBlockSize := range blockSizes {
 			for _, numEntries := range []uint64{0, 1, 1e5} {
-				r := buildTestTableWithProvider(t, provider, numEntries, blockSize, indexBlockSize, DefaultCompression, nil)
+				r := buildTestTableWithProvider(t, provider, numEntries, blockSize, indexBlockSize, block.DefaultCompression, nil)
 				var pool block.BufferPool
 				pool.Init(5)
 				citer, err := r.NewCompactionIter(
@@ -1727,7 +1727,7 @@ func buildTestTableWithProvider(
 	provider objstorage.Provider,
 	numEntries uint64,
 	blockSize, indexBlockSize int,
-	compression Compression,
+	compression block.Compression,
 	prefix []byte,
 ) *Reader {
 	f0, _, err := provider.Create(context.Background(), base.FileTypeTable, base.DiskFileNum(0), objstorage.CreateOptions{})
@@ -1819,7 +1819,7 @@ var basicBenchmarks = []struct {
 			BlockSize:            32 << 10,
 			BlockRestartInterval: 16,
 			FilterPolicy:         nil,
-			Compression:          SnappyCompression,
+			Compression:          block.SnappyCompression,
 			TableFormat:          TableFormatPebblev2,
 		},
 	},
@@ -1829,7 +1829,7 @@ var basicBenchmarks = []struct {
 			BlockSize:            32 << 10,
 			BlockRestartInterval: 16,
 			FilterPolicy:         nil,
-			Compression:          ZstdCompression,
+			Compression:          block.ZstdCompression,
 			TableFormat:          TableFormatPebblev2,
 		},
 	},
@@ -2032,7 +2032,7 @@ func BenchmarkIteratorScanManyVersions(b *testing.B) {
 		BlockSize:            32 << 10,
 		BlockRestartInterval: 16,
 		FilterPolicy:         nil,
-		Compression:          SnappyCompression,
+		Compression:          block.SnappyCompression,
 		Comparer:             testkeys.Comparer,
 	}
 	// 10,000 key prefixes, each with 100 versions.
@@ -2133,7 +2133,7 @@ func BenchmarkIteratorScanNextPrefix(b *testing.B) {
 		BlockSize:            32 << 10,
 		BlockRestartInterval: 16,
 		FilterPolicy:         nil,
-		Compression:          SnappyCompression,
+		Compression:          block.SnappyCompression,
 		TableFormat:          TableFormatPebblev3,
 		Comparer:             testkeys.Comparer,
 	}

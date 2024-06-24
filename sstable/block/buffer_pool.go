@@ -6,22 +6,22 @@ package block
 
 import (
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/cache"
 )
 
-// MakeCacheValue constructs a CacheValueOrBuf backed by a block cache Value.
-func MakeCacheValue(v *cache.Value) CacheValueOrBuf {
-	return CacheValueOrBuf{v: v}
+// Alloc allocates a new Value for a block of length n (excluding the block
+// trailer). If bufferPool is non-nil, Alloc allocates the buffer from the pool.
+// Otherwise it allocates it from the block cache.
+func Alloc(n int, bufferPool *BufferPool) Value {
+	if bufferPool != nil {
+		return Value{buf: bufferPool.Alloc(n + TrailerLen)}
+	}
+	return Value{v: cache.Alloc(n + TrailerLen)}
 }
 
-// MakeBlockBuf constructs a CacheValueOrBuf backed by a BufferPool buffer.
-func MakeBlockBuf(buf Buf) CacheValueOrBuf {
-	return CacheValueOrBuf{buf: buf}
-}
-
-// CacheValueOrBuf is a handle to a block, either backed by the block cache or a
-// BufferPool.
-type CacheValueOrBuf struct {
+// Value is a block buffer, either backed by the block cache or a BufferPool.
+type Value struct {
 	// buf.Valid() returns true if backed by a BufferPool.
 	buf Buf
 	// v is non-nil if backed by the block cache.
@@ -29,7 +29,7 @@ type CacheValueOrBuf struct {
 }
 
 // Get returns the underlying block's byte slice.
-func (b CacheValueOrBuf) Get() []byte {
+func (b Value) Get() []byte {
 	if b.buf.Valid() {
 		return b.buf.p.pool[b.buf.i].b
 	}
@@ -38,12 +38,12 @@ func (b CacheValueOrBuf) Get() []byte {
 
 // Unpack returns the underlying block's Buf and cache.Value. For a valid
 // CacheValueOrBuf, either Buf.Valid() or cache.Value is non-nil.
-func (b CacheValueOrBuf) Unpack() (Buf, *cache.Value) {
+func (b Value) Unpack() (Buf, *cache.Value) {
 	return b.buf, b.v
 }
 
 // Release releases the handle.
-func (b CacheValueOrBuf) Release() {
+func (b Value) Release() {
 	if b.buf.Valid() {
 		b.buf.Release()
 	} else {
@@ -52,12 +52,24 @@ func (b CacheValueOrBuf) Release() {
 }
 
 // Truncate truncates the block to n bytes.
-func (b CacheValueOrBuf) Truncate(n int) {
+func (b Value) Truncate(n int) {
 	if b.buf.Valid() {
 		b.buf.p.pool[b.buf.i].b = b.buf.p.pool[b.buf.i].b[:n]
 	} else {
 		b.v.Truncate(n)
 	}
+}
+
+// MakeHandle constructs a BufferHandle from the Value. If the Value is not
+// backed by a buffer pool, MakeHandle inserts the value into the block cache,
+// returning a handle to the now resident value.
+func (b Value) MakeHandle(
+	c *cache.Cache, cacheID uint64, fileNum base.DiskFileNum, offset uint64,
+) BufferHandle {
+	if b.buf.Valid() {
+		return BufferHandle{b: b.buf}
+	}
+	return BufferHandle{h: c.Set(cacheID, fileNum, offset, b.v)}
 }
 
 // A BufferHandle is a handle to manually-managed memory. The handle may point
@@ -66,11 +78,6 @@ func (b CacheValueOrBuf) Truncate(n int) {
 type BufferHandle struct {
 	h cache.Handle
 	b Buf
-}
-
-// PooledBufferHandle returns a BufferHandle for a pooled buffer.
-func PooledBufferHandle(b Buf) BufferHandle {
-	return BufferHandle{b: b}
 }
 
 // CacheBufferHandle constructs a BufferHandle from a block cache Handle.

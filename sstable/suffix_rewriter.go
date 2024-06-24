@@ -163,7 +163,7 @@ func rewriteBlocks(
 	bw := blockWriter{
 		restartInterval: restartInterval,
 	}
-	buf := blockBuf{checksummer: block.Checksummer{Type: checksumType}}
+	var buf block.CompressionBuf
 	var blockAlloc bytealloc.A
 	var keyAlloc bytealloc.A
 	var scratch InternalKey
@@ -243,12 +243,12 @@ func rewriteBlocks(
 
 		keyAlloc, output[i].end = cloneKeyWithBuf(scratch, keyAlloc)
 
-		finished := compressAndChecksum(bw.finish(), compression, &buf)
+		finished, trailer := buf.CompressAndChecksum(compression, checksumType, bw.finish())
 
-		// copy our finished block into the output buffer.
-		blockAlloc, output[i].data = blockAlloc.Alloc(len(finished) + blockTrailerLen)
+		// Copy our finished block into the output buffer.
+		blockAlloc, output[i].data = blockAlloc.Alloc(len(finished) + block.TrailerLen)
 		copy(output[i].data, finished)
-		copy(output[i].data[len(finished):], buf.tmp[:blockTrailerLen])
+		copy(output[i].data[len(finished):], trailer[:])
 	}
 	return nil
 }
@@ -293,7 +293,7 @@ func rewriteDataBlocksToWriter(
 			err := rewriteBlocks(
 				r,
 				w.dataBlockBuf.dataBlock.restartInterval,
-				w.blockBuf.checksummer.Type,
+				w.checksumType,
 				w.compression,
 				data,
 				blocks,
@@ -342,7 +342,7 @@ func rewriteDataBlocksToWriter(
 		}
 
 		n := len(blocks[i].data)
-		bh := BlockHandle{Offset: w.meta.Size, Length: uint64(n) - blockTrailerLen}
+		bh := BlockHandle{Offset: w.meta.Size, Length: uint64(n) - block.TrailerLen}
 		// Update the overall size.
 		w.meta.Size += uint64(n)
 
@@ -510,25 +510,8 @@ func NewMemReader(sst []byte, o ReaderOptions) (*Reader, error) {
 }
 
 func readBlockBuf(r *Reader, bh BlockHandle, buf []byte) ([]byte, []byte, error) {
-	raw := r.readable.(*memReader).b[bh.Offset : bh.Offset+bh.Length+blockTrailerLen]
-	if err := checkChecksum(r.checksumType, raw, bh, 0); err != nil {
-		return nil, buf, err
-	}
-	typ := blockType(raw[bh.Length])
-	raw = raw[:bh.Length]
-	if typ == noCompressionBlockType {
-		return raw, buf, nil
-	}
-	decompressedLen, prefix, err := decompressedLen(typ, raw)
-	if err != nil {
-		return nil, buf, err
-	}
-	if cap(buf) < decompressedLen {
-		buf = make([]byte, decompressedLen)
-	}
-	dst := buf[:decompressedLen]
-	err = decompressInto(typ, raw[prefix:], dst)
-	return dst, buf, err
+	raw := r.readable.(*memReader).b[bh.Offset : bh.Offset+bh.Length+block.TrailerLen]
+	return block.LoadIntoBuffer(r.checksumType, raw, buf)
 }
 
 // memReader is a thin wrapper around a []byte such that it can be passed to

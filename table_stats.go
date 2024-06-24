@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/keyspan/keyspanimpl"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/sstable"
+	"github.com/cockroachdb/pebble/sstable/block"
 )
 
 // In-memory statistics about tables help inform compaction picking, but may
@@ -323,7 +324,7 @@ func (d *DB) loadTableStats(
 			// picking.
 			stats.NumRangeKeySets = props.NumRangeKeySets
 			stats.ValueBlocksSize = props.ValueBlocksSize
-			stats.CompressionType = sstable.CompressionFromString(props.CompressionName)
+			stats.CompressionType = block.CompressionFromString(props.CompressionName)
 			return
 		})
 	if err != nil {
@@ -678,7 +679,7 @@ func maybeSetStatsFromProperties(meta physicalMeta, props *sstable.Properties) b
 	meta.Stats.PointDeletionsBytesEstimate = pointEstimate
 	meta.Stats.RangeDeletionsBytesEstimate = 0
 	meta.Stats.ValueBlocksSize = props.ValueBlocksSize
-	meta.Stats.CompressionType = sstable.CompressionFromString(props.CompressionName)
+	meta.Stats.CompressionType = block.CompressionFromString(props.CompressionName)
 	meta.StatsMarkValid()
 	return true
 }

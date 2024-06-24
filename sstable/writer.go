@@ -205,9 +205,10 @@ type Writer struct {
 	// dataBlockBuf consists of the state which is currently owned by and used by
 	// the Writer client goroutine. This state can be handed off to other goroutines.
 	dataBlockBuf *dataBlockBuf
-	// blockBuf consists of the state which is owned by and used by the Writer client
-	// goroutine.
-	blockBuf blockBuf
+	// compressionBuf is a compression buffer owned by and used by the Writer
+	// client goroutine.
+	compressionBuf block.CompressionBuf
+	tmp            [blockHandleLikelyMaxLen]byte
 
 	coordination coordinationState
 
@@ -519,7 +520,7 @@ func (d *dataBlockEstimates) dataBlockCompressed(compressedSize int, inflightSiz
 		d.mu.Lock()
 		defer d.mu.Unlock()
 	}
-	d.estimate.writtenWithDelta(compressedSize+blockTrailerLen, inflightSize)
+	d.estimate.writtenWithDelta(compressedSize+block.TrailerLen, inflightSize)
 }
 
 // size is an estimated size of datablock data which has been written to disk.
@@ -558,34 +559,15 @@ var writeTaskPool = sync.Pool{
 	},
 }
 
-type blockBuf struct {
-	// tmp is a scratch buffer, large enough to hold either footerLen bytes,
-	// blockTrailerLen bytes, (5 * binary.MaxVarintLen64) bytes, and most
-	// likely large enough for a block handle with properties.
-	tmp [blockHandleLikelyMaxLen]byte
-	// compressedBuf is the destination buffer for compression. It is re-used over the
-	// lifetime of the blockBuf, avoiding the allocation of a temporary buffer for each block.
-	compressedBuf []byte
-	checksummer   block.Checksummer
-}
-
-func (b *blockBuf) clear() {
-	// We can't assign b.compressedBuf[:0] to compressedBuf because snappy relies
-	// on the length of the buffer, and not the capacity to determine if it needs
-	// to make an allocation.
-	*b = blockBuf{
-		compressedBuf: b.compressedBuf, checksummer: b.checksummer,
-	}
-}
-
 // A dataBlockBuf holds all the state required to compress and write a data block to disk.
 // A dataBlockBuf begins its lifecycle owned by the Writer client goroutine. The Writer
 // client goroutine adds keys to the sstable, writing directly into a dataBlockBuf's blockWriter
 // until the block is full. Once a dataBlockBuf's block is full, the dataBlockBuf may be passed
 // to other goroutines for compression and file I/O.
 type dataBlockBuf struct {
-	blockBuf
-	dataBlock blockWriter
+	tmp            [blockHandleLikelyMaxLen]byte
+	compressionBuf block.CompressionBuf
+	dataBlock      blockWriter
 
 	// uncompressed is a reference to a byte slice which is owned by the dataBlockBuf. It is the
 	// next byte slice to be compressed. The uncompressed byte slice will be backed by the
@@ -596,6 +578,9 @@ type dataBlockBuf struct {
 	// backed by the dataBlock.buf, or the dataBlockBuf.compressedBuf, depending on whether
 	// we use the result of the compression.
 	compressed []byte
+	// trailer is the block trailer encoding the block's compression algorithm
+	// and checksum.
+	trailer block.Trailer
 
 	// We're making calls to BlockPropertyCollectors from the Writer client goroutine. We need to
 	// pass the encoded block properties over to the write queue. To prevent copies, and allocations,
@@ -610,7 +595,6 @@ type dataBlockBuf struct {
 }
 
 func (d *dataBlockBuf) clear() {
-	d.blockBuf.clear()
 	d.dataBlock.clear()
 
 	d.uncompressed = nil
@@ -625,10 +609,9 @@ var dataBlockBufPool = sync.Pool{
 	},
 }
 
-func newDataBlockBuf(restartInterval int, checksumType block.ChecksumType) *dataBlockBuf {
+func newDataBlockBuf(restartInterval int) *dataBlockBuf {
 	d := dataBlockBufPool.Get().(*dataBlockBuf)
 	d.dataBlock.restartInterval = restartInterval
-	d.checksummer.Type = checksumType
 	return d
 }
 
@@ -636,8 +619,8 @@ func (d *dataBlockBuf) finish() {
 	d.uncompressed = d.dataBlock.finish()
 }
 
-func (d *dataBlockBuf) compressAndChecksum(c Compression) {
-	d.compressed = compressAndChecksum(d.uncompressed, c, &d.blockBuf)
+func (d *dataBlockBuf) compressAndChecksum(c Compression, cksum block.ChecksumType) {
+	d.compressed, d.trailer = d.compressionBuf.CompressAndChecksum(c, cksum, d.uncompressed)
 }
 
 func (d *dataBlockBuf) shouldFlush(
@@ -942,8 +925,8 @@ func (w *Writer) addPoint(key InternalKey, value []byte, forceObsolete bool) err
 		if err != nil {
 			return err
 		}
-		n := encodeValueHandle(w.blockBuf.tmp[:], vh)
-		valueStoredWithKey = w.blockBuf.tmp[:n]
+		n := encodeValueHandle(w.tmp[:], vh)
+		valueStoredWithKey = w.tmp[:n]
 		valueStoredWithKeyLen = len(valueStoredWithKey) + 1
 		var attribute base.ShortAttribute
 		if w.shortAttributeExtractor != nil {
@@ -1365,7 +1348,7 @@ func (w *Writer) flush(key InternalKey) error {
 		return err
 	}
 	w.dataBlockBuf.finish()
-	w.dataBlockBuf.compressAndChecksum(w.compression)
+	w.dataBlockBuf.compressAndChecksum(w.compression, w.checksumType)
 	// Since dataBlockEstimates.addInflightDataBlock was never called, the
 	// inflightSize is set to 0.
 	w.coordination.sizeEstimate.dataBlockCompressed(len(w.dataBlockBuf.compressed), 0)
@@ -1429,7 +1412,7 @@ func (w *Writer) flush(key InternalKey) error {
 	} else {
 		err = w.coordination.writeQueue.addSync(writeTask)
 	}
-	w.dataBlockBuf = newDataBlockBuf(w.restartInterval, w.checksumType)
+	w.dataBlockBuf = newDataBlockBuf(w.restartInterval)
 
 	return err
 }
@@ -1779,7 +1762,7 @@ func (w *Writer) writeTwoLevelIndex() (BlockHandle, error) {
 
 		data := b.block
 		w.props.IndexSize += uint64(len(data))
-		bh, err := w.writeBlock(data, w.compression, &w.blockBuf)
+		bh, err := w.writeBlock(data, w.compression, &w.compressionBuf)
 		if err != nil {
 			return BlockHandle{}, err
 		}
@@ -1787,7 +1770,7 @@ func (w *Writer) writeTwoLevelIndex() (BlockHandle, error) {
 			BlockHandle: bh,
 			Props:       b.properties,
 		}
-		encoded := encodeBlockHandleWithProperties(w.blockBuf.tmp[:], bhp)
+		encoded := encodeBlockHandleWithProperties(w.tmp[:], bhp)
 		w.topLevelIndexBlock.add(b.sep, encoded)
 	}
 
@@ -1796,34 +1779,13 @@ func (w *Writer) writeTwoLevelIndex() (BlockHandle, error) {
 	// index size property.
 	w.props.IndexPartitions = uint64(len(w.indexPartitions))
 	w.props.TopLevelIndexSize = uint64(w.topLevelIndexBlock.estimatedSize())
-	w.props.IndexSize += w.props.TopLevelIndexSize + blockTrailerLen
+	w.props.IndexSize += w.props.TopLevelIndexSize + block.TrailerLen
 
-	return w.writeBlock(w.topLevelIndexBlock.finish(), w.compression, &w.blockBuf)
+	return w.writeBlock(w.topLevelIndexBlock.finish(), w.compression, &w.compressionBuf)
 }
 
-func compressAndChecksum(b []byte, compression Compression, blockBuf *blockBuf) []byte {
-	// Compress the buffer, discarding the result if the improvement isn't at
-	// least 12.5%.
-	blockType, compressed := compressBlock(compression, b, blockBuf.compressedBuf)
-	if blockType != noCompressionBlockType && cap(compressed) > cap(blockBuf.compressedBuf) {
-		blockBuf.compressedBuf = compressed[:cap(compressed)]
-	}
-	if len(compressed) < len(b)-len(b)/8 {
-		b = compressed
-	} else {
-		blockType = noCompressionBlockType
-	}
-
-	blockBuf.tmp[0] = byte(blockType)
-
-	// Calculate the checksum.
-	checksum := blockBuf.checksummer.Checksum(b, blockBuf.tmp[:1])
-	binary.LittleEndian.PutUint32(blockBuf.tmp[1:5], checksum)
-	return b
-}
-
-func (w *Writer) writeCompressedBlock(block []byte, blockTrailerBuf []byte) (BlockHandle, error) {
-	bh := BlockHandle{Offset: w.meta.Size, Length: uint64(len(block))}
+func (w *Writer) writeCompressedBlock(blk []byte, trailer block.Trailer) (BlockHandle, error) {
+	bh := BlockHandle{Offset: w.meta.Size, Length: uint64(len(blk))}
 
 	if w.cacheID != 0 && w.fileNum != 0 {
 		// Remove the block being written from the cache. This provides defense in
@@ -1835,15 +1797,14 @@ func (w *Writer) writeCompressedBlock(block []byte, blockTrailerBuf []byte) (Blo
 	}
 
 	// Write the bytes to the file.
-	if err := w.writable.Write(block); err != nil {
+	if err := w.writable.Write(blk); err != nil {
 		return BlockHandle{}, err
 	}
-	w.meta.Size += uint64(len(block))
-	if err := w.writable.Write(blockTrailerBuf[:blockTrailerLen]); err != nil {
+	w.meta.Size += uint64(len(blk))
+	if err := w.writable.Write(trailer[:]); err != nil {
 		return BlockHandle{}, err
 	}
-	w.meta.Size += blockTrailerLen
-
+	w.meta.Size += block.TrailerLen
 	return bh, nil
 }
 
@@ -1868,10 +1829,10 @@ func (w *Writer) Write(blockWithTrailer []byte) (n int, err error) {
 }
 
 func (w *Writer) writeBlock(
-	b []byte, compression Compression, blockBuf *blockBuf,
+	blk []byte, compression Compression, compressionBuf *block.CompressionBuf,
 ) (BlockHandle, error) {
-	b = compressAndChecksum(b, compression, blockBuf)
-	return w.writeCompressedBlock(b, blockBuf.tmp[:])
+	blk, trailer := compressionBuf.CompressAndChecksum(compression, w.checksumType, blk)
+	return w.writeCompressedBlock(blk, trailer)
 }
 
 // assertFormatCompatibility ensures that the features present on the table are
@@ -1986,7 +1947,7 @@ func (w *Writer) Close() (err error) {
 	// Finish the last data block, or force an empty data block if there
 	// aren't any data blocks at all.
 	if w.dataBlockBuf.dataBlock.nEntries > 0 || w.indexBlock.block.nEntries == 0 {
-		bh, err := w.writeBlock(w.dataBlockBuf.dataBlock.finish(), w.compression, &w.dataBlockBuf.blockBuf)
+		bh, err := w.writeBlock(w.dataBlockBuf.dataBlock.finish(), w.compression, &w.dataBlockBuf.compressionBuf)
 		if err != nil {
 			return err
 		}
@@ -2009,12 +1970,12 @@ func (w *Writer) Close() (err error) {
 		if err != nil {
 			return err
 		}
-		bh, err := w.writeBlock(b, NoCompression, &w.blockBuf)
+		bh, err := w.writeBlock(b, NoCompression, &w.compressionBuf)
 		if err != nil {
 			return err
 		}
-		n := encodeBlockHandle(w.blockBuf.tmp[:], bh)
-		metaindex.add(InternalKey{UserKey: []byte(w.filter.metaName())}, w.blockBuf.tmp[:n])
+		n := encodeBlockHandle(w.tmp[:], bh)
+		metaindex.add(InternalKey{UserKey: []byte(w.filter.metaName())}, w.tmp[:n])
 		w.props.FilterPolicyName = w.filter.policyName()
 		w.props.FilterSize = bh.Length
 	}
@@ -2032,11 +1993,11 @@ func (w *Writer) Close() (err error) {
 		// NB: RocksDB includes the block trailer length in the index size
 		// property, though it doesn't include the trailer in the filter size
 		// property.
-		w.props.IndexSize = uint64(w.indexBlock.estimatedSize()) + blockTrailerLen
+		w.props.IndexSize = uint64(w.indexBlock.estimatedSize()) + block.TrailerLen
 		w.props.NumDataBlocks = uint64(w.indexBlock.block.nEntries)
 
 		// Write the single level index block.
-		indexBH, err = w.writeBlock(w.indexBlock.finish(), w.compression, &w.blockBuf)
+		indexBH, err = w.writeBlock(w.indexBlock.finish(), w.compression, &w.compressionBuf)
 		if err != nil {
 			return err
 		}
@@ -2061,7 +2022,7 @@ func (w *Writer) Close() (err error) {
 			k := base.MakeRangeDeleteSentinelKey(w.rangeDelBlock.curValue).Clone()
 			w.meta.SetLargestRangeDelKey(k)
 		}
-		rangeDelBH, err = w.writeBlock(w.rangeDelBlock.finish(), NoCompression, &w.blockBuf)
+		rangeDelBH, err = w.writeBlock(w.rangeDelBlock.finish(), NoCompression, &w.compressionBuf)
 		if err != nil {
 			return err
 		}
@@ -2084,7 +2045,7 @@ func (w *Writer) Close() (err error) {
 		// TODO(travers): The lack of compression on the range key block matches the
 		// lack of compression on the range-del block. Revisit whether we want to
 		// enable compression on this block.
-		rangeKeyBH, err = w.writeBlock(w.rangeKeyBlock.finish(), NoCompression, &w.blockBuf)
+		rangeKeyBH, err = w.writeBlock(w.rangeKeyBlock.finish(), NoCompression, &w.compressionBuf)
 		if err != nil {
 			return err
 		}
@@ -2099,8 +2060,8 @@ func (w *Writer) Close() (err error) {
 		w.props.NumValuesInValueBlocks = vbStats.numValuesInValueBlocks
 		w.props.ValueBlocksSize = vbStats.valueBlocksAndIndexSize
 		if vbStats.numValueBlocks > 0 {
-			n := encodeValueBlocksIndexHandle(w.blockBuf.tmp[:], vbiHandle)
-			metaindex.add(InternalKey{UserKey: []byte(metaValueIndexName)}, w.blockBuf.tmp[:n])
+			n := encodeValueBlocksIndexHandle(w.tmp[:], vbiHandle)
+			metaindex.add(InternalKey{UserKey: []byte(metaValueIndexName)}, w.tmp[:n])
 		}
 	}
 
@@ -2109,8 +2070,8 @@ func (w *Writer) Close() (err error) {
 	// metaindex block entries must be sorted, and the range key block name sorts
 	// before the other block names.
 	if w.props.NumRangeKeys() > 0 {
-		n := encodeBlockHandle(w.blockBuf.tmp[:], rangeKeyBH)
-		metaindex.add(InternalKey{UserKey: []byte(metaRangeKeyName)}, w.blockBuf.tmp[:n])
+		n := encodeBlockHandle(w.tmp[:], rangeKeyBH)
+		metaindex.add(InternalKey{UserKey: []byte(metaRangeKeyName)}, w.tmp[:n])
 	}
 
 	{
@@ -2149,25 +2110,25 @@ func (w *Writer) Close() (err error) {
 		raw.restartInterval = propertiesBlockRestartInterval
 		w.props.CompressionOptions = rocksDBCompressionOptions
 		w.props.save(w.tableFormat, &raw)
-		bh, err := w.writeBlock(raw.finish(), NoCompression, &w.blockBuf)
+		bh, err := w.writeBlock(raw.finish(), NoCompression, &w.compressionBuf)
 		if err != nil {
 			return err
 		}
-		n := encodeBlockHandle(w.blockBuf.tmp[:], bh)
-		metaindex.add(InternalKey{UserKey: []byte(metaPropertiesName)}, w.blockBuf.tmp[:n])
+		n := encodeBlockHandle(w.tmp[:], bh)
+		metaindex.add(InternalKey{UserKey: []byte(metaPropertiesName)}, w.tmp[:n])
 	}
 
 	// Add the range deletion block handle to the metaindex block.
 	if w.props.NumRangeDeletions > 0 {
-		n := encodeBlockHandle(w.blockBuf.tmp[:], rangeDelBH)
+		n := encodeBlockHandle(w.tmp[:], rangeDelBH)
 		// The v2 range-del block encoding is backwards compatible with the v1
 		// encoding. We add meta-index entries for both the old name and the new
 		// name so that old code can continue to find the range-del block and new
 		// code knows that the range tombstones in the block are fragmented and
 		// sorted.
-		metaindex.add(InternalKey{UserKey: []byte(metaRangeDelName)}, w.blockBuf.tmp[:n])
+		metaindex.add(InternalKey{UserKey: []byte(metaRangeDelName)}, w.tmp[:n])
 		if !w.rangeDelV1Format {
-			metaindex.add(InternalKey{UserKey: []byte(metaRangeDelV2Name)}, w.blockBuf.tmp[:n])
+			metaindex.add(InternalKey{UserKey: []byte(metaRangeDelV2Name)}, w.tmp[:n])
 		}
 	}
 
@@ -2175,7 +2136,7 @@ func (w *Writer) Close() (err error) {
 	// policy is nil. NoCompression is specified because a) RocksDB never
 	// compresses the meta-index block and b) RocksDB has some code paths which
 	// expect the meta-index block to not be compressed.
-	metaindexBH, err := w.writeBlock(metaindex.blockWriter.finish(), NoCompression, &w.blockBuf)
+	metaindexBH, err := w.writeBlock(metaindex.blockWriter.finish(), NoCompression, &w.compressionBuf)
 	if err != nil {
 		return err
 	}
@@ -2183,12 +2144,12 @@ func (w *Writer) Close() (err error) {
 	// Write the table footer.
 	footer := footer{
 		format:      w.tableFormat,
-		checksum:    w.blockBuf.checksummer.Type,
+		checksum:    w.checksumType,
 		metaindexBH: metaindexBH,
 		indexBH:     indexBH,
 	}
-	encoded := footer.encode(w.blockBuf.tmp[:])
-	if err := w.writable.Write(footer.encode(w.blockBuf.tmp[:])); err != nil {
+	encoded := footer.encode(w.tmp[:])
+	if err := w.writable.Write(footer.encode(w.tmp[:])); err != nil {
 		return err
 	}
 	w.meta.Size += uint64(len(encoded))
@@ -2304,12 +2265,7 @@ func NewWriter(writable objstorage.Writable, o WriterOptions, extraOpts ...Write
 		}
 	}
 
-	w.dataBlockBuf = newDataBlockBuf(w.restartInterval, w.checksumType)
-
-	w.blockBuf = blockBuf{
-		checksummer: block.Checksummer{Type: o.Checksum},
-	}
-
+	w.dataBlockBuf = newDataBlockBuf(w.restartInterval)
 	w.coordination.init(o.Parallelism, w)
 
 	if writable == nil {

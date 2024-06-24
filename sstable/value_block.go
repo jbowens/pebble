@@ -552,32 +552,15 @@ func (w *valueBlockWriter) addValue(v []byte) (valueHandle, error) {
 func (w *valueBlockWriter) compressAndFlush() {
 	// Compress the buffer, discarding the result if the improvement isn't at
 	// least 12.5%.
-	blockType := noCompressionBlockType
 	b := w.buf
-	if w.compression != NoCompression {
-		blockType, w.compressedBuf.b =
-			compressBlock(w.compression, w.buf.b, w.compressedBuf.b[:cap(w.compressedBuf.b)])
-		if len(w.compressedBuf.b) < len(w.buf.b)-len(w.buf.b)/8 {
-			b = w.compressedBuf
-		} else {
-			blockType = noCompressionBlockType
-		}
-	}
-	n := len(b.b)
-	if n+blockTrailerLen > cap(b.b) {
-		block := make([]byte, n+blockTrailerLen)
-		copy(block, b.b)
-		b.b = block
-	} else {
-		b.b = b.b[:n+blockTrailerLen]
-	}
-	b.b[n] = byte(blockType)
-	w.computeChecksum(b.b)
+	var n int
+	var blockType block.Type
+	blockType, n, b.b = block.CompressAndChecksum(w.compression, w.checksummer, w.buf.b, &w.compressedBuf.b)
 	bh := BlockHandle{Offset: w.totalBlockBytes, Length: uint64(n)}
 	w.totalBlockBytes += uint64(len(b.b))
 	// blockFinishedFunc length excludes the block trailer.
 	w.blockFinishedFunc(n)
-	compressed := blockType != noCompressionBlockType
+	compressed := blockType.IsCompressed()
 	w.blocks = append(w.blocks, blockAndHandle{
 		block:      b,
 		handle:     bh,
@@ -592,10 +575,10 @@ func (w *valueBlockWriter) compressAndFlush() {
 	w.buf.b = w.buf.b[:0]
 }
 
-func (w *valueBlockWriter) computeChecksum(block []byte) {
-	n := len(block) - blockTrailerLen
-	checksum := w.checksummer.Checksum(block[:n], block[n:n+1])
-	binary.LittleEndian.PutUint32(block[n+1:], checksum)
+func (w *valueBlockWriter) computeChecksum(blk []byte) {
+	n := len(blk) - block.TrailerLen
+	checksum := w.checksummer.Checksum(blk[:n], blk[n:n+1])
+	binary.LittleEndian.PutUint32(blk[n+1:], checksum)
 }
 
 func (w *valueBlockWriter) finish(
@@ -638,7 +621,7 @@ func (w *valueBlockWriter) finish(
 	stats := valueBlocksAndIndexStats{
 		numValueBlocks:          uint64(n),
 		numValuesInValueBlocks:  w.numValues,
-		valueBlocksAndIndexSize: w.totalBlockBytes + vbih.h.Length + blockTrailerLen,
+		valueBlocksAndIndexSize: w.totalBlockBytes + vbih.h.Length + block.TrailerLen,
 	}
 	return vbih, stats, err
 }
@@ -649,7 +632,7 @@ func (w *valueBlockWriter) writeValueBlocksIndex(
 	blockLen :=
 		int(h.blockNumByteLength+h.blockOffsetByteLength+h.blockLengthByteLength) * len(w.blocks)
 	h.h.Length = uint64(blockLen)
-	blockLen += blockTrailerLen
+	blockLen += block.TrailerLen
 	var buf []byte
 	if cap(w.buf.b) < blockLen {
 		buf = make([]byte, blockLen)
@@ -666,10 +649,10 @@ func (w *valueBlockWriter) writeValueBlocksIndex(
 		littleEndianPut(w.blocks[i].handle.Length, b, int(h.blockLengthByteLength))
 		b = b[int(h.blockLengthByteLength):]
 	}
-	if len(b) != blockTrailerLen {
+	if len(b) != block.TrailerLen {
 		panic("incorrect length calculation")
 	}
-	b[0] = byte(noCompressionBlockType)
+	b[0] = byte(block.NoCompressionBlockType)
 	w.computeChecksum(buf)
 	if _, err := writer.Write(buf); err != nil {
 		return valueBlocksIndexHandle{}, err
