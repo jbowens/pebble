@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/objiotracing"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/rowblk"
 )
 
 var errReaderClosed = errors.New("pebble/table: reader is closed")
@@ -400,12 +401,12 @@ func (r *Reader) NewRawRangeDelIter(transforms IterTransforms) (keyspan.Fragment
 	if err != nil {
 		return nil, err
 	}
-	i := newFragmentBlockIter(true /* elideSameSeqnum */)
+	i := rowblk.NewFragmentIter(true /* elideSameSeqnum */)
 	// It's okay for hideObsoletePoints to be false here, even for shared ingested
 	// sstables. This is because rangedels do not apply to points in the same
 	// sstable at the same sequence number anyway, so exposing obsolete rangedels
 	// is harmless.
-	if err := i.blockIter.initHandle(r.Compare, r.Split, h, transforms); err != nil {
+	if err := i.InitHandle(r.Compare, r.Split, h, transforms); err != nil {
 		return nil, err
 	}
 	return keyspan.MaybeAssert(i, r.Compare), nil
@@ -431,8 +432,8 @@ func (r *Reader) NewRawRangeKeyIter(transforms IterTransforms) (keyspan.Fragment
 	if err != nil {
 		return nil, err
 	}
-	i := newFragmentBlockIter(false /* elideSameSeqnum */)
-	if err := i.blockIter.initHandle(r.Compare, r.Split, h, transforms); err != nil {
+	i := rowblk.NewFragmentIter(false /* elideSameSeqnum */)
+	if err := i.InitHandle(r.Compare, r.Split, h, transforms); err != nil {
 		return nil, err
 	}
 	return keyspan.MaybeAssert(i, r.Compare), nil
@@ -626,8 +627,8 @@ func (r *Reader) transformRangeDelV1(b []byte) ([]byte, error) {
 	// v1 format range-del blocks have unfragmented and unsorted range
 	// tombstones. We need properly fragmented and sorted range tombstones in
 	// order to serve from them directly.
-	iter := &blockIter{}
-	if err := iter.init(r.Compare, r.Split, b, NoTransforms); err != nil {
+	iter := &rowblk.Iter{}
+	if err := iter.Init(r.Compare, r.Split, b, block.NoTransforms, r.tableFormat >= TableFormatPebblev3); err != nil {
 		return nil, err
 	}
 	var tombstones []keyspan.Span
@@ -642,16 +643,14 @@ func (r *Reader) transformRangeDelV1(b []byte) ([]byte, error) {
 	keyspan.Sort(r.Compare, tombstones)
 
 	// Fragment the tombstones, outputting them directly to a block writer.
-	rangeDelBlock := blockWriter{
-		restartInterval: 1,
-	}
+	rangeDelBlock := rowblk.Writer{RestartInterval: 1}
 	frag := keyspan.Fragmenter{
 		Cmp:    r.Compare,
 		Format: r.FormatKey,
 		Emit: func(s keyspan.Span) {
 			for _, k := range s.Keys {
 				startIK := InternalKey{UserKey: s.Start, Trailer: k.Trailer}
-				rangeDelBlock.add(startIK, s.End)
+				rangeDelBlock.Add(startIK, s.End)
 			}
 		},
 	}
@@ -661,7 +660,7 @@ func (r *Reader) transformRangeDelV1(b []byte) ([]byte, error) {
 	frag.Finish()
 
 	// Return the contents of the constructed v2 format range-del block.
-	return rangeDelBlock.finish(), nil
+	return rangeDelBlock.Finish(), nil
 }
 
 func (r *Reader) readMetaindex(metaindexBH BlockHandle, readHandle objstorage.ReadHandle) error {
@@ -692,7 +691,7 @@ func (r *Reader) readMetaindex(metaindexBH BlockHandle, readHandle objstorage.Re
 			errors.Safe(len(data)), errors.Safe(metaindexBH.Length))
 	}
 
-	i, err := newRawBlockIter(bytes.Compare, data)
+	i, err := rowblk.NewRawIter(bytes.Compare, data)
 	if err != nil {
 		return err
 	}
@@ -807,7 +806,7 @@ func (r *Reader) Layout() (*Layout, error) {
 
 	if r.Properties.IndexPartitions == 0 {
 		l.Index = append(l.Index, r.indexBH)
-		iter, _ := newBlockIter(r.Compare, r.Split, indexH.Get(), NoTransforms)
+		iter, _ := rowblk.NewIter(r.Compare, r.Split, indexH.Get(), NoTransforms, false /* hasValuePrefix */)
 		for kv := iter.First(); kv != nil; kv = iter.Next() {
 			dataBH, err := decodeBlockHandleWithProperties(kv.InPlaceValue())
 			if err != nil {
@@ -820,8 +819,8 @@ func (r *Reader) Layout() (*Layout, error) {
 		}
 	} else {
 		l.TopIndex = r.indexBH
-		topIter, _ := newBlockIter(r.Compare, r.Split, indexH.Get(), NoTransforms)
-		iter := &blockIter{}
+		topIter, _ := rowblk.NewIter(r.Compare, r.Split, indexH.Get(), NoTransforms, false /* hasValuePrefix */)
+		iter := &rowblk.Iter{}
 		for kv := topIter.First(); kv != nil; kv = topIter.Next() {
 			indexBH, err := decodeBlockHandleWithProperties(kv.InPlaceValue())
 			if err != nil {
@@ -835,7 +834,7 @@ func (r *Reader) Layout() (*Layout, error) {
 				return nil, err
 			}
 			// TODO(msbutler): figure out how to pass virtualState to layout call.
-			if err := iter.init(r.Compare, r.Split, subIndex.Get(), NoTransforms); err != nil {
+			if err := iter.Init(r.Compare, r.Split, subIndex.Get(), NoTransforms, r.tableFormat.UsesValuePrefix()); err != nil {
 				return nil, err
 			}
 			for kv := iter.First(); kv != nil; kv = iter.Next() {
@@ -849,7 +848,7 @@ func (r *Reader) Layout() (*Layout, error) {
 				l.Data = append(l.Data, dataBH)
 			}
 			subIndex.Release()
-			*iter = iter.resetForReuse()
+			*iter = iter.ResetForReuse()
 		}
 	}
 	if r.valueBIH.h.Length != 0 {
@@ -968,16 +967,16 @@ func (r *Reader) EstimateDiskUsage(start, end []byte) (uint64, error) {
 	// Iterators over the bottom-level index blocks containing start and end.
 	// These may be different in case of partitioned index but will both point
 	// to the same blockIter over the single index in the unpartitioned case.
-	var startIdxIter, endIdxIter *blockIter
+	var startIdxIter, endIdxIter *rowblk.Iter
 	if r.Properties.IndexPartitions == 0 {
-		iter, err := newBlockIter(r.Compare, r.Split, indexH.Get(), NoTransforms)
+		iter, err := rowblk.NewIter(r.Compare, r.Split, indexH.Get(), NoTransforms, false /* hasValuePrefix */)
 		if err != nil {
 			return 0, err
 		}
 		startIdxIter = iter
 		endIdxIter = iter
 	} else {
-		topIter, err := newBlockIter(r.Compare, r.Split, indexH.Get(), NoTransforms)
+		topIter, err := rowblk.NewIter(r.Compare, r.Split, indexH.Get(), NoTransforms, false /* hasValuePrefix */)
 		if err != nil {
 			return 0, err
 		}
@@ -997,7 +996,7 @@ func (r *Reader) EstimateDiskUsage(start, end []byte) (uint64, error) {
 			return 0, err
 		}
 		defer startIdxBlock.Release()
-		startIdxIter, err = newBlockIter(r.Compare, r.Split, startIdxBlock.Get(), NoTransforms)
+		startIdxIter, err = rowblk.NewIter(r.Compare, r.Split, startIdxBlock.Get(), NoTransforms, false /* hasValuePrefix */)
 		if err != nil {
 			return 0, err
 		}
@@ -1018,7 +1017,7 @@ func (r *Reader) EstimateDiskUsage(start, end []byte) (uint64, error) {
 				return 0, err
 			}
 			defer endIdxBlock.Release()
-			endIdxIter, err = newBlockIter(r.Compare, r.Split, endIdxBlock.Get(), NoTransforms)
+			endIdxIter, err = rowblk.NewIter(r.Compare, r.Split, endIdxBlock.Get(), NoTransforms, false /* hasValuePrefix */)
 			if err != nil {
 				return 0, err
 			}

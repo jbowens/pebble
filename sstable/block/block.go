@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/crc"
+	"github.com/cockroachdb/pebble/internal/keyspan"
 )
 
 // TrailerLen is the length of the trailer at the end of a block.
@@ -21,6 +22,12 @@ const TrailerLen = 5
 // Trailer is the trailer at the end of a block, encoding the block type
 // (compression) and a checksum.
 type Trailer = [TrailerLen]byte
+
+// DecodeTrailer decodes the block trailer into its constituent type and
+// checksum.
+func DecodeTrailer(t Trailer) (blockType byte, checksum uint32) {
+	return t[0], binary.LittleEndian.Uint32(t[1:])
+}
 
 // MakeTrailer constructs a trailer from a block type and a checksum.
 func MakeTrailer(blockType byte, checksum uint32) (t Trailer) {
@@ -154,4 +161,13 @@ func (sp SyntheticPrefix) Invert(key []byte) []byte {
 		panic(fmt.Sprintf("unexpected prefix: %s", key))
 	}
 	return res
+}
+
+// A FragmentIterator is an iterator over a block's keyspan Spans.
+type FragmentIterator interface {
+	keyspan.FragmentIterator
+
+	// InitHandle initializes the fragment iterator with the block referenced by
+	// the provided buffer handle.
+	InitHandle(cmp base.Compare, split base.Split, block BufferHandle, transforms IterTransforms) error
 }

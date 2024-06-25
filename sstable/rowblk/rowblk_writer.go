@@ -2,7 +2,7 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package sstable
+package rowblk
 
 import (
 	"encoding/binary"
@@ -12,8 +12,12 @@ import (
 	"github.com/cockroachdb/pebble/sstable/block"
 )
 
-type blockWriter struct {
-	restartInterval int
+// A Writer writes row-oriented blocks.
+type Writer struct {
+	// RestartInterval configures the interval at which the writer will write a
+	// full key without prefix compression, and encode a corresponding restart
+	// point.
+	RestartInterval int
 	nEntries        int
 	nextRestart     int
 	buf             []byte
@@ -49,8 +53,9 @@ type blockWriter struct {
 	setHasSameKeyPrefixSinceLastRestart bool
 }
 
-func (w *blockWriter) clear() {
-	*w = blockWriter{
+// Reset clears the writer's state, retaining buffers for reuse.
+func (w *Writer) Reset() {
+	*w = Writer{
 		buf:      w.buf[:0],
 		restarts: w.restarts[:0],
 		curKey:   w.curKey[:0],
@@ -67,13 +72,18 @@ const setHasSameKeyPrefixRestartMask uint32 = 1 << 31
 const restartMaskLittleEndianHighByteWithoutSetHasSamePrefix byte = 0b0111_1111
 const restartMaskLittleEndianHighByteOnlySetHasSamePrefix byte = 0b1000_0000
 
-func (w *blockWriter) getCurKey() InternalKey {
+// EntryCount returns the count of KV pairs that have been written to the block.
+func (w *Writer) EntryCount() int { return w.nEntries }
+
+// CurKey returns the most-recently written key.
+func (w *Writer) CurKey() base.InternalKey {
 	k := base.DecodeInternalKey(w.curKey)
 	k.Trailer = k.Trailer & trailerObsoleteMask
 	return k
 }
 
-func (w *blockWriter) getCurUserKey() []byte {
+// CurUserKey returns the most-recently written user key.
+func (w *Writer) CurUserKey() []byte {
 	n := len(w.curKey) - base.InternalTrailerLen
 	if n < 0 {
 		panic(errors.AssertionFailedf("corrupt key in blockWriter buffer"))
@@ -81,8 +91,11 @@ func (w *blockWriter) getCurUserKey() []byte {
 	return w.curKey[:n:n]
 }
 
+// CurValue returns the most-recently written value.
+func (w *Writer) CurValue() []byte { return w.curValue }
+
 // If !addValuePrefix, the valuePrefix is ignored.
-func (w *blockWriter) storeWithOptionalValuePrefix(
+func (w *Writer) storeWithOptionalValuePrefix(
 	keySize int,
 	value []byte,
 	maxSharedKeyLen int,
@@ -95,7 +108,7 @@ func (w *blockWriter) storeWithOptionalValuePrefix(
 		w.setHasSameKeyPrefixSinceLastRestart = false
 	}
 	if w.nEntries == w.nextRestart {
-		w.nextRestart = w.nEntries + w.restartInterval
+		w.nextRestart = w.nEntries + w.RestartInterval
 		restart := uint32(len(w.buf))
 		if w.setHasSameKeyPrefixSinceLastRestart {
 			restart = restart | setHasSameKeyPrefixRestartMask
@@ -191,11 +204,16 @@ func (w *blockWriter) storeWithOptionalValuePrefix(
 	w.nEntries++
 }
 
-func (w *blockWriter) add(key InternalKey, value []byte) {
-	w.addWithOptionalValuePrefix(
+// Add adds a new KV pair to the block. See AddWithOptionalValuePrefix for more
+// details.
+func (w *Writer) Add(key base.InternalKey, value []byte) {
+	w.AddWithOptionalValuePrefix(
 		key, false, value, len(key.UserKey), false, 0, false)
 }
 
+// AddWithOptionalValuePrefix adds a new KV pair to the block with the provided
+// value prefix.
+//
 // Callers that always set addValuePrefix to false should use add() instead.
 //
 // isObsolete indicates whether this key-value pair is obsolete in this
@@ -205,8 +223,8 @@ func (w *blockWriter) add(key InternalKey, value []byte) {
 // blocks in TableFormatPebblev3 onwards for SETs (see the comment in
 // format.go, with more details in value_block.go). setHasSameKeyPrefix is
 // also used in TableFormatPebblev3 onwards for SETs.
-func (w *blockWriter) addWithOptionalValuePrefix(
-	key InternalKey,
+func (w *Writer) AddWithOptionalValuePrefix(
+	key base.InternalKey,
 	isObsolete bool,
 	value []byte,
 	maxSharedKeyLen int,
@@ -230,7 +248,8 @@ func (w *blockWriter) addWithOptionalValuePrefix(
 		size, value, maxSharedKeyLen, addValuePrefix, valuePrefix, setHasSameKeyPrefix)
 }
 
-func (w *blockWriter) finish() []byte {
+// Finish serializes the block.
+func (w *Writer) Finish() []byte {
 	// Write the restart points to the buffer.
 	if w.nEntries == 0 {
 		// Every block must have at least one restart point.
@@ -258,11 +277,12 @@ func (w *blockWriter) finish() []byte {
 	return result
 }
 
-// emptyBlockSize holds the size of an empty block. Every block ends
-// in a uint32 trailer encoding the number of restart points within the
-// block.
-const emptyBlockSize = 4
+// EmptySize holds the size of an empty block. Every block ends in a uint32
+// trailer encoding the number of restart points within the block.
+const EmptySize = 4
 
-func (w *blockWriter) estimatedSize() int {
-	return len(w.buf) + 4*len(w.restarts) + emptyBlockSize
+// EstimatedSize returns the estimated size of the block were it to be finished
+// now.
+func (w *Writer) EstimatedSize() int {
+	return len(w.buf) + 4*len(w.restarts) + EmptySize
 }

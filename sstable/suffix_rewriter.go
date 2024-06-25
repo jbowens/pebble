@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/rangekey"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/rowblk"
 )
 
 // RewriteKeySuffixesAndReturnFormat copies the content of the passed SSTable
@@ -160,9 +161,7 @@ func rewriteBlocks(
 	from, to []byte,
 	split Split,
 ) error {
-	bw := blockWriter{
-		restartInterval: restartInterval,
-	}
+	bw := rowblk.Writer{RestartInterval: restartInterval}
 	buf := blockBuf{checksummer: block.Checksummer{Type: checksumType}}
 	var blockAlloc bytealloc.A
 	var keyAlloc bytealloc.A
@@ -170,7 +169,7 @@ func rewriteBlocks(
 
 	var inputBlock, inputBlockBuf []byte
 
-	iter := &blockIter{}
+	iter := &rowblk.Iter{}
 
 	// We'll assume all blocks are _roughly_ equal so round-robin static partition
 	// of each worker doing every ith block is probably enough.
@@ -182,19 +181,23 @@ func rewriteBlocks(
 		if err != nil {
 			return err
 		}
-		if err := iter.init(r.Compare, r.Split, inputBlock, NoTransforms); err != nil {
+		if err := iter.Init(r.Compare, r.Split, inputBlock, block.NoTransforms, r.tableFormat.UsesValuePrefix()); err != nil {
 			return err
 		}
 
-		if cap(bw.restarts) < int(iter.restarts) {
-			bw.restarts = make([]uint32, 0, iter.restarts)
-		}
-		if cap(bw.buf) == 0 {
-			bw.buf = make([]byte, 0, len(inputBlock))
-		}
-		if cap(bw.restarts) < int(iter.numRestarts) {
-			bw.restarts = make([]uint32, 0, iter.numRestarts)
-		}
+		/*
+			// TODO(jackson): Move rewriteBlocks into rowblk.
+
+			if cap(bw.restarts) < int(iter.restarts) {
+				bw.restarts = make([]uint32, 0, iter.restarts)
+			}
+			if cap(bw.buf) == 0 {
+				bw.buf = make([]byte, 0, len(inputBlock))
+			}
+			if cap(bw.restarts) < int(iter.numRestarts) {
+				bw.restarts = make([]uint32, 0, iter.numRestarts)
+			}
+		*/
 
 		for kv := iter.First(); kv != nil; kv = iter.Next() {
 			if kv.Kind() != InternalKeyKindSet {
@@ -221,7 +224,7 @@ func rewriteBlocks(
 			// in the block, which includes the 1-byte prefix. This is fine since bw
 			// also does not know about the prefix and will preserve it in bw.add.
 			v := kv.InPlaceValue()
-			if invariants.Enabled && r.tableFormat >= TableFormatPebblev3 &&
+			if invariants.Enabled && r.tableFormat.UsesValuePrefix() &&
 				kv.Kind() == InternalKeyKindSet {
 				if len(v) < 1 {
 					return errors.Errorf("value has no prefix")
@@ -234,16 +237,16 @@ func rewriteBlocks(
 					return errors.Errorf("multiple keys with same key prefix")
 				}
 			}
-			bw.add(scratch, v)
+			bw.Add(scratch, v)
 			if output[i].start.UserKey == nil {
 				keyAlloc, output[i].start = cloneKeyWithBuf(scratch, keyAlloc)
 			}
 		}
-		*iter = iter.resetForReuse()
+		*iter = iter.ResetForReuse()
 
 		keyAlloc, output[i].end = cloneKeyWithBuf(scratch, keyAlloc)
 
-		finished, trailer := compressAndChecksum(bw.finish(), compression, &buf)
+		finished, trailer := compressAndChecksum(bw.Finish(), compression, &buf)
 
 		// copy our finished block into the output buffer.
 		blockAlloc, output[i].data = blockAlloc.Alloc(len(finished) + block.TrailerLen)
@@ -292,7 +295,7 @@ func rewriteDataBlocksToWriter(
 			defer g.Done()
 			err := rewriteBlocks(
 				r,
-				w.dataBlockBuf.dataBlock.restartInterval,
+				w.dataBlockBuf.dataBlock.RestartInterval,
 				w.blockBuf.checksummer.Type,
 				w.compression,
 				data,

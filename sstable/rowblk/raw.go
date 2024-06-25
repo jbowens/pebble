@@ -2,21 +2,23 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package sstable
+package rowblk
 
 import (
 	"encoding/binary"
+	"fmt"
+	"io"
 	"sort"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/base"
 )
 
-type rawBlockWriter struct {
-	blockWriter
+type RawWriter struct {
+	Writer
 }
 
-func (w *rawBlockWriter) add(key InternalKey, value []byte) {
+func (w *RawWriter) add(key base.InternalKey, value []byte) {
 	w.curKey, w.prevKey = w.prevKey, w.curKey
 
 	size := len(key.UserKey)
@@ -30,14 +32,14 @@ func (w *rawBlockWriter) add(key InternalKey, value []byte) {
 		size, value, len(key.UserKey), false, 0, false)
 }
 
-// rawBlockIter is an iterator over a single block of data. Unlike blockIter,
-// keys are stored in "raw" format (i.e. not as internal keys). Note that there
-// is significant similarity between this code and the code in blockIter. Yet
-// reducing duplication is difficult due to the blockIter being performance
-// critical. rawBlockIter must only be used for blocks where the value is
-// stored together with the key.
-type rawBlockIter struct {
-	cmp         Compare
+// RawIter is an iterator over a single block of data. Unlike rowblk.Iter, keys
+// are stored in "raw" format (i.e. not as internal keys). Note that there is
+// significant similarity between this code and the code in blockIter. Yet
+// reducing duplication is difficult due to the rowblk.Iter being performance
+// critical. RawIter must only be used for blocks where the value is stored
+// together with the key.
+type RawIter struct {
+	cmp         base.Compare
 	offset      int32
 	nextOffset  int32
 	restarts    int32
@@ -45,17 +47,18 @@ type rawBlockIter struct {
 	ptr         unsafe.Pointer
 	data        []byte
 	key, val    []byte
-	ikey        InternalKey
+	ikey        base.InternalKey
 	cached      []blockEntry
 	cachedBuf   []byte
 }
 
-func newRawBlockIter(cmp Compare, block []byte) (*rawBlockIter, error) {
-	i := &rawBlockIter{}
-	return i, i.init(cmp, block)
+// NewRawIter returns a new RawIter for the specified row-oriented block.
+func NewRawIter(cmp base.Compare, blk []byte) (*RawIter, error) {
+	i := &RawIter{}
+	return i, i.init(cmp, blk)
 }
 
-func (i *rawBlockIter) init(cmp Compare, blk []byte) error {
+func (i *RawIter) init(cmp base.Compare, blk []byte) error {
 	numRestarts := int32(binary.LittleEndian.Uint32(blk[len(blk)-4:]))
 	if numRestarts == 0 {
 		return base.CorruptionErrorf("pebble/table: invalid table (block has no restart points)")
@@ -75,7 +78,7 @@ func (i *rawBlockIter) init(cmp Compare, blk []byte) error {
 	return nil
 }
 
-func (i *rawBlockIter) readEntry() {
+func (i *RawIter) readEntry() {
 	ptr := unsafe.Pointer(uintptr(i.ptr) + uintptr(i.offset))
 	shared, ptr := decodeVarint(ptr)
 	unshared, ptr := decodeVarint(ptr)
@@ -87,17 +90,17 @@ func (i *rawBlockIter) readEntry() {
 	i.nextOffset = int32(uintptr(ptr)-uintptr(i.ptr)) + int32(value)
 }
 
-func (i *rawBlockIter) loadEntry() {
+func (i *RawIter) loadEntry() {
 	i.readEntry()
 	i.ikey.UserKey = i.key
 }
 
-func (i *rawBlockIter) clearCache() {
+func (i *RawIter) clearCache() {
 	i.cached = i.cached[:0]
 	i.cachedBuf = i.cachedBuf[:0]
 }
 
-func (i *rawBlockIter) cacheEntry() {
+func (i *RawIter) cacheEntry() {
 	var valStart int32
 	valSize := int32(len(i.val))
 	if valSize > 0 {
@@ -116,7 +119,7 @@ func (i *rawBlockIter) cacheEntry() {
 
 // SeekGE implements internalIterator.SeekGE, as documented in the pebble
 // package.
-func (i *rawBlockIter) SeekGE(key []byte) bool {
+func (i *RawIter) SeekGE(key []byte) bool {
 	// Find the index of the smallest restart point whose key is > the key
 	// sought; index will be numRestarts if there is no such restart point.
 	i.offset = 0
@@ -152,14 +155,14 @@ func (i *rawBlockIter) SeekGE(key []byte) bool {
 
 // First implements internalIterator.First, as documented in the pebble
 // package.
-func (i *rawBlockIter) First() bool {
+func (i *RawIter) First() bool {
 	i.offset = 0
 	i.loadEntry()
 	return i.Valid()
 }
 
 // Last implements internalIterator.Last, as documented in the pebble package.
-func (i *rawBlockIter) Last() bool {
+func (i *RawIter) Last() bool {
 	// Seek forward from the last restart point.
 	i.offset = int32(binary.LittleEndian.Uint32(i.data[i.restarts+4*(i.numRestarts-1):]))
 
@@ -179,7 +182,7 @@ func (i *rawBlockIter) Last() bool {
 
 // Next implements internalIterator.Next, as documented in the pebble
 // package.
-func (i *rawBlockIter) Next() bool {
+func (i *RawIter) Next() bool {
 	i.offset = i.nextOffset
 	if !i.Valid() {
 		return false
@@ -190,7 +193,7 @@ func (i *rawBlockIter) Next() bool {
 
 // Prev implements internalIterator.Prev, as documented in the pebble
 // package.
-func (i *rawBlockIter) Prev() bool {
+func (i *RawIter) Prev() bool {
 	if n := len(i.cached) - 1; n > 0 && i.cached[n].offset == i.offset {
 		i.nextOffset = i.offset
 		e := &i.cached[n-1]
@@ -232,31 +235,98 @@ func (i *rawBlockIter) Prev() bool {
 }
 
 // Key implements internalIterator.Key, as documented in the pebble package.
-func (i *rawBlockIter) Key() InternalKey {
+func (i *RawIter) Key() base.InternalKey {
 	return i.ikey
 }
 
 // Value implements internalIterator.Value, as documented in the pebble
 // package.
-func (i *rawBlockIter) Value() []byte {
+func (i *RawIter) Value() []byte {
 	return i.val
 }
 
 // Valid implements internalIterator.Valid, as documented in the pebble
 // package.
-func (i *rawBlockIter) Valid() bool {
+func (i *RawIter) Valid() bool {
 	return i.offset >= 0 && i.offset < i.restarts
 }
 
 // Error implements internalIterator.Error, as documented in the pebble
 // package.
-func (i *rawBlockIter) Error() error {
+func (i *RawIter) Error() error {
 	return nil
 }
 
 // Close implements internalIterator.Close, as documented in the pebble
 // package.
-func (i *rawBlockIter) Close() error {
+func (i *RawIter) Close() error {
 	i.val = nil
 	return nil
+}
+
+func (i *RawIter) getRestart(idx int32) int32 {
+	return decodeRestart(i.data[i.restarts+4*idx:])
+}
+
+func (i *RawIter) isRestartPoint() bool {
+	j := sort.Search(int(i.numRestarts), func(j int) bool {
+		return i.getRestart(int32(j)) >= i.offset
+	})
+	return j < int(i.numRestarts) && i.getRestart(int32(j)) == i.offset
+}
+
+func DescribeRaw(
+	w io.Writer,
+	blkOffset uint64,
+	it *RawIter,
+	formatRecord func(w io.Writer, kv *base.InternalKV, enc KVEncoding),
+) {
+
+	for valid := it.First(); valid; valid = it.Next() {
+		ptr := unsafe.Pointer(uintptr(it.ptr) + uintptr(it.offset))
+		var enc KVEncoding
+		enc.Offset = it.offset
+		enc.Shared, ptr = decodeVarint(ptr)
+		enc.Unshared, ptr = decodeVarint(ptr)
+		enc.InlineValueLen, _ = decodeVarint(ptr)
+		enc.TotalRecordLen = it.nextOffset - it.offset
+		enc.IsRestart = it.isRestartPoint()
+
+		// The format of the numbers in the record line is:
+		//
+		//   (<total> = <length> [<shared>] + <unshared> + <value>)
+		//
+		// <total>    is the total number of bytes for the record.
+		// <length>   is the size of the 3 varint encoded integers for <shared>,
+		//            <unshared>, and <value>.
+		// <shared>   is the number of key bytes shared with the previous key.
+		// <unshared> is the number of unshared key bytes.
+		// <value>    is the number of value bytes.
+		fmt.Fprintf(w, "%10d    record (%d = %d [%d] + %d + %d)",
+			blkOffset+uint64(enc.Offset), enc.TotalRecordLen,
+			enc.TotalRecordLen-int32(enc.Unshared+enc.InlineValueLen), enc.Shared, enc.Unshared, enc.InlineValueLen)
+
+		if enc.IsRestart {
+			fmt.Fprintf(w, " [restart]\n")
+		} else {
+			fmt.Fprintf(w, "\n")
+		}
+
+		if formatRecord != nil {
+			kv := base.InternalKV{
+				K: it.Key(),
+				V: base.MakeInPlaceValue(it.Value()),
+			}
+			fmt.Fprintf(w, "              ")
+			formatRecord(w, &kv, enc)
+		}
+	}
+
+	// Format the restart points.
+	for j := int32(0); j < it.numRestarts; j++ {
+		offset := it.getRestart(j)
+		fmt.Fprintf(w, "%10d    [restart %d]\n",
+			blkOffset+uint64(it.restarts+4*j), blkOffset+uint64(offset))
+	}
+
 }

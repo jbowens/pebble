@@ -2,7 +2,7 @@
 // of this source code is governed by a BSD-style license that can be found in
 // the LICENSE file.
 
-package sstable
+package rowblk
 
 import (
 	"fmt"
@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/rangedel"
 	"github.com/cockroachdb/pebble/internal/rangekey"
+	"github.com/cockroachdb/pebble/sstable/block"
 )
 
 // fragmentBlockIter wraps a blockIter, implementing the
@@ -36,7 +37,7 @@ import (
 // byte slices (start, end, suffix, value) as stable for the lifetime of the
 // iterator.
 type fragmentBlockIter struct {
-	blockIter blockIter
+	blockIter Iter
 	keyBuf    [2]keyspan.Key
 	span      keyspan.Span
 	dir       int8
@@ -58,10 +59,21 @@ var fragmentBlockIterPool = sync.Pool{
 	},
 }
 
-func newFragmentBlockIter(elideSameSeqnum bool) *fragmentBlockIter {
+// NewFragmentIter constructs a new keyspan fragment iterator over a
+// row-oriented block's spans.
+func NewFragmentIter(elideSameSeqnum bool) block.FragmentIterator {
 	i := fragmentBlockIterPool.Get().(*fragmentBlockIter)
 	i.init(elideSameSeqnum)
 	return i
+}
+
+// InitHandle implements block.FragmentIterator.
+func (i *fragmentBlockIter) InitHandle(
+	cmp base.Compare, split base.Split, block block.BufferHandle, transforms block.IterTransforms,
+) error {
+	// NB: We pass hasValuePrefix=false because range deletion and range key
+	// blocks do not use the value prefix.
+	return i.blockIter.InitHandle(cmp, split, block, transforms, false)
 }
 
 func (i *fragmentBlockIter) init(elideSameSeqnum bool) {
@@ -129,7 +141,7 @@ func (i *fragmentBlockIter) elideKeysOfSameSeqNum() {
 // reconstruct a keyspan.Span that holds all the keys defined over the span.
 func (i *fragmentBlockIter) gatherForward(kv *base.InternalKV) (*keyspan.Span, error) {
 	i.span = keyspan.Span{}
-	if kv == nil || !i.blockIter.valid() {
+	if kv == nil || !i.blockIter.Valid() {
 		return nil, nil
 	}
 	// Use the i.keyBuf array to back the Keys slice to prevent an allocation
@@ -169,7 +181,7 @@ func (i *fragmentBlockIter) gatherForward(kv *base.InternalKV) (*keyspan.Span, e
 // to reconstruct a keyspan.Span that holds all the keys defined over the span.
 func (i *fragmentBlockIter) gatherBackward(kv *base.InternalKV) (*keyspan.Span, error) {
 	i.span = keyspan.Span{}
-	if kv == nil || !i.blockIter.valid() {
+	if kv == nil || !i.blockIter.Valid() {
 		return nil, nil
 	}
 
@@ -214,7 +226,7 @@ func (i *fragmentBlockIter) Close() {
 	}
 
 	*i = fragmentBlockIter{
-		blockIter:  i.blockIter.resetForReuse(),
+		blockIter:  i.blockIter.ResetForReuse(),
 		closeCheck: i.closeCheck,
 	}
 	// TODO(radu): reenable this, see #3678.

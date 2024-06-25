@@ -12,11 +12,11 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"sort"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/rowblk"
 )
 
 // Layout describes the block organization of an sstable.
@@ -152,82 +152,38 @@ func (l *Layout) Describe(
 			continue
 		}
 
-		getRestart := func(data []byte, restarts, i int32) int32 {
-			return decodeRestart(data[restarts+4*i:])
-		}
-
-		formatIsRestart := func(data []byte, restarts, numRestarts, offset int32) {
-			i := sort.Search(int(numRestarts), func(i int) bool {
-				return getRestart(data, restarts, int32(i)) >= offset
-			})
-			if i < int(numRestarts) && getRestart(data, restarts, int32(i)) == offset {
-				fmt.Fprintf(w, " [restart]\n")
-			} else {
-				fmt.Fprintf(w, "\n")
-			}
-		}
-
-		formatRestarts := func(data []byte, restarts, numRestarts int32) {
-			for i := int32(0); i < numRestarts; i++ {
-				offset := getRestart(data, restarts, i)
-				fmt.Fprintf(w, "%10d    [restart %d]\n",
-					b.Offset+uint64(restarts+4*i), b.Offset+uint64(offset))
-			}
-		}
-
 		formatTrailer := func() {
-			trailer := make([]byte, block.TrailerLen)
+			var t block.Trailer
 			offset := int64(b.Offset + b.Length)
-			_ = r.readable.ReadAt(ctx, trailer, offset)
-			bt := blockType(trailer[0])
-			checksum := binary.LittleEndian.Uint32(trailer[1:])
-			fmt.Fprintf(w, "%10d    [trailer compression=%s checksum=0x%04x]\n", offset, bt, checksum)
+			_ = r.readable.ReadAt(ctx, t[:], offset)
+			bt, checksum := block.DecodeTrailer(t)
+			fmt.Fprintf(w, "%10d    [trailer compression=%s checksum=0x%04x]\n", offset, blockType(bt), checksum)
 		}
 
 		var lastKey InternalKey
 		switch b.name {
 		case "data", "range-del", "range-key":
-			iter, _ := newBlockIter(r.Compare, r.Split, h.Get(), NoTransforms)
-			for kv := iter.First(); kv != nil; kv = iter.Next() {
-				ptr := unsafe.Pointer(uintptr(iter.ptr) + uintptr(iter.offset))
-				shared, ptr := decodeVarint(ptr)
-				unshared, ptr := decodeVarint(ptr)
-				value2, _ := decodeVarint(ptr)
-
-				total := iter.nextOffset - iter.offset
-				// The format of the numbers in the record line is:
-				//
-				//   (<total> = <length> [<shared>] + <unshared> + <value>)
-				//
-				// <total>    is the total number of bytes for the record.
-				// <length>   is the size of the 3 varint encoded integers for <shared>,
-				//            <unshared>, and <value>.
-				// <shared>   is the number of key bytes shared with the previous key.
-				// <unshared> is the number of unshared key bytes.
-				// <value>    is the number of value bytes.
-				fmt.Fprintf(w, "%10d    record (%d = %d [%d] + %d + %d)",
-					b.Offset+uint64(iter.offset), total,
-					total-int32(unshared+value2), shared, unshared, value2)
-				formatIsRestart(iter.data, iter.restarts, iter.numRestarts, iter.offset)
-				if fmtRecord != nil {
-					fmt.Fprintf(w, "              ")
-					if l.Format < TableFormatPebblev3 {
-						fmtRecord(&kv.K, kv.InPlaceValue())
-					} else {
-						// InPlaceValue() will succeed even for data blocks where the
-						// actual value is in a different location, since this value was
-						// fetched from a blockIter which does not know about value
-						// blocks.
-						v := kv.InPlaceValue()
-						if kv.K.Kind() != InternalKeyKindSet {
-							fmtRecord(&kv.K, v)
-						} else if !block.ValuePrefix(v[0]).IsValueHandle() {
-							fmtRecord(&kv.K, v[1:])
-						} else {
-							vh := decodeValueHandle(v[1:])
-							fmtRecord(&kv.K, []byte(fmt.Sprintf("value handle %+v", vh)))
-						}
-					}
+			it, _ := rowblk.NewIter(r.Compare, r.Split, h.Get(), NoTransforms, r.tableFormat.UsesValuePrefix())
+			rowblk.Describe(w, b.BlockHandle.Offset, it, func(w io.Writer, kv *base.InternalKV, enc rowblk.KVEncoding) {
+				if fmtRecord == nil {
+					return
+				}
+				if l.Format < TableFormatPebblev3 {
+					fmtRecord(&kv.K, kv.InPlaceValue())
+					return
+				}
+				// InPlaceValue() will succeed even for data blocks where the
+				// actual value is in a different location, since this value was
+				// fetched from a blockIter which does not know about value
+				// blocks.
+				v := kv.InPlaceValue()
+				if kv.K.Kind() != InternalKeyKindSet {
+					fmtRecord(&kv.K, v)
+				} else if !block.ValuePrefix(v[0]).IsValueHandle() {
+					fmtRecord(&kv.K, v[1:])
+				} else {
+					vh := decodeValueHandle(v[1:])
+					fmtRecord(&kv.K, []byte(fmt.Sprintf("value handle %+v", vh)))
 				}
 
 				if base.InternalCompare(r.Compare, lastKey, kv.K) >= 0 {
@@ -235,41 +191,36 @@ func (l *Layout) Describe(
 				}
 				lastKey.Trailer = kv.K.Trailer
 				lastKey.UserKey = append(lastKey.UserKey[:0], kv.K.UserKey...)
-			}
-			formatRestarts(iter.data, iter.restarts, iter.numRestarts)
+			})
 			formatTrailer()
 		case "index", "top-index":
-			iter, _ := newBlockIter(r.Compare, r.Split, h.Get(), NoTransforms)
-			for kv := iter.First(); kv != nil; kv = iter.Next() {
+			it, _ := rowblk.NewIter(r.Compare, r.Split, h.Get(), NoTransforms, false /* usesValuePrefix */)
+			rowblk.Describe(w, b.BlockHandle.Offset, it, func(w io.Writer, kv *base.InternalKV, enc rowblk.KVEncoding) {
 				bh, err := decodeBlockHandleWithProperties(kv.InPlaceValue())
 				if err != nil {
-					fmt.Fprintf(w, "%10d    [err: %s]\n", b.Offset+uint64(iter.offset), err)
-					continue
+					fmt.Fprintf(w, "%10d    [err: %s]\n", b.Offset+uint64(enc.Offset), err)
+					return
 				}
 				fmt.Fprintf(w, "%10d    block:%d/%d",
-					b.Offset+uint64(iter.offset), bh.Offset, bh.Length)
-				formatIsRestart(iter.data, iter.restarts, iter.numRestarts, iter.offset)
-			}
-			formatRestarts(iter.data, iter.restarts, iter.numRestarts)
+					b.Offset+uint64(enc.Offset), bh.Offset, bh.Length)
+			})
 			formatTrailer()
 		case "properties":
-			iter, _ := newRawBlockIter(r.Compare, h.Get())
-			for valid := iter.First(); valid; valid = iter.Next() {
+			it, _ := rowblk.NewRawIter(r.Compare, h.Get())
+			rowblk.DescribeRaw(w, b.Offset, it, func(w io.Writer, kv *base.InternalKV, enc rowblk.KVEncoding) {
 				fmt.Fprintf(w, "%10d    %s (%d)",
-					b.Offset+uint64(iter.offset), iter.Key().UserKey, iter.nextOffset-iter.offset)
-				formatIsRestart(iter.data, iter.restarts, iter.numRestarts, iter.offset)
-			}
-			formatRestarts(iter.data, iter.restarts, iter.numRestarts)
+					b.Offset+uint64(enc.Offset), kv.K.UserKey, enc.TotalRecordLen)
+			})
 			formatTrailer()
 		case "meta-index":
-			iter, _ := newRawBlockIter(r.Compare, h.Get())
-			for valid := iter.First(); valid; valid = iter.Next() {
-				value := iter.Value()
+			it, _ := rowblk.NewRawIter(r.Compare, h.Get())
+			rowblk.DescribeRaw(w, b.Offset, it, func(w io.Writer, kv *base.InternalKV, enc rowblk.KVEncoding) {
+				value := kv.V.InPlaceValue()
 				var bh BlockHandle
 				var n int
 				var vbih valueBlocksIndexHandle
 				isValueBlocksIndexHandle := false
-				if bytes.Equal(iter.Key().UserKey, []byte(metaValueIndexName)) {
+				if bytes.Equal(kv.K.UserKey, []byte(metaValueIndexName)) {
 					vbih, n, err = decodeValueBlocksIndexHandle(value)
 					bh = vbih.h
 					isValueBlocksIndexHandle = true
@@ -277,8 +228,8 @@ func (l *Layout) Describe(
 					bh, n = decodeBlockHandle(value)
 				}
 				if n == 0 || n != len(value) {
-					fmt.Fprintf(w, "%10d    [err: %s]\n", b.Offset+uint64(iter.offset), err)
-					continue
+					fmt.Fprintf(w, "%10d    [err: %s]\n", b.Offset+uint64(enc.Offset), err)
+					return
 				}
 				var vbihStr string
 				if isValueBlocksIndexHandle {
@@ -286,11 +237,9 @@ func (l *Layout) Describe(
 						vbih.blockNumByteLength, vbih.blockOffsetByteLength, vbih.blockLengthByteLength)
 				}
 				fmt.Fprintf(w, "%10d    %s block:%d/%d%s",
-					b.Offset+uint64(iter.offset), iter.Key().UserKey,
+					b.Offset+uint64(enc.Offset), kv.K.UserKey,
 					bh.Offset, bh.Length, vbihStr)
-				formatIsRestart(iter.data, iter.restarts, iter.numRestarts, iter.offset)
-			}
-			formatRestarts(iter.data, iter.restarts, iter.numRestarts)
+			})
 			formatTrailer()
 		case "value-block":
 			// We don't peer into the value-block since it can't be interpreted
@@ -305,4 +254,24 @@ func (l *Layout) Describe(
 
 	last := blocks[len(blocks)-1]
 	fmt.Fprintf(w, "%10d  EOF\n", last.Offset+last.Length)
+}
+
+func decodeVarint(ptr unsafe.Pointer) (uint32, unsafe.Pointer) {
+	if a := *((*uint8)(ptr)); a < 128 {
+		return uint32(a),
+			unsafe.Pointer(uintptr(ptr) + 1)
+	} else if a, b := a&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 1))); b < 128 {
+		return uint32(b)<<7 | uint32(a),
+			unsafe.Pointer(uintptr(ptr) + 2)
+	} else if b, c := b&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 2))); c < 128 {
+		return uint32(c)<<14 | uint32(b)<<7 | uint32(a),
+			unsafe.Pointer(uintptr(ptr) + 3)
+	} else if c, d := c&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 3))); d < 128 {
+		return uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a),
+			unsafe.Pointer(uintptr(ptr) + 4)
+	} else {
+		d, e := d&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 4)))
+		return uint32(e)<<28 | uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a),
+			unsafe.Pointer(uintptr(ptr) + 5)
+	}
 }

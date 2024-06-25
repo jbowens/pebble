@@ -50,10 +50,10 @@ type Iterator interface {
 // The data-exhausted property is tracked in a more subtle manner. We define
 // two predicates:
 // - partial-local-data-exhausted (PLDE):
-//   i.data.isDataInvalidated() || !i.data.valid()
+//   i.data.IsDataInvalidated() || !i.data.Valid()
 // - partial-global-data-exhausted (PGDE):
-//   i.index.isDataInvalidated() || !i.index.valid() || i.data.isDataInvalidated() ||
-//   !i.data.valid()
+//   i.indexIisDataInvalidated() || !i.index.Valid() || i.data.IsDataInvalidated() ||
+//   !i.data.Valid()
 //
 // PLDE is defined for a singleLevelIterator. PGDE is defined for a
 // twoLevelIterator. Oddly, in our code below the singleLevelIterator does not
@@ -94,13 +94,13 @@ type Iterator interface {
 //   state.
 //
 // Implementation detail: In the code PLDE only checks that
-// i.data.isDataInvalidated(). This narrower check is safe, since this is a
+// i.data.IsDataInvalidated(). This narrower check is safe, since this is a
 // subset of the set expressed by the OR expression. Also, it is not a
 // de-optimization since whenever we exhaust the iterator we explicitly call
-// i.data.invalidate(). PGDE checks i.index.isDataInvalidated() &&
-// i.data.isDataInvalidated(). Again, this narrower check is safe, and not a
+// i.data.Invalidate(). PGDE checks i.index.IsDataInvalidated() &&
+// i.data.IsDataInvalidated(). Again, this narrower check is safe, and not a
 // de-optimization since whenever we exhaust the iterator we explicitly call
-// i.index.invalidate() and i.data.invalidate(). The && is questionable -- for
+// i.index.invalidate() and i.data.Invalidate(). The && is questionable -- for
 // now this is a bit of defensive code. We should seriously consider removing
 // it, since defensive code suggests we are not confident about our invariants
 // (and if we are not confident, we need more invariant assertions, not
@@ -128,11 +128,11 @@ var twoLevelIterPool = sync.Pool{
 
 func checkSingleLevelIterator(obj interface{}) {
 	i := obj.(*singleLevelIterator)
-	if p := i.data.handle.Get(); p != nil {
+	if p := i.data.Handle().Get(); p != nil {
 		fmt.Fprintf(os.Stderr, "singleLevelIterator.data.handle is not nil: %p\n", p)
 		os.Exit(1)
 	}
-	if p := i.index.handle.Get(); p != nil {
+	if p := i.index.Handle().Get(); p != nil {
 		fmt.Fprintf(os.Stderr, "singleLevelIterator.index.handle is not nil: %p\n", p)
 		os.Exit(1)
 	}
@@ -140,11 +140,11 @@ func checkSingleLevelIterator(obj interface{}) {
 
 func checkTwoLevelIterator(obj interface{}) {
 	i := obj.(*twoLevelIterator)
-	if p := i.data.handle.Get(); p != nil {
+	if p := i.data.Handle().Get(); p != nil {
 		fmt.Fprintf(os.Stderr, "singleLevelIterator.data.handle is not nil: %p\n", p)
 		os.Exit(1)
 	}
-	if p := i.index.handle.Get(); p != nil {
+	if p := i.index.Handle().Get(); p != nil {
 		fmt.Fprintf(os.Stderr, "singleLevelIterator.index.handle is not nil: %p\n", p)
 		os.Exit(1)
 	}

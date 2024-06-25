@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/intern"
+	"github.com/cockroachdb/pebble/sstable/rowblk"
 )
 
 const propertiesBlockRestartInterval = math.MaxInt32
@@ -256,7 +257,7 @@ func (p *Properties) String() string {
 func (p *Properties) load(
 	b []byte, blockOffset uint64, deniedUserProperties map[string]struct{},
 ) error {
-	i, err := newRawBlockIter(bytes.Compare, b)
+	i, err := rowblk.NewRawIter(bytes.Compare, b)
 	if err != nil {
 		return err
 	}
@@ -326,7 +327,7 @@ func (p *Properties) saveString(m map[string][]byte, offset uintptr, value strin
 	m[propOffsetTagMap[offset]] = []byte(value)
 }
 
-func (p *Properties) save(tblFormat TableFormat, w *rawBlockWriter) {
+func (p *Properties) save(tblFormat TableFormat, w *rowblk.RawWriter) {
 	m := make(map[string][]byte)
 	for k, v := range p.UserProperties {
 		m[k] = []byte(v)
@@ -419,6 +420,6 @@ func (p *Properties) save(tblFormat TableFormat, w *rawBlockWriter) {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		w.add(InternalKey{UserKey: []byte(key)}, m[key])
+		w.Add(InternalKey{UserKey: []byte(key)}, m[key])
 	}
 }

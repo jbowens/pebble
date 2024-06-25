@@ -282,3 +282,8 @@ func (f TableFormat) String() string {
 		panic("sstable: unknown table format version tuple")
 	}
 }
+
+// UsesValuePrefix returns true if the table format encodes value prefixes.
+func (f TableFormat) UsesValuePrefix() bool {
+	return f >= TableFormatPebblev3
+}
