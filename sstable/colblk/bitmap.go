@@ -173,7 +173,9 @@ func (b Bitmap) String() string {
 }
 
 // BitmapBuilder constructs a Bitmap. Bits are default false.
-type BitmapBuilder []uint64
+type BitmapBuilder struct {
+	words []uint64
+}
 
 func bitmapRequiredSize(total int) int {
 	nWords := (total + 63) >> 6          // divide by 64
@@ -184,25 +186,24 @@ func bitmapRequiredSize(total int) int {
 // Set sets the bit at position i if v is true and clears the bit at position i
 // otherwise. Callers need not call Set if v is false and Set(i, true) has not
 // been set yet.
-func (b BitmapBuilder) Set(i int, v bool) BitmapBuilder {
+func (b *BitmapBuilder) Set(i int, v bool) {
 	w := i >> 6 // divide by 64
-	for len(b) <= w {
-		b = append(b, 0)
+	for len(b.words) <= w {
+		b.words = append(b.words, 0)
 	}
 	if v {
-		b[w] |= 1 << uint(i%64)
+		b.words[w] |= 1 << uint(i%64)
 	} else {
-		b[w] &^= 1 << uint(i%64)
+		b.words[w] &^= 1 << uint(i%64)
 	}
-	return b
 }
 
 // Reset resets the bitmap to the empty state.
 func (b *BitmapBuilder) Reset() {
-	for i := range *b {
-		(*b)[i] = 0
+	for i := range b.words {
+		b.words[i] = 0
 	}
-	*b = (*b)[:0]
+	b.words = b.words[:0]
 }
 
 // NumColumns implements the ColumnWriter interface.
@@ -220,11 +221,11 @@ func (b *BitmapBuilder) Size(rows int, offset uint32) uint32 {
 func (b *BitmapBuilder) Invert(nRows int) {
 	// If the tail of b is sparse, fill in zeroes before inverting.
 	nBitmapWords := (nRows + 63) >> 6
-	for i := len(*b); i < nBitmapWords; i++ {
-		*b = append(*b, 0)
+	for i := len(b.words); i < nBitmapWords; i++ {
+		b.words = append(b.words, 0)
 	}
-	for i := range *b {
-		(*b)[i] = ^(*b)[i]
+	for i := range b.words {
+		b.words[i] = ^b.words[i]
 	}
 }
 
@@ -238,24 +239,24 @@ func (b *BitmapBuilder) Finish(col, nRows int, offset uint32, buf []byte) (uint3
 	// Truncate the bitmap to the number of words required to represent nRows.
 	// The caller may have written more bits than nRows and no longer cares to
 	// write them out.
-	if len(*b) > nBitmapWords {
-		*b = (*b)[:nBitmapWords]
+	if len(b.words) > nBitmapWords {
+		b.words = b.words[:nBitmapWords]
 	}
 	// Ensure the last word of the bitmap does not contain any set bits beyond
 	// the last row. This is not just for determinism but also to ensure that
 	// the summary bitmap is correct (which is necessary for Bitmap.Successor
 	// correctness).
-	if i := nRows % 64; len(*b) >= nBitmapWords && i != 0 {
-		(*b)[nBitmapWords-1] &= (1 << i) - 1
+	if i := nRows % 64; len(b.words) >= nBitmapWords && i != 0 {
+		b.words[nBitmapWords-1] &= (1 << i) - 1
 	}
 
 	// Copy all the words of the bitmap into the destination buffer.
-	offset += uint32(copy(dest.Slice(len(*b)), *b)) << align64Shift
+	offset += uint32(copy(dest.Slice(len(b.words)), b.words)) << align64Shift
 
 	// The caller may have written fewer than nRows rows if the tail is all
 	// zeroes, relying on these bits being implicitly zero. If the tail of b is
 	// sparse, fill in zeroes.
-	for i := len(*b); i < nBitmapWords; i++ {
+	for i := len(b.words); i < nBitmapWords; i++ {
 		dest.set(i, 0)
 		offset += align64
 	}
@@ -264,10 +265,10 @@ func (b *BitmapBuilder) Finish(col, nRows int, offset uint32, buf []byte) (uint3
 	nSummaryWords := (nBitmapWords + 63) >> 6
 	for i := 0; i < nSummaryWords; i++ {
 		wordsOff := (i << 6) // i*64
-		nWords := min(64, len(*b)-wordsOff)
+		nWords := min(64, len(b.words)-wordsOff)
 		var summaryWord uint64
 		for j := 0; j < nWords; j++ {
-			if (*b)[wordsOff+j] != 0 {
+			if (b.words)[wordsOff+j] != 0 {
 				summaryWord |= 1 << j
 			}
 		}

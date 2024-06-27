@@ -32,7 +32,7 @@ func TestBitmapFixed(t *testing.T) {
 					continue
 				}
 				if r == '1' {
-					builder = builder.Set(n, r == '1')
+					builder.Set(n, r == '1')
 				}
 				n++
 			}
@@ -99,7 +99,7 @@ func TestBitmapRandom(t *testing.T) {
 		for i := 0; i < size; i++ {
 			v[i] = rng.Float64() < p
 			if v[i] {
-				builder = builder.Set(i, v[i])
+				builder.Set(i, v[i])
 			}
 		}
 		data := make([]byte, builder.Size(size, 0))
@@ -168,7 +168,7 @@ func BenchmarkBitmapBuilder(b *testing.B) {
 		var builder BitmapBuilder
 		for i := 0; i < size; i++ {
 			if v[i] {
-				builder = builder.Set(i, v[i])
+				builder.Set(i, v[i])
 			}
 		}
 		_, _ = builder.Finish(0, size, 0, data)
