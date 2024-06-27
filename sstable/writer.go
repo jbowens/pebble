@@ -1750,7 +1750,7 @@ func (w *Writer) writeTwoLevelIndex() (block.Handle, error) {
 
 		data := b.block
 		w.props.IndexSize += uint64(len(data))
-		bh, err := w.layout.writeIndexBlock(data)
+		bh, err := w.layout.WriteIndexBlock(data)
 		if err != nil {
 			return block.Handle{}, err
 		}
@@ -1768,7 +1768,7 @@ func (w *Writer) writeTwoLevelIndex() (block.Handle, error) {
 	w.props.IndexPartitions = uint64(len(w.indexPartitions))
 	w.props.TopLevelIndexSize = uint64(w.topLevelIndexBlock.EstimatedSize())
 	w.props.IndexSize += w.props.TopLevelIndexSize + block.TrailerLen
-	return w.layout.writeIndexBlock(w.topLevelIndexBlock.Finish())
+	return w.layout.WriteIndexBlock(w.topLevelIndexBlock.Finish())
 }
 
 func compressAndChecksum(
@@ -1865,7 +1865,7 @@ func (w *Writer) Close() (err error) {
 			// the same object to a sync.Pool.
 			w.valueBlockWriter = nil
 		}
-		w.layout.abort()
+		w.layout.Abort()
 		// Record any error in the writer (so we can exit early if Close is called
 		// again).
 		if err != nil {
@@ -1901,7 +1901,7 @@ func (w *Writer) Close() (err error) {
 	// Finish the last data block, or force an empty data block if there
 	// aren't any data blocks at all.
 	if w.dataBlockBuf.dataBlock.EntryCount() > 0 || w.indexBlock.block.EntryCount() == 0 {
-		bh, err := w.layout.writeDataBlock(w.dataBlockBuf.dataBlock.Finish(), &w.dataBlockBuf.blockBuf)
+		bh, err := w.layout.WriteDataBlock(w.dataBlockBuf.dataBlock.Finish(), &w.dataBlockBuf.blockBuf)
 		if err != nil {
 			return err
 		}
@@ -1918,7 +1918,7 @@ func (w *Writer) Close() (err error) {
 
 	// Write the filter block.
 	if w.filter != nil {
-		bh, err := w.layout.writeFilterBlock(w.filter)
+		bh, err := w.layout.WriteFilterBlock(w.filter)
 		if err != nil {
 			return err
 		}
@@ -1940,7 +1940,7 @@ func (w *Writer) Close() (err error) {
 		w.props.IndexSize = uint64(w.indexBlock.estimatedSize()) + block.TrailerLen
 		w.props.NumDataBlocks = uint64(w.indexBlock.block.EntryCount())
 		// Write the single level index block.
-		if _, err = w.layout.writeIndexBlock(w.indexBlock.finish()); err != nil {
+		if _, err = w.layout.WriteIndexBlock(w.indexBlock.finish()); err != nil {
 			return err
 		}
 	}
@@ -1959,7 +1959,7 @@ func (w *Writer) Close() (err error) {
 		// get gc'd.
 		k := base.MakeRangeDeleteSentinelKey(w.rangeDelBlock.CurValue()).Clone()
 		w.meta.SetLargestRangeDelKey(k)
-		if _, err := w.layout.writeRangeDeletionBlock(w.rangeDelBlock.Finish()); err != nil {
+		if _, err := w.layout.WriteRangeDeletionBlock(w.rangeDelBlock.Finish()); err != nil {
 			return err
 		}
 	}
@@ -1977,7 +1977,7 @@ func (w *Writer) Close() (err error) {
 		}
 		k := base.MakeExclusiveSentinelKey(kind, endKey).Clone()
 		w.meta.SetLargestRangeKey(k)
-		if _, err := w.layout.writeRangeKeyBlock(w.rangeKeyBlock.Finish()); err != nil {
+		if _, err := w.layout.WriteRangeKeyBlock(w.rangeKeyBlock.Finish()); err != nil {
 			return err
 		}
 	}
@@ -2028,11 +2028,11 @@ func (w *Writer) Close() (err error) {
 		raw.RestartInterval = propertiesBlockRestartInterval
 		w.props.CompressionOptions = rocksDBCompressionOptions
 		w.props.save(w.tableFormat, &raw)
-		w.layout.writePropertiesBlock(raw.Finish())
+		w.layout.WritePropertiesBlock(raw.Finish())
 	}
 
 	// Write the table footer.
-	w.meta.Size, err = w.layout.finish()
+	w.meta.Size, err = w.layout.Finish()
 	if err != nil {
 		return err
 	}
@@ -2070,7 +2070,7 @@ func (w *Writer) EstimatedSize() uint64 {
 // Metadata returns the metadata for the finished sstable. Only valid to call
 // after the sstable has been finished.
 func (w *Writer) Metadata() (*WriterMetadata, error) {
-	if !w.layout.isFinished() {
+	if !w.layout.IsFinished() {
 		return nil, errors.New("pebble: writer is not closed")
 	}
 	return &w.meta, nil

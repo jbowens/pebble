@@ -303,16 +303,16 @@ type layoutWriter struct {
 	tableFormat  TableFormat
 	compression  Compression
 	checksumType block.ChecksumType
-	// indexHandle holds the handle to the most recently-written index block.
-	// It's updated by writeIndexBlock. When writing sstables with a
+	// lastIndexBlockHandle holds the handle to the most recently-written index
+	// block. It's updated by writeIndexBlock. When writing sstables with a
 	// single-level index, this field will be updated once. When writing
 	// sstables with a two-level index, the last update will set the two-level
 	// index.
-	indexHandle block.Handle
-	handles     []metaIndexHandle
-	handlesBuf  bytealloc.A
-	tmp         [blockHandleLikelyMaxLen]byte
-	buf         blockBuf
+	lastIndexBlockHandle block.Handle
+	handles              []metaIndexHandle
+	handlesBuf           bytealloc.A
+	tmp                  [valueBlocksIndexHandleMaxLen]byte
+	buf                  blockBuf
 }
 
 func makeLayoutWriter(w objstorage.Writable, opts WriterOptions) layoutWriter {
@@ -329,22 +329,28 @@ func makeLayoutWriter(w objstorage.Writable, opts WriterOptions) layoutWriter {
 }
 
 type metaIndexHandle struct {
-	key   string
-	value []byte
+	key                string
+	encodedBlockHandle []byte
 }
 
-func (w *layoutWriter) abort() {
+// Abort aborts writing the table, aborting the underlying writable too. Abort
+// is idempotent.
+func (w *layoutWriter) Abort() {
 	if w.writable != nil {
 		w.writable.Abort()
 		w.writable = nil
 	}
 }
 
-func (w *layoutWriter) writeDataBlock(b []byte, buf *blockBuf) (block.Handle, error) {
+// WriteDataBlock constructs a trailer for the provided data block and writes
+// the block and trailer to the writer. It returns the block's handle.
+func (w *layoutWriter) WriteDataBlock(b []byte, buf *blockBuf) (block.Handle, error) {
 	return w.writeBlock(b, w.compression, buf)
 }
 
-func (w *layoutWriter) writePrecompressedDataBlock(
+// WritePrecompressedDataBlock writes a pre-compressed data block and its
+// pre-computed trailer to the writer, returning it's block handle.
+func (w *layoutWriter) WritePrecompressedDataBlock(
 	blk []byte, trailer block.Trailer,
 ) (block.Handle, error) {
 	// Write the bytes to the file.
@@ -360,15 +366,22 @@ func (w *layoutWriter) writePrecompressedDataBlock(
 	return bh, nil
 }
 
-func (w *layoutWriter) writeIndexBlock(b []byte) (block.Handle, error) {
+// WriteIndexBlock constructs a trailer for the provided index (first or
+// second-level) and writes the block and trailer to the writer. It remembers
+// the last-written index block's handle and adds it to the file's meta index
+// when the writer is finished.
+func (w *layoutWriter) WriteIndexBlock(b []byte) (block.Handle, error) {
 	h, err := w.writeBlock(b, w.compression, &w.buf)
 	if err == nil {
-		w.indexHandle = h
+		w.lastIndexBlockHandle = h
 	}
 	return h, err
 }
 
-func (w *layoutWriter) writeFilterBlock(f filterWriter) (bh block.Handle, err error) {
+// WriteFilterBlock finishes the provided filter, constructs a trailer and
+// writes the block and trailer to the writer. It automatically adds the filter
+// block to the file's meta index when the writer is finished.
+func (w *layoutWriter) WriteFilterBlock(f filterWriter) (bh block.Handle, err error) {
 	b, err := f.finish()
 	if err != nil {
 		return block.Handle{}, err
@@ -376,27 +389,31 @@ func (w *layoutWriter) writeFilterBlock(f filterWriter) (bh block.Handle, err er
 	return w.writeNamedBlock(b, f.metaName())
 }
 
-func (w *layoutWriter) writePropertiesBlock(b []byte) (block.Handle, error) {
+// WritePropertiesBlock constructs a trailer for the provided properties block
+// and writes the block and trailer to the writer. It automatically adds the
+// properties block to the file's meta index when the writer is finished.
+func (w *layoutWriter) WritePropertiesBlock(b []byte) (block.Handle, error) {
 	return w.writeNamedBlock(b, metaPropertiesName)
 }
 
-func (w *layoutWriter) writeRangeKeyBlock(b []byte) (block.Handle, error) {
+// WriteRangeKeyBlock constructs a trailer for the provided range key block and
+// writes the block and trailer to the writer. It automatically adds the range
+// key block to the file's meta index when the writer is finished.
+func (w *layoutWriter) WriteRangeKeyBlock(b []byte) (block.Handle, error) {
 	return w.writeNamedBlock(b, metaRangeKeyName)
 }
 
-func (w *layoutWriter) writeRangeDeletionBlock(b []byte) (block.Handle, error) {
+// WriteRangeDeletionBlock constructs a trailer for the provided range deletion
+// block and writes the block and trailer to the writer. It automatically adds
+// the range deletion block to the file's meta index when the writer is
+// finished.
+func (w *layoutWriter) WriteRangeDeletionBlock(b []byte) (block.Handle, error) {
 	return w.writeNamedBlock(b, metaRangeDelV2Name)
 }
 
-func (w *layoutWriter) writeNamedBlock(b []byte, name string) (bh block.Handle, err error) {
-	bh, err = w.writeBlock(b, NoCompression, &w.buf)
-	if err == nil {
-		w.recordToMetaindex(name, bh)
-	}
-	return bh, err
-}
-
-func (w *layoutWriter) writeValueBlock(blk []byte) (block.Handle, error) {
+// WriteValueBlock writes a pre-finished value block (with the trailer) to the
+// writer.
+func (w *layoutWriter) WriteValueBlock(blk []byte) (block.Handle, error) {
 	// NB: value blocks are already finished and contain the block trailer.
 	// TODO(jackson): can this be refactored to make value blocks less of a
 	// snowflake?
@@ -411,7 +428,10 @@ func (w *layoutWriter) writeValueBlock(blk []byte) (block.Handle, error) {
 	return block.Handle{Offset: off, Length: l}, nil
 }
 
-func (w *layoutWriter) writeValueIndexBlock(
+// WriteValueIndexBlock writes the provided pre-finished value index block (with
+// the trailer) to the writer. The provided handle should be corresponding
+// precomputed handle.
+func (w *layoutWriter) WriteValueIndexBlock(
 	blk []byte, vbih valueBlocksIndexHandle,
 ) (block.Handle, error) {
 	// NB: value index blocks are already finished and contain the block
@@ -431,6 +451,14 @@ func (w *layoutWriter) writeValueIndexBlock(
 	w.recordToMetaindexRaw(metaValueIndexName, w.tmp[:n])
 
 	return block.Handle{Offset: off, Length: l}, nil
+}
+
+func (w *layoutWriter) writeNamedBlock(b []byte, name string) (bh block.Handle, err error) {
+	bh, err = w.writeBlock(b, NoCompression, &w.buf)
+	if err == nil {
+		w.recordToMetaindex(name, bh)
+	}
+	return bh, err
 }
 
 func (w *layoutWriter) writeBlock(
@@ -465,11 +493,10 @@ func (w *layoutWriter) Write(blockWithTrailer []byte) (n int, err error) {
 	return len(blockWithTrailer), nil
 }
 
+// clearFromCache removes the block at the provided offset from the cache. It
+// provides defense in depth against bugs which cause cache collisions.
 func (w *layoutWriter) clearFromCache(offset uint64) {
 	if w.cacheID != 0 && w.fileNum != 0 {
-		// Remove the block being written from the cache. This provides defense in
-		// depth against bugs which cause cache collisions.
-		//
 		// TODO(peter): Alternatively, we could add the uncompressed value to the
 		// cache.
 		w.cache.Delete(w.cacheID, w.fileNum, offset)
@@ -485,22 +512,23 @@ func (w *layoutWriter) recordToMetaindexRaw(key string, h []byte) {
 	var encodedHandle []byte
 	w.handlesBuf, encodedHandle = w.handlesBuf.Alloc(len(h))
 	copy(encodedHandle, h)
-	w.handles = append(w.handles, metaIndexHandle{key: key, value: encodedHandle})
+	w.handles = append(w.handles, metaIndexHandle{key: key, encodedBlockHandle: encodedHandle})
 }
 
-func (w *layoutWriter) isFinished() bool { return w.writable == nil }
+// IsFinished returns true if the writer has been finished and closed.
+func (w *layoutWriter) IsFinished() bool { return w.writable == nil }
 
-// finish serializes the sstable, writing out the meta index block and sstable
+// Finish serializes the sstable, writing out the meta index block and sstable
 // footer and closing the file. It returns the total size of the resulting
 // ssatable.
-func (w *layoutWriter) finish() (size uint64, err error) {
+func (w *layoutWriter) Finish() (size uint64, err error) {
 	// Sort the meta index handles by key and write the meta index block.
 	slices.SortFunc(w.handles, func(a, b metaIndexHandle) int {
 		return cmp.Compare(a.key, b.key)
 	})
 	bw := rowblk.Writer{RestartInterval: 1}
 	for _, h := range w.handles {
-		bw.AddRaw(unsafe.Slice(unsafe.StringData(h.key), len(h.key)), h.value)
+		bw.AddRaw(unsafe.Slice(unsafe.StringData(h.key), len(h.key)), h.encodedBlockHandle)
 	}
 	metaIndexHandle, err := w.writeBlock(bw.Finish(), NoCompression, &w.buf)
 	if err != nil {
@@ -512,7 +540,7 @@ func (w *layoutWriter) finish() (size uint64, err error) {
 		format:      w.tableFormat,
 		checksum:    w.checksumType,
 		metaindexBH: metaIndexHandle,
-		indexBH:     w.indexHandle,
+		indexBH:     w.lastIndexBlockHandle,
 	}
 	encodedFooter := footer.encode(w.tmp[:])
 	if err := w.writable.Write(encodedFooter); err != nil {

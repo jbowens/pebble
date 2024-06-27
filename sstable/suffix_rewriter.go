@@ -341,7 +341,7 @@ func rewriteDataBlocksToWriter(
 
 	for i := range blocks {
 		// Write the rewritten block to the file.
-		bh, err := w.layout.writePrecompressedDataBlock(blocks[i].data, blocks[i].trailer)
+		bh, err := w.layout.WritePrecompressedDataBlock(blocks[i].data, blocks[i].trailer)
 		if err != nil {
 			return err
 		}

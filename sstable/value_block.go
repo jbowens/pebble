@@ -556,7 +556,7 @@ func (w *valueBlockWriter) finish(
 	largestOffset := uint64(0)
 	largestLength := uint64(0)
 	for i := range w.blocks {
-		_, err := layout.writeValueBlock(w.blocks[i].block.b)
+		_, err := layout.WriteValueBlock(w.blocks[i].block.b)
 		if err != nil {
 			return valueBlocksIndexHandle{}, valueBlocksAndIndexStats{}, err
 		}
@@ -618,7 +618,7 @@ func (w *valueBlockWriter) writeValueBlocksIndex(
 	}
 	b[0] = byte(noCompressionBlockType)
 	w.computeChecksum(buf)
-	if _, err := layout.writeValueIndexBlock(buf, h); err != nil {
+	if _, err := layout.WriteValueIndexBlock(buf, h); err != nil {
 		return valueBlocksIndexHandle{}, err
 	}
 	return h, nil
