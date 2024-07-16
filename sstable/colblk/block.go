@@ -196,7 +196,7 @@ func (r *BlockReader) DataType(col int) DataType {
 	if uint16(col) >= r.header.Columns {
 		panic(errors.AssertionFailedf("column %d is out of range [0, %d)", col, r.header.Columns))
 	}
-	return DataType(*(*uint8)(r.pointer(r.customHeaderSize + 7 + 5*uint32(col))))
+	return DataType(*(*uint8)(r.pointer(r.customHeaderSize + blockHeaderBaseSize + columnHeaderSize*uint32(col))))
 }
 
 // Bitmap retrieves the col'th column as a bitmap. The column must be of type
