@@ -37,12 +37,93 @@ const (
 	presenceEncodingSomeAbsent presenceEncoding = 0x02
 )
 
+// PresenceWithDefault is a ColumnReader used for reading columns that were
+// encoded with some values absent, a PresenceBitmap indicating which values are
+// present. PresenceWithDefault wraps another ColumnReader. When a value is
+// present, it returns the value from the wrapped ColumnReader. When a value is
+// absent, it returns configured default value.
+type PresenceWithDefault[V any, R ColumnReader[V]] struct {
+	PresenceBitmap
+	reader       R
+	defaultValue V
+}
+
+// At implements ColumnReader, returning the row'th value of the column.
+func (d PresenceWithDefault[V, R]) At(row int) V {
+	idx := d.PresenceBitmap.Rank(row)
+	if idx == -1 {
+		return d.defaultValue
+	}
+	return d.reader.At(idx)
+}
+
+// DecodePresenceWithDefault returns a DecodeFunc that decodes a column that was
+// encoded with potentially absent column values. It returns a
+// PresenceWithDefault that includes knowledge of which values are present and a
+// default value to use when a value is absent.
+func DecodePresenceWithDefault[V any, R ColumnReader[V]](
+	defaultValue V, columnDecoder DecodeFunc[R],
+) DecodeFunc[PresenceWithDefault[V, R]] {
+	return func(buf []byte, offset uint32, rows int) (r PresenceWithDefault[V, R], nextOffset uint32) {
+		d := PresenceWithDefault[V, R]{
+			defaultValue: defaultValue,
+		}
+		d.PresenceBitmap, offset = ReadPresence(buf, offset, rows)
+		d.reader, offset = columnDecoder(buf, offset, d.PresenceBitmap.PresentCount())
+		return d, offset
+	}
+}
+
+// TODO(jackson): Impose consistent interfaces on the various column decoders
+// where possible, and provide more sugar for reading columns prefixed with
+// presence. For example, we might have a 'column reader' implementation that's
+// generic in the column data type T, takes a default T to assign to absent
+// values, and handles the Rank lookup.
+//
+// It'll be easier to get this right once we have the use cases in place so that
+// we can clearly see the common patterns.
+
+// ReadPresence reads the presence encoding from buf at the provided offset. It
+// returns a PresenceBitmap that may be used to determine which values are
+// present and which are absent. It returns an endOffset pointing to the first
+// byte after the presence encoding.
+//
+// An example of reading all the values in a RawBytes column with a presence
+// bitmap, interpreting absence as the empty byte slice.
+//
+//		presence, offset := ReadPresence(buf, offset, rows)
+//		rawByteValues := MakeRawBytes(presence.PresentCount(rows), buf, offset)
+//		for i := 0; i < rows; i++ {
+//	      var value []byte
+//		  if idx := presence.Rank(i); idx != -1 {
+//		    value = rawByteValues.At(idx)
+//		  }
+//		  // process value
+//		}
+func ReadPresence(buf []byte, offset uint32, rows int) (presence PresenceBitmap, endOffset uint32) {
+	// The first byte is an enum indicating how presence is encoded.
+	switch presenceEncoding(buf[offset]) {
+	case presenceEncodingAllAbsent:
+		return PresenceBitmap{ /* nil ptr indicates all absent */ }, offset + 1
+	case presenceEncodingAllPresent:
+		bitmap := PresenceBitmap{data: makeUnsafeRawSlice[presenceBitmapWord](allPresentSentinelPtr)}
+		return bitmap, offset + 1
+	case presenceEncodingSomeAbsent:
+		bitmap := PresenceBitmap{data: makeUnsafeRawSlice[presenceBitmapWord](unsafe.Pointer(&buf[offset+1]))}
+		return bitmap, presenceBitmapSize(offset+1, rows)
+	default:
+		panic(base.MarkCorruptionError(errors.Newf("unknown presence encoding: %d", buf[offset])))
+	}
+}
+
 // DefaultAbsent implements ColumnWriter, wrapping another ColumnWriter and
 // handling cheaply encoding absent values using a presence bitmap. Rows default
 // to absent unless explicitly set through Present.
 //
 // Columns written with DefaultAbsent prefix the column data with a single byte
-// indicating how the data is encoded, and possibly a presence bitmap.
+// indicating how the data is encoded and possibly a presence bitmap. Readers of
+// a column written with DefaultAbsent should use ReadPresence to retrieve a
+// PresenceBitmap for the column.
 type DefaultAbsent[W ColumnWriter] struct {
 	Writer W
 
@@ -123,30 +204,6 @@ func (n *DefaultAbsent[W]) WriteDebug(w io.Writer, rows int) {
 	fmt.Fprintf(w, ")")
 }
 
-// TODO(jackson): Impose consistent interfaces on the various column decoders
-// where possible, and provide more sugar for reading columns prefixed with
-// presence.
-
-// ReadPresence reads the presence encoding from buf at the provided offset. It
-// returns a PresenceBitmap that may be used to determine which values are
-// present and which are absent. It returns an endOffset pointing to the first
-// byte after the presence encoding.
-func ReadPresence(buf []byte, offset uint32, rows int) (presence PresenceBitmap, endOffset uint32) {
-	// The first byte is an enum indicating how presence is encoded.
-	switch presenceEncoding(buf[offset]) {
-	case presenceEncodingAllAbsent:
-		return PresenceBitmap{ /* nil ptr indicates all absent */ }, offset + 1
-	case presenceEncodingAllPresent:
-		bitmap := PresenceBitmap{data: makeUnsafeRawSlice[presenceBitmapWord](allPresentSentinelPtr)}
-		return bitmap, offset + 1
-	case presenceEncodingSomeAbsent:
-		bitmap := PresenceBitmap{data: makeUnsafeRawSlice[presenceBitmapWord](unsafe.Pointer(&buf[offset+1]))}
-		return bitmap, presenceBitmapSize(offset+1, rows)
-	default:
-		panic(base.MarkCorruptionError(errors.Newf("unknown presence encoding: %d", buf[offset])))
-	}
-}
-
 // Type definitions and constants to make it easier to change the PresenceBitmap
 // word size. Using a 32-bit word size is slightly faster for Get and Rank
 // operations yet imposes a limit of 64K rows in a block.
@@ -206,15 +263,22 @@ var allPresentSentinelPtr = unsafe.Pointer(unsafe.SliceData(allPresentSentinel))
 // The lookup table imposes an additional bit of overhead per bit in the bitmap
 // (thus 2-bits per row).
 type PresenceBitmap struct {
+	rows int
 	data UnsafeRawSlice[presenceBitmapWord]
 }
 
-func makePresenceBitmap(v []presenceBitmapWord) PresenceBitmap {
-	return PresenceBitmap{data: makeUnsafeRawSlice[presenceBitmapWord](unsafe.Pointer(unsafe.SliceData(v)))}
+func makePresenceBitmap(rows int, v []presenceBitmapWord) PresenceBitmap {
+	return PresenceBitmap{
+		rows: rows,
+		data: makeUnsafeRawSlice[presenceBitmapWord](unsafe.Pointer(unsafe.SliceData(v))),
+	}
 }
 
-func makePresenceBitmapRaw(ptr unsafe.Pointer) PresenceBitmap {
-	return PresenceBitmap{data: makeUnsafeRawSlice[presenceBitmapWord](ptr)}
+func makePresenceBitmapRaw(rows int, ptr unsafe.Pointer) PresenceBitmap {
+	return PresenceBitmap{
+		rows: rows,
+		data: makeUnsafeRawSlice[presenceBitmapWord](ptr),
+	}
 }
 
 // AllPresent returns true if the bitmap is empty and indicates that all of the
@@ -268,9 +332,22 @@ func (b PresenceBitmap) Rank(i int) int {
 	return v
 }
 
+// PresentCount returns the number of values that are recorded as present.
+func (b PresenceBitmap) PresentCount() int {
+	if b.data.ptr == nil {
+		return 0
+	}
+	if b.data.ptr == allPresentSentinelPtr {
+		return b.rows
+	}
+	word := b.data.At(b.rows - 1>>presenceBitmapHalfWordSizeShift)
+	bit := presenceBitmapWord(1) << uint(b.rows-1&presenceBitmapHalfWordMask)
+	return int(word>>presenceBitmapHalfWordSize) + bits.OnesCount16(uint16(word&(bit-1)))
+}
+
 func presenceBitmapToBinFormatter(f *binfmt.Formatter, rows int) int {
 	var n int
-	bm := makePresenceBitmapRaw(f.Pointer(0))
+	bm := makePresenceBitmapRaw(rows, f.Pointer(0))
 	for i := 0; i <= (rows-1)/presenceBitmapHalfWordSize; i++ {
 		word := bm.data.At(i)
 		f.Line(4).Binary(1).Append(" ").Binary(1).Append(" ").HexBytes(2).

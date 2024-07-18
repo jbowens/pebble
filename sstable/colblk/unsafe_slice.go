@@ -67,9 +67,16 @@ type UnsafeIntegerSlice[T constraints.Integer] struct {
 	deltaWidth uintptr
 }
 
-func readUnsafeIntegerSlice[T constraints.Integer](
-	rows int, b []byte, off uint32,
-) (endOffset uint32, slice UnsafeIntegerSlice[T]) {
+// Assert that UnsafeIntegerSlice[T] implements the ColumnReader interface.
+var _ ColumnReader[uint8] = UnsafeIntegerSlice[uint8]{}
+
+// Assert that DecodeUnsafeIntegerSlice implements DecodeFunc.
+var _ DecodeFunc[UnsafeIntegerSlice[uint8]] = DecodeUnsafeIntegerSlice[uint8]
+
+// DecodeUnsafeIntegerSlice decodes uint column data from a byte slice.
+func DecodeUnsafeIntegerSlice[T constraints.Integer](
+	b []byte, off uint32, rows int,
+) (slice UnsafeIntegerSlice[T], endOffset uint32) {
 	delta := UintDeltaEncoding(b[off])
 	off++
 	switch delta {
@@ -91,7 +98,7 @@ func readUnsafeIntegerSlice[T constraints.Integer](
 	default:
 		panic("unreachable")
 	}
-	return off, slice
+	return slice, off
 }
 
 func makeUnsafeIntegerSlice[T constraints.Integer](

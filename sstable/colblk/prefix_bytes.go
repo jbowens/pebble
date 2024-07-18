@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/bits"
+	"slices"
 	"strings"
 	"unsafe"
 
@@ -171,11 +172,17 @@ type PrefixBytes struct {
 	rawBytes        RawBytes
 }
 
-// MakePrefixBytes constructs an accessor for an array of lexicographically
+// Assert that PrefixBytes implements ColumnReader.
+var _ ColumnReader[[]byte] = PrefixBytes{}
+
+// Assert that DecodePrefixBytes implements DecodeFunc.
+var _ DecodeFunc[PrefixBytes] = DecodePrefixBytes
+
+// DecodePrefixBytes constructs an accessor for an array of lexicographically
 // sorted byte slices constructed by PrefixBytesBuilder. Count must be the
 // number of logical slices within the array.
-func MakePrefixBytes(count int, b []byte, offset uint32) PrefixBytes {
-	if count == 0 {
+func DecodePrefixBytes(b []byte, offset uint32, rows int) (reader PrefixBytes, endOffset uint32) {
+	if rows == 0 {
 		panic(errors.AssertionFailedf("empty PrefixBytes"))
 	}
 	// The first byte of a PrefixBytes-encoded column is the bundle size
@@ -183,19 +190,27 @@ func MakePrefixBytes(count int, b []byte, offset uint32) PrefixBytes {
 	// power of two)
 	bundleShift := int(*((*uint8)(unsafe.Pointer(&b[offset]))))
 	calc := makeBundleCalc(bundleShift)
-	nBundles := calc.bundleCount(count)
+	nBundles := calc.bundleCount(rows)
 
 	pb := PrefixBytes{
 		bundleCalc: calc,
-		rows:       count,
-		rawBytes:   MakeRawBytes(count+nBundles, b, offset+1),
+		rows:       rows,
 	}
+	pb.rawBytes, endOffset = DecodeRawBytes(b, offset+1, rows+nBundles)
+
 	// We always set the base to zero.
 	if pb.rawBytes.offsets.base != 0 {
 		panic(errors.AssertionFailedf("unexpected non-zero base in offsets"))
 	}
 	pb.sharedPrefixLen = int(pb.rawBytes.offsets.At(0))
-	return pb
+	return pb, endOffset
+}
+
+// At implements ColumnReader and returns the i'th key in the PrefixBytes. At
+// must allocate, so callers should prefer to access the key components directly
+// through SharedPrefix, BundlePrefix and RowSuffix.
+func (b PrefixBytes) At(i int) []byte {
+	return slices.Concat(b.SharedPrefix(), b.BundlePrefix(i), b.RowSuffix(i))
 }
 
 // SharedPrefix return a []byte of the shared prefix that was extracted from
@@ -419,7 +434,7 @@ func prefixBytesToBinFormatter(f *binfmt.Formatter, count int, sliceFormatter fu
 	if sliceFormatter == nil {
 		sliceFormatter = defaultSliceFormatter
 	}
-	pb := MakePrefixBytes(count, f.Data(), uint32(f.Offset()))
+	pb, _ := DecodePrefixBytes(f.Data(), uint32(f.Offset()), count)
 	f.CommentLine("PrefixBytes")
 	f.HexBytesln(1, "bundleSize: %d", 1<<pb.bundleShift)
 	f.CommentLine("Offsets table")
@@ -834,6 +849,7 @@ func (b *PrefixBytesBuilder) Finish(
 	if rows < b.nKeys-1 || rows > b.nKeys {
 		panic(errors.AssertionFailedf("PrefixBytes has accumulated %d keys, asked to Finish %d", b.nKeys, rows))
 	}
+	fmt.Printf("b.bundleSize: %d\n", b.bundleSize)
 	if rows == 0 {
 		return offset
 	}

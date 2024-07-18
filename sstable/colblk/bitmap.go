@@ -30,24 +30,28 @@ type Bitmap struct {
 	bitCount int
 }
 
-// MakeBitmap returns a Bitmap that reads from b supporting bitCount logical
+// Assert that Bitmap implements ColumnReader.
+var _ ColumnReader[bool] = Bitmap{}
+
+// DecodeBitmap returns a Bitmap that reads from b supporting bitCount logical
 // bits. No bounds checking is performed, so the caller must guarantee the
 // bitmap is appropriately sized and the provided bitCount correctly identifies
 // the number of bits in the bitmap.
-func MakeBitmap(b []byte, off uint32, bitCount int) Bitmap {
-	if len(b) < int(off)+bitmapRequiredSize(bitCount) {
+func DecodeBitmap(b []byte, off uint32, bitCount int) (bitmap Bitmap, endOffset uint32) {
+	sz := bitmapRequiredSize(bitCount)
+	off = align(off, align64)
+	if len(b) < int(off)+sz {
 		panic(errors.AssertionFailedf("bitmap of %d bits requires at least %d bytes; provided with %d-byte slice",
 			bitCount, bitmapRequiredSize(bitCount), len(b[off:])))
 	}
-	off = align(off, align64)
 	return Bitmap{
 		data:     makeUnsafeRawSlice[uint64](unsafe.Pointer(&b[off])),
 		bitCount: bitCount,
-	}
+	}, off + uint32(sz)
 }
 
-// Get returns true if the bit at position i is set and false otherwise.
-func (b Bitmap) Get(i int) bool {
+// At returns true if the bit at position i is set and false otherwise.
+func (b Bitmap) At(i int) bool {
 	return (b.data.At(i>>6 /* i/64 */) & (1 << uint(i%64))) != 0
 }
 

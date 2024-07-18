@@ -108,3 +108,9 @@ type Encoder interface {
 	// state to the provided writer.
 	WriteDebug(w io.Writer, rows int)
 }
+
+type DecodeFunc[T any] func(buf []byte, offset uint32, rows int) (decoded T, nextOffset uint32)
+
+type ColumnReader[V any] interface {
+	At(row int) V
+}

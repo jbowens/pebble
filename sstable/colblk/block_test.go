@@ -18,6 +18,15 @@ import (
 	"golang.org/x/exp/rand"
 )
 
+type ColumnSpec struct {
+	DataType
+	// ZeroAsAbsent is used to determine whether a zero value should be
+	// represented using the "presence" encoding, possibly encoding a
+	// PresenceBitmap.
+	ZeroAsAbsent bool
+	BundleSize   int // only used for PrefixBytes.
+}
+
 func TestBlockWriter(t *testing.T) {
 	panicIfErr := func(dataType DataType, stringValue string, err error) {
 		if err != nil {
@@ -151,10 +160,10 @@ func dataTypeFromName(name string) DataType {
 // returns the serialized raw block and a []interface{} slice containing the
 // generated data. The type of each element of the slice is dependent on the
 // corresponding column's type.
-func randBlock(rng *rand.Rand, rows int, schema []DataType) ([]byte, []interface{}) {
+func randBlock(rng *rand.Rand, rows int, schema []ColumnSpec) ([]byte, []interface{}) {
 	data := make([]interface{}, len(schema))
 	for col := range data {
-		switch schema[col] {
+		switch schema[col].DataType {
 		case DataTypeBool:
 			v := make([]bool, rows)
 			for row := 0; row < rows; row++ {
@@ -195,7 +204,12 @@ func randBlock(rng *rand.Rand, rows int, schema []DataType) ([]byte, []interface
 		case DataTypePrefixBytes:
 			v := make([][]byte, rows)
 			for row := 0; row < rows; row++ {
-				v[row] = make([]byte, rng.Intn(20)+1)
+				l := rng.Intn(20)
+				if !schema[col].ZeroAsAbsent {
+					// PrefixBytes does not support empty slices.
+					l++
+				}
+				v[row] = make([]byte, l)
 				rng.Read(v[row])
 			}
 			// PrefixBytes are required to be lexicographically sorted.
@@ -208,11 +222,36 @@ func randBlock(rng *rand.Rand, rows int, schema []DataType) ([]byte, []interface
 	return buf, data
 }
 
-func buildBlock(schema []DataType, rows int, data []interface{}) []byte {
+func writeUintZeroAsAbsent[U Uint](vals []U) ColumnWriter {
+	var b UintBuilder[U]
+	b.Init()
+	w := &DefaultAbsent[*UintBuilder[U]]{Writer: &b}
+	for row, v := range vals {
+		if v != 0 {
+			w, j := w.Present(row)
+			w.Set(j, v)
+		}
+	}
+	return w
+}
+
+func writeUintCol[U Uint](vals []U) ColumnWriter {
+	var b UintBuilder[U]
+	b.Init()
+	for row, v := range vals {
+		b.Set(row, v)
+	}
+	return &b
+}
+
+func buildBlock(schema []ColumnSpec, rows int, data []interface{}) []byte {
 	cw := make([]ColumnWriter, len(schema))
 	for col := range schema {
-		switch schema[col] {
+		switch schema[col].DataType {
 		case DataTypeBool:
+			if schema[col].ZeroAsAbsent {
+				panic("not supported")
+			}
 			var bb BitmapBuilder
 			bb.Reset()
 			for row, v := range data[col].([]bool) {
@@ -220,59 +259,80 @@ func buildBlock(schema []DataType, rows int, data []interface{}) []byte {
 			}
 			cw[col] = &bb
 		case DataTypeUint8:
-			var b UintBuilder[uint8]
-			b.Init()
-			for row, v := range data[col].([]uint8) {
-				b.Set(row, v)
+			if schema[col].ZeroAsAbsent {
+				cw[col] = writeUintZeroAsAbsent(data[col].([]uint8))
+			} else {
+				cw[col] = writeUintCol(data[col].([]uint8))
 			}
-			cw[col] = &b
 		case DataTypeUint16:
-			var b UintBuilder[uint16]
-			b.Init()
-			for row, v := range data[col].([]uint16) {
-				b.Set(row, v)
+			if schema[col].ZeroAsAbsent {
+				cw[col] = writeUintZeroAsAbsent(data[col].([]uint16))
+			} else {
+				cw[col] = writeUintCol(data[col].([]uint16))
 			}
-			cw[col] = &b
 		case DataTypeUint32:
-			var b UintBuilder[uint32]
-			b.Init()
-			for row, v := range data[col].([]uint32) {
-				b.Set(row, v)
+			if schema[col].ZeroAsAbsent {
+				cw[col] = writeUintZeroAsAbsent(data[col].([]uint32))
+			} else {
+				cw[col] = writeUintCol(data[col].([]uint32))
 			}
-			cw[col] = &b
 		case DataTypeUint64:
-			var b UintBuilder[uint64]
-			b.Init()
-			for row, v := range data[col].([]uint64) {
-				b.Set(row, v)
+			if schema[col].ZeroAsAbsent {
+				cw[col] = writeUintZeroAsAbsent(data[col].([]uint64))
+			} else {
+				cw[col] = writeUintCol(data[col].([]uint64))
 			}
-			cw[col] = &b
 		case DataTypeBytes:
 			var b RawBytesBuilder
 			b.Reset()
-			for _, v := range data[col].([][]byte) {
-				b.Put(v)
-			}
-			cw[col] = &b
-		case DataTypePrefixBytes:
-			var pbb PrefixBytesBuilder
-			pbb.Init(8)
-			// TODO(jackson): Randomize bundle size.
-			colData := data[col].([][]byte)
-			for r, v := range colData {
-				sharedPrefix := 0
-				if r > 0 {
-					sharedPrefix = bytesSharedPrefix(colData[r-1], v)
+			if schema[col].ZeroAsAbsent {
+				w := &DefaultAbsent[*RawBytesBuilder]{Writer: &b}
+				for _, v := range data[col].([][]byte) {
+					if len(v) > 0 {
+						b.Put(v)
+					}
 				}
-				pbb.Put(v, sharedPrefix)
+				cw[col] = w
+			} else {
+				for _, v := range data[col].([][]byte) {
+					b.Put(v)
+				}
+				cw[col] = &b
 			}
-			cw[col] = &pbb
+		case DataTypePrefixBytes:
+			pbb := new(PrefixBytesBuilder)
+			pbb.Init(schema[col].BundleSize)
+			colData := data[col].([][]byte)
+			if schema[col].ZeroAsAbsent {
+				panic("todo")
+				w := &DefaultAbsent[*PrefixBytesBuilder]{Writer: pbb}
+				for r, v := range colData {
+					if len(v) > 0 {
+						sharedPrefix := 0
+						if r > 0 {
+							sharedPrefix = bytesSharedPrefix(colData[r-1], v)
+						}
+						innerWriter, _ := w.Present(r)
+						innerWriter.Put(v, sharedPrefix)
+					}
+				}
+				cw[col] = w
+			} else {
+				for r, v := range colData {
+					sharedPrefix := 0
+					if r > 0 {
+						sharedPrefix = bytesSharedPrefix(colData[r-1], v)
+					}
+					pbb.Put(v, sharedPrefix)
+				}
+				cw[col] = pbb
+			}
 		}
 	}
 	return FinishBlock(rows, cw)
 }
 
-func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []DataType) {
+func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []ColumnSpec) {
 	var sb strings.Builder
 	for i := range schema {
 		if i > 0 {
@@ -283,6 +343,7 @@ func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []DataType) 
 
 	t.Run(sb.String(), func(t *testing.T) {
 		block, data := randBlock(rng, rows, schema)
+		fmt.Printf("Generated random block: %x\n", block)
 		r := ReadBlock(block, 0)
 		if uint32(r.header.Columns) != uint32(len(schema)) {
 			t.Fatalf("expected %d columns, but found %d\n", len(schema), r.header.Columns)
@@ -291,43 +352,42 @@ func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []DataType) 
 			t.Fatalf("expected %d rows, but found %d\n", rows, r.header.Rows)
 		}
 		for col := range schema {
-			if schema[col] != r.DataType(col) {
+			if schema[col].DataType != r.DataType(col) {
 				t.Fatalf("schema mismatch: %s != %s\n", schema[col], r.DataType(col))
 			}
 		}
 
 		for col := range data {
 			var got interface{}
-			switch schema[col] {
+			spec := schema[col]
+			switch spec.DataType {
 			case DataTypeBool:
-				b := r.Bitmap(col)
-				vals := make([]bool, r.header.Rows)
-				for i := range vals {
-					vals[i] = b.Get(i)
-				}
-				got = vals
+				b := DecodeColumn(&r, col, spec.DataType, DecodeBitmap)
+				got = readEntireColumn(&b, rows)
 			case DataTypeUint8:
-				got = r.Uint8s(col).Clone(rows)
+				b := DecodeColumn(&r, col, spec.DataType,
+					decodeColumnMaybeWithPresence(spec, DecodeUnsafeIntegerSlice[uint8], 0))
+				got = readEntireColumn(b, rows)
 			case DataTypeUint16:
-				got = r.Uint16s(col).Clone(rows)
+				b := DecodeColumn(&r, col, spec.DataType,
+					decodeColumnMaybeWithPresence(spec, DecodeUnsafeIntegerSlice[uint16], 0))
+				got = readEntireColumn(b, rows)
 			case DataTypeUint32:
-				got = r.Uint32s(col).Clone(rows)
+				b := DecodeColumn(&r, col, spec.DataType,
+					decodeColumnMaybeWithPresence(spec, DecodeUnsafeIntegerSlice[uint32], 0))
+				got = readEntireColumn(b, rows)
 			case DataTypeUint64:
-				got = r.Uint64s(col).Clone(rows)
+				b := DecodeColumn(&r, col, spec.DataType,
+					decodeColumnMaybeWithPresence(spec, DecodeUnsafeIntegerSlice[uint64], 0))
+				got = readEntireColumn(b, rows)
 			case DataTypeBytes:
-				vals2 := make([][]byte, rows)
-				vals := r.RawBytes(col)
-				for i := range vals2 {
-					vals2[i] = vals.At(i)
-				}
-				got = vals2
+				b := DecodeColumn(&r, col, spec.DataType,
+					decodeColumnMaybeWithPresence(spec, DecodeRawBytes, nil))
+				got = readEntireColumn(b, rows)
 			case DataTypePrefixBytes:
-				vals2 := make([][]byte, rows)
-				vals := r.PrefixBytes(col)
-				for i := range vals2 {
-					vals2[i] = slices.Concat(vals.SharedPrefix(), vals.RowBundlePrefix(i), vals.RowSuffix(i))
-				}
-				got = vals2
+				b := DecodeColumn(&r, col, spec.DataType,
+					decodeColumnMaybeWithPresence(spec, DecodePrefixBytes, nil))
+				got = readEntireColumn(b, rows)
 			}
 			if !reflect.DeepEqual(data[col], got) {
 				t.Fatalf("%d: %s: expected\n%+v\ngot\n%+v\n% x",
@@ -337,27 +397,54 @@ func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []DataType) 
 	})
 }
 
+func decodeColumnMaybeWithPresence[V any, R ColumnReader[V]](
+	spec ColumnSpec, decodeFunc DecodeFunc[R], defaultValue V,
+) DecodeFunc[ColumnReader[V]] {
+	return func(b []byte, off uint32, rows int) (ColumnReader[V], uint32) {
+		if spec.ZeroAsAbsent {
+			return DecodePresenceWithDefault(defaultValue, decodeFunc)(b, off, rows)
+		}
+		return decodeFunc(b, off, rows)
+	}
+}
+
+func readEntireColumn[T any](r ColumnReader[T], rows int) []T {
+	vals := make([]T, rows)
+	for i := 0; i < rows; i++ {
+		vals[i] = r.At(i)
+	}
+	return vals
+}
+
 func TestBlockWriterRandomized(t *testing.T) {
 	seed := uint64(time.Now().UnixNano())
+	seed = 1721328733647796000
 	t.Logf("Seed: %d", seed)
 	rng := rand.New(rand.NewSource(seed))
 	randInt := func(lo, hi int) int {
 		return lo + rng.Intn(hi-lo)
 	}
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypeBool})
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypeUint8})
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypeUint16})
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypeUint32})
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypeUint64})
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypeBytes})
-	testRandomBlock(t, rng, randInt(1, 100), []DataType{DataTypePrefixBytes})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypeBool}})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypeUint8}})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypeUint16}})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypeUint32}})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypeUint64}})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypeBytes}})
+	testRandomBlock(t, rng, randInt(1, 100), []ColumnSpec{{DataType: DataTypePrefixBytes, BundleSize: 4}})
 
 	for i := 0; i < 100; i++ {
-		schema := make([]DataType, 2+rng.Intn(8))
+		schema := make([]ColumnSpec, 2+rng.Intn(8))
 		for j := range schema {
-			// TODO(jackson): Adjust this to generate DataTypePrefixBytes
-			// columns too once they're supported.
-			schema[j] = DataType(randInt(1, int(dataTypesCount)))
+			schema[j].DataType = DataType(randInt(1, int(dataTypesCount)))
+			if schema[j].DataType == DataTypePrefixBytes {
+				schema[j].BundleSize = 1 << randInt(1, 7)
+			}
+			/*
+				switch schema[j].DataType {
+				case DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64, DataTypeBytes, DataTypePrefixBytes:
+					schema[j].ZeroAsAbsent = rng.Intn(2) == 0
+				}
+			*/
 		}
 		testRandomBlock(t, rng, randInt(1, 100), schema)
 	}

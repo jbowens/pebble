@@ -49,19 +49,26 @@ type RawBytes struct {
 	data    unsafe.Pointer
 }
 
-// MakeRawBytes constructs an accessor for an array of byte slices constructed
-// by RawBytesBuilder. Count must be the number of byte slices within the array.
-func MakeRawBytes(count int, b []byte, offset uint32) RawBytes {
-	if count == 0 {
-		return RawBytes{}
+// Assert that *RawBytes implements ColumnReader.
+var _ ColumnReader[[]byte] = (*RawBytes)(nil)
+
+// Assert that DecodeRawBytes implements DecodeFunc.
+var _ DecodeFunc[RawBytes] = DecodeRawBytes
+
+// DecodeRawBytes decodes the structure of a RawBytes, returning an accessor for
+// an array of byte slices constructed by RawBytesBuilder. Rows must be the
+// number of byte slices within the array.
+func DecodeRawBytes(b []byte, offset uint32, rows int) (rb RawBytes, endOffset uint32) {
+	if rows == 0 {
+		return RawBytes{}, 0
 	}
-	dataOff, offsets := readUnsafeIntegerSlice[uint32](count+1 /* +1 offset */, b, offset)
+	offsets, dataOff := DecodeUnsafeIntegerSlice[uint32](b, offset, rows+1 /* +1 offset */)
 	return RawBytes{
-		slices:  count,
+		slices:  rows,
 		offsets: offsets,
 		start:   unsafe.Pointer(&b[offset]),
 		data:    unsafe.Pointer(&b[dataOff]),
-	}
+	}, dataOff + offsets.At(rows)
 }
 
 func defaultSliceFormatter(x []byte) string {
@@ -73,7 +80,7 @@ func rawBytesToBinFormatter(f *binfmt.Formatter, count int, sliceFormatter func(
 		sliceFormatter = defaultSliceFormatter
 	}
 
-	rb := MakeRawBytes(count, f.Data(), uint32(f.Offset()))
+	rb, _ := DecodeRawBytes(f.Data(), uint32(f.Offset()), count)
 	dataOffset := uint64(f.Offset()) + uint64(uintptr(rb.data)-uintptr(rb.start))
 	f.CommentLine("rawbytes")
 	f.CommentLine("offsets table")

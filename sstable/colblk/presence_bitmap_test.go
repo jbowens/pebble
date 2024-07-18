@@ -72,7 +72,7 @@ func randPresenceBitmap(rng *rand.Rand, size int) PresenceBitmap {
 	for i := 0; i < size; i++ {
 		builder.Set(i, rng.Intn(2) == 0)
 	}
-	return makePresenceBitmap(builder.words)
+	return makePresenceBitmap(size, builder.words)
 }
 
 func TestPresenceBitmapRandom(t *testing.T) {
