@@ -33,7 +33,7 @@ func (m *memTable) get(key []byte) (value []byte, err error) {
 	if kv == nil {
 		return nil, ErrNotFound
 	}
-	if !m.equal(key, kv.K.UserKey) {
+	if !m.comparer.Equal(key, kv.K.UserKey) {
 		return nil, ErrNotFound
 	}
 	switch kv.Kind() {
@@ -344,7 +344,7 @@ func TestMemTableConcurrentDeleteRange(t *testing.T) {
 				it := m.newRangeDelIter(nil)
 				s, err := it.SeekGE(start)
 				for ; s != nil; s, err = it.Next() {
-					if m.cmp(s.Start, end) >= 0 {
+					if m.comparer.Compare(s.Start, end) >= 0 {
 						break
 					}
 					count += len(s.Keys)

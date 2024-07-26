@@ -146,7 +146,7 @@ func lengthRev(s *Skiplist) int {
 
 func TestEmpty(t *testing.T) {
 	key := makeKey("aaa")
-	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+	l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 	it := newIterAdapter(l.NewIter(nil, nil))
 
 	require.False(t, it.Valid())
@@ -162,7 +162,7 @@ func TestEmpty(t *testing.T) {
 }
 
 func TestFull(t *testing.T) {
-	l := NewSkiplist(newArena(1000), bytes.Compare)
+	l := NewSkiplist(newArena(1000), base.DefaultComparer)
 
 	foundArenaFull := false
 	for i := 0; i < 100; i++ {
@@ -183,7 +183,7 @@ func TestFull(t *testing.T) {
 func TestBasic(t *testing.T) {
 	for _, inserter := range []bool{false, true} {
 		t.Run(fmt.Sprintf("inserter=%t", inserter), func(t *testing.T) {
-			l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+			l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 			it := newIterAdapter(l.NewIter(nil, nil))
 
 			add := l.Add
@@ -254,7 +254,7 @@ func TestConcurrentBasic(t *testing.T) {
 	for _, inserter := range []bool{false, true} {
 		t.Run(fmt.Sprintf("inserter=%t", inserter), func(t *testing.T) {
 			// Set testing flag to make it easier to trigger unusual race conditions.
-			l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+			l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 			l.testing = true
 
 			var wg sync.WaitGroup
@@ -300,7 +300,7 @@ func TestConcurrentOneKey(t *testing.T) {
 	for _, inserter := range []bool{false, true} {
 		t.Run(fmt.Sprintf("inserter=%t", inserter), func(t *testing.T) {
 			// Set testing flag to make it easier to trigger unusual race conditions.
-			l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+			l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 			l.testing = true
 
 			var wg sync.WaitGroup
@@ -354,7 +354,7 @@ func TestConcurrentOneKey(t *testing.T) {
 func TestSkiplistAdd(t *testing.T) {
 	for _, inserter := range []bool{false, true} {
 		t.Run(fmt.Sprintf("inserter=%t", inserter), func(t *testing.T) {
-			l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+			l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 			it := newIterAdapter(l.NewIter(nil, nil))
 
 			add := l.Add
@@ -369,7 +369,7 @@ func TestSkiplistAdd(t *testing.T) {
 			require.EqualValues(t, []byte{}, it.Key().UserKey)
 			require.EqualValues(t, []byte{}, it.Value())
 
-			l = NewSkiplist(newArena(arenaSize), bytes.Compare)
+			l = NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 			it = newIterAdapter(l.NewIter(nil, nil))
 
 			add = l.Add
@@ -431,7 +431,7 @@ func TestConcurrentAdd(t *testing.T) {
 			const n = 100
 
 			// Set testing flag to make it easier to trigger unusual race conditions.
-			l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+			l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 			l.testing = true
 
 			start := make([]sync.WaitGroup, n)
@@ -478,7 +478,7 @@ func TestConcurrentAdd(t *testing.T) {
 // TestIteratorNext tests a basic iteration over all nodes from the beginning.
 func TestIteratorNext(t *testing.T) {
 	const n = 100
-	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+	l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 	it := newIterAdapter(l.NewIter(nil, nil))
 
 	require.False(t, it.Valid())
@@ -503,7 +503,7 @@ func TestIteratorNext(t *testing.T) {
 // TestIteratorPrev tests a basic iteration over all nodes from the end.
 func TestIteratorPrev(t *testing.T) {
 	const n = 100
-	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+	l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 	it := newIterAdapter(l.NewIter(nil, nil))
 
 	require.False(t, it.Valid())
@@ -528,7 +528,7 @@ func TestIteratorPrev(t *testing.T) {
 
 func TestIteratorSeekGEAndSeekPrefixGE(t *testing.T) {
 	const n = 100
-	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+	l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 	it := newIterAdapter(l.NewIter(nil, nil))
 
 	require.False(t, it.Valid())
@@ -654,7 +654,7 @@ func TestIteratorSeekGEAndSeekPrefixGE(t *testing.T) {
 
 func TestIteratorSeekLT(t *testing.T) {
 	const n = 100
-	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+	l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 	it := newIterAdapter(l.NewIter(nil, nil))
 
 	require.False(t, it.Valid())
@@ -705,7 +705,7 @@ func TestIteratorSeekLT(t *testing.T) {
 
 // TODO(peter): test First and Last.
 func TestIteratorBounds(t *testing.T) {
-	l := NewSkiplist(newArena(arenaSize), bytes.Compare)
+	l := NewSkiplist(newArena(arenaSize), base.DefaultComparer)
 	for i := 1; i < 10; i++ {
 		require.NoError(t, l.Add(makeIntKey(i), makeValue(i)))
 	}
@@ -783,7 +783,7 @@ func BenchmarkReadWrite(b *testing.B) {
 	for i := 0; i <= 10; i++ {
 		readFrac := float32(i) / 10.0
 		b.Run(fmt.Sprintf("frac_%d", i*10), func(b *testing.B) {
-			l := NewSkiplist(newArena(uint32((b.N+2)*maxNodeSize)), bytes.Compare)
+			l := NewSkiplist(newArena(uint32((b.N+2)*maxNodeSize)), base.DefaultComparer)
 			b.ResetTimer()
 			var count int
 			b.RunParallel(func(pb *testing.PB) {
@@ -808,7 +808,7 @@ func BenchmarkReadWrite(b *testing.B) {
 }
 
 func BenchmarkOrderedWrite(b *testing.B) {
-	l := NewSkiplist(newArena(8<<20), bytes.Compare)
+	l := NewSkiplist(newArena(8<<20), base.DefaultComparer)
 	var ins Inserter
 	buf := make([]byte, 8)
 
@@ -817,7 +817,7 @@ func BenchmarkOrderedWrite(b *testing.B) {
 		binary.BigEndian.PutUint64(buf, uint64(i))
 		if err := ins.Add(l, base.InternalKey{UserKey: buf}, nil); err == ErrArenaFull {
 			b.StopTimer()
-			l = NewSkiplist(newArena(uint32((b.N+2)*maxNodeSize)), bytes.Compare)
+			l = NewSkiplist(newArena(uint32((b.N+2)*maxNodeSize)), base.DefaultComparer)
 			ins = Inserter{}
 			b.StartTimer()
 		}
@@ -825,7 +825,7 @@ func BenchmarkOrderedWrite(b *testing.B) {
 }
 
 func BenchmarkIterNext(b *testing.B) {
-	l := NewSkiplist(newArena(64<<10), bytes.Compare)
+	l := NewSkiplist(newArena(64<<10), base.DefaultComparer)
 	rng := rand.New(rand.NewSource(uint64(time.Now().UnixNano())))
 	buf := make([]byte, 8)
 	for {
@@ -846,7 +846,7 @@ func BenchmarkIterNext(b *testing.B) {
 }
 
 func BenchmarkIterPrev(b *testing.B) {
-	l := NewSkiplist(newArena(64<<10), bytes.Compare)
+	l := NewSkiplist(newArena(64<<10), base.DefaultComparer)
 	rng := rand.New(rand.NewSource(uint64(time.Now().UnixNano())))
 	buf := make([]byte, 8)
 	for {
@@ -871,7 +871,7 @@ func BenchmarkIterPrev(b *testing.B) {
 // SeekPrefixGE, with different skip distances and different settings of
 // trySeekUsingNext.
 func BenchmarkSeekPrefixGE(b *testing.B) {
-	l := NewSkiplist(newArena(64<<10), bytes.Compare)
+	l := NewSkiplist(newArena(64<<10), base.DefaultComparer)
 	var count int
 	// count was measured to be 1279.
 	for count = 0; ; count++ {

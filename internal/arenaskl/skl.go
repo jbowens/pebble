@@ -75,11 +75,11 @@ var ErrRecordExists = errors.New("record with this key already exists")
 // is up to the user to process these shadow entries and tombstones
 // appropriately during retrieval.
 type Skiplist struct {
-	arena  *Arena
-	cmp    base.Compare
-	head   *node
-	tail   *node
-	height atomic.Uint32 // Current height. 1 <= height <= maxHeight. CAS.
+	arena    *Arena
+	comparer *base.Comparer
+	head     *node
+	tail     *node
+	height   atomic.Uint32 // Current height. 1 <= height <= maxHeight. CAS.
 
 	// If set to true by tests, then extra delays are added to make it easier to
 	// detect unusual race conditions.
@@ -114,14 +114,14 @@ func init() {
 
 // NewSkiplist constructs and initializes a new, empty skiplist. All nodes, keys,
 // and values in the skiplist will be allocated from the given arena.
-func NewSkiplist(arena *Arena, cmp base.Compare) *Skiplist {
+func NewSkiplist(arena *Arena, comparer *base.Comparer) *Skiplist {
 	skl := &Skiplist{}
-	skl.Reset(arena, cmp)
+	skl.Reset(arena, comparer)
 	return skl
 }
 
 // Reset the skiplist to empty and re-initialize.
-func (s *Skiplist) Reset(arena *Arena, cmp base.Compare) {
+func (s *Skiplist) Reset(arena *Arena, comparer *base.Comparer) {
 	// Allocate head and tail nodes.
 	head, err := newRawNode(arena, maxHeight, 0, 0)
 	if err != nil {
@@ -144,10 +144,10 @@ func (s *Skiplist) Reset(arena *Arena, cmp base.Compare) {
 	}
 
 	*s = Skiplist{
-		arena: arena,
-		cmp:   cmp,
-		head:  head,
-		tail:  tail,
+		arena:    arena,
+		comparer: comparer,
+		head:     head,
+		tail:     tail,
 	}
 	s.height.Store(1)
 }
@@ -410,7 +410,7 @@ func (s *Skiplist) findSpliceForLevel(
 
 		offset, size := next.keyOffset, next.keySize
 		nextKey := s.arena.buf[offset : offset+size]
-		cmp := s.cmp(key.UserKey, nextKey)
+		cmp := s.comparer.Compare(key.UserKey, nextKey)
 		if cmp < 0 {
 			// We are done for this level, since prev.key < key < next.key.
 			break
@@ -437,7 +437,7 @@ func (s *Skiplist) findSpliceForLevel(
 
 func (s *Skiplist) keyIsAfterNode(nd *node, key base.InternalKey) bool {
 	ndKey := s.arena.buf[nd.keyOffset : nd.keyOffset+nd.keySize]
-	cmp := s.cmp(ndKey, key.UserKey)
+	cmp := s.comparer.Compare(ndKey, key.UserKey)
 	if cmp < 0 {
 		return true
 	}

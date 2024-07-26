@@ -2075,7 +2075,7 @@ func TestIngestMemtableOverlaps(t *testing.T) {
 					largest = InternalKey{UserKey: []byte(parts[1])}
 				}
 				// If we're using a reverse comparer, flip the file bounds.
-				if mem.cmp(smallest.UserKey, largest.UserKey) > 0 {
+				if mem.comparer.Compare(smallest.UserKey, largest.UserKey) > 0 {
 					smallest, largest = largest, smallest
 				}
 				meta.ExtendPointKeyBounds(comparer.Compare, smallest, largest)

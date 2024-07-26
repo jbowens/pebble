@@ -96,7 +96,7 @@ func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 			// Iterator is done.
 			return nil
 		}
-		less := it.list.cmp(it.kv.K.UserKey, key) < 0
+		less := it.list.comparer.Compare(it.kv.K.UserKey, key) < 0
 		// Arbitrary constant. By measuring the seek cost as a function of the
 		// number of elements in the skip list, and fitting to a model, we
 		// could adjust the number of nexts based on the current size of the
@@ -108,7 +108,7 @@ func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 				// Iterator is done.
 				return nil
 			}
-			less = it.list.cmp(kv.K.UserKey, key) < 0
+			less = it.list.comparer.Compare(kv.K.UserKey, key) < 0
 		}
 		if !less {
 			return kv
@@ -119,7 +119,7 @@ func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 		return nil
 	}
 	it.decodeKey()
-	if it.upper != nil && it.list.cmp(it.upper, it.kv.K.UserKey) <= 0 {
+	if it.upper != nil && it.list.comparer.Compare(it.upper, it.kv.K.UserKey) <= 0 {
 		it.upperNode = it.nd
 		return nil
 	}
@@ -147,7 +147,7 @@ func (it *Iterator) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV 
 		return nil
 	}
 	it.decodeKey()
-	if it.lower != nil && it.list.cmp(it.lower, it.kv.K.UserKey) > 0 {
+	if it.lower != nil && it.list.comparer.Compare(it.lower, it.kv.K.UserKey) > 0 {
 		it.lowerNode = it.nd
 		return nil
 	}
@@ -165,7 +165,7 @@ func (it *Iterator) First() *base.InternalKV {
 		return nil
 	}
 	it.decodeKey()
-	if it.upper != nil && it.list.cmp(it.upper, it.kv.K.UserKey) <= 0 {
+	if it.upper != nil && it.list.comparer.Compare(it.upper, it.kv.K.UserKey) <= 0 {
 		it.upperNode = it.nd
 		return nil
 	}
@@ -183,7 +183,7 @@ func (it *Iterator) Last() *base.InternalKV {
 		return nil
 	}
 	it.decodeKey()
-	if it.lower != nil && it.list.cmp(it.lower, it.kv.K.UserKey) > 0 {
+	if it.lower != nil && it.list.comparer.Compare(it.lower, it.kv.K.UserKey) > 0 {
 		it.lowerNode = it.nd
 		return nil
 	}
@@ -201,7 +201,7 @@ func (it *Iterator) Next() *base.InternalKV {
 		return nil
 	}
 	it.decodeKey()
-	if it.upper != nil && it.list.cmp(it.upper, it.kv.K.UserKey) <= 0 {
+	if it.upper != nil && it.list.comparer.Compare(it.upper, it.kv.K.UserKey) <= 0 {
 		it.upperNode = it.nd
 		return nil
 	}
@@ -223,7 +223,7 @@ func (it *Iterator) Prev() *base.InternalKV {
 		return nil
 	}
 	it.decodeKey()
-	if it.lower != nil && it.list.cmp(it.lower, it.kv.K.UserKey) > 0 {
+	if it.lower != nil && it.list.comparer.Compare(it.lower, it.kv.K.UserKey) > 0 {
 		it.lowerNode = it.nd
 		return nil
 	}

@@ -5,7 +5,6 @@
 package pebble
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"sync"
@@ -31,9 +30,9 @@ var memTableEmptySize = func() uint32 {
 	var rangeDelSkl arenaskl.Skiplist
 	var rangeKeySkl arenaskl.Skiplist
 	arena := arenaskl.NewArena(make([]byte, 16<<10 /* 16 KB */))
-	pointSkl.Reset(arena, bytes.Compare)
-	rangeDelSkl.Reset(arena, bytes.Compare)
-	rangeKeySkl.Reset(arena, bytes.Compare)
+	pointSkl.Reset(arena, base.DefaultComparer)
+	rangeDelSkl.Reset(arena, base.DefaultComparer)
+	rangeKeySkl.Reset(arena, base.DefaultComparer)
 	return arena.Size()
 }()
 
@@ -63,9 +62,7 @@ var memTableEmptySize = func() uint32 {
 //
 // It is safe to call get, apply, newIter, and newRangeDelIter concurrently.
 type memTable struct {
-	cmp         Compare
-	formatKey   base.FormatKey
-	equal       Equal
+	comparer    *Comparer
 	arenaBuf    []byte
 	skl         arenaskl.Skiplist
 	rangeDelSkl arenaskl.Skiplist
@@ -130,23 +127,21 @@ func (m *memTable) init(opts memTableOptions) {
 		opts.size = int(opts.MemTableSize)
 	}
 	*m = memTable{
-		cmp:                          opts.Comparer.Compare,
-		formatKey:                    opts.Comparer.FormatKey,
-		equal:                        opts.Comparer.Equal,
+		comparer:                     opts.Comparer,
 		arenaBuf:                     opts.arenaBuf,
 		logSeqNum:                    opts.logSeqNum,
 		releaseAccountingReservation: opts.releaseAccountingReservation,
 	}
 	m.writerRefs.Store(1)
 	m.tombstones = keySpanCache{
-		cmp:           m.cmp,
-		formatKey:     m.formatKey,
+		cmp:           m.comparer.Compare,
+		formatKey:     m.comparer.FormatKey,
 		skl:           &m.rangeDelSkl,
 		constructSpan: rangeDelConstructSpan,
 	}
 	m.rangeKeys = keySpanCache{
-		cmp:           m.cmp,
-		formatKey:     m.formatKey,
+		cmp:           m.comparer.Compare,
+		formatKey:     m.comparer.FormatKey,
 		skl:           &m.rangeKeySkl,
 		constructSpan: rangekey.Decode,
 	}
@@ -156,9 +151,9 @@ func (m *memTable) init(opts memTableOptions) {
 	}
 
 	arena := arenaskl.NewArena(m.arenaBuf)
-	m.skl.Reset(arena, m.cmp)
-	m.rangeDelSkl.Reset(arena, m.cmp)
-	m.rangeKeySkl.Reset(arena, m.cmp)
+	m.skl.Reset(arena, m.comparer)
+	m.rangeDelSkl.Reset(arena, m.comparer)
+	m.rangeKeySkl.Reset(arena, m.comparer)
 	m.reserved = arena.Size()
 }
 
@@ -270,7 +265,7 @@ func (m *memTable) newRangeDelIter(*IterOptions) keyspan.FragmentIterator {
 	if tombstones == nil {
 		return nil
 	}
-	return keyspan.NewIter(m.cmp, tombstones)
+	return keyspan.NewIter(m.comparer.Compare, tombstones)
 }
 
 // newRangeKeyIter is part of the flushable interface.
@@ -279,7 +274,7 @@ func (m *memTable) newRangeKeyIter(*IterOptions) keyspan.FragmentIterator {
 	if rangeKeys == nil {
 		return nil
 	}
-	return keyspan.NewIter(m.cmp, rangeKeys)
+	return keyspan.NewIter(m.comparer.Compare, rangeKeys)
 }
 
 // containsRangeKeys is part of the flushable interface.
@@ -321,7 +316,7 @@ func (m *memTable) empty() bool {
 
 // computePossibleOverlaps is part of the flushable interface.
 func (m *memTable) computePossibleOverlaps(fn func(bounded) shouldContinue, bounded ...bounded) {
-	computePossibleOverlapsGenericImpl[*memTable](m, m.cmp, fn, bounded)
+	computePossibleOverlapsGenericImpl[*memTable](m, m.comparer.Compare, fn, bounded)
 }
 
 // A keySpanFrags holds a set of fragmented keyspan.Spans with a particular key
