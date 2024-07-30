@@ -342,17 +342,19 @@ func (i *KeyspanIter) gatherKeysForward(startBoundIndex int) *keyspan.Span {
 	if i.startBoundIndex >= int(i.r.boundaryKeysCount)-1 {
 		return nil
 	}
-	if !i.isNonemptySpan(i.startBoundIndex) {
+	ki := i.getKeyIndices(i.startBoundIndex)
+	if !ki.isNonEmpty() {
 		if i.startBoundIndex == int(i.r.boundaryKeysCount)-2 {
 			// Corruption error
 			panic(base.CorruptionErrorf("keyspan block has empty span at end"))
 		}
 		i.startBoundIndex++
-		if !i.isNonemptySpan(i.startBoundIndex) {
+		ki = i.getKeyIndices(i.startBoundIndex)
+		if !ki.isNonEmpty() {
 			panic(base.CorruptionErrorf("keyspan block has consecutive empty spans"))
 		}
 	}
-	return i.materializeSpan()
+	return i.materializeSpan(ki)
 }
 
 // gatherKeysBackward returns the first non-empty Span in the backward direction,
@@ -367,37 +369,48 @@ func (i *KeyspanIter) gatherKeysBackward(startBoundIndex int) *keyspan.Span {
 		panic(errors.AssertionFailedf("out of bounds: i.startBoundIndex=%d, i.r.boundaryKeysCount=%d",
 			i.startBoundIndex, i.r.boundaryKeysCount))
 	}
-	if !i.isNonemptySpan(i.startBoundIndex) {
+	ki := i.getKeyIndices(i.startBoundIndex)
+	if !ki.isNonEmpty() {
 		if i.startBoundIndex == 0 {
 			// Corruption error
 			panic(base.CorruptionErrorf("keyspan block has empty span at beginning"))
 		}
 		i.startBoundIndex--
-		if !i.isNonemptySpan(i.startBoundIndex) {
+		ki = i.getKeyIndices(i.startBoundIndex)
+		if !ki.isNonEmpty() {
 			panic(base.CorruptionErrorf("keyspan block has consecutive empty spans"))
 		}
 	}
-	return i.materializeSpan()
+	return i.materializeSpan(ki)
 }
 
-func (i *KeyspanIter) isNonemptySpan(startBoundIndex int) bool {
-	return i.r.boundaryKeyIndices.At(startBoundIndex) < i.r.boundaryKeyIndices.At(startBoundIndex+1)
+type keyIndices struct {
+	start, end uint32
+}
+
+func (ki keyIndices) isNonEmpty() bool {
+	return ki.start < ki.end
+}
+
+func (i *KeyspanIter) getKeyIndices(startBoundIndex int) keyIndices {
+	return keyIndices{
+		start: i.r.boundaryKeyIndices.At(startBoundIndex),
+		end:   i.r.boundaryKeyIndices.At(startBoundIndex + 1),
+	}
 }
 
 // materializeSpan constructs the current span from i.startBoundIndex and
 // i.{start,end}KeyIndex.
-func (i *KeyspanIter) materializeSpan() *keyspan.Span {
+func (i *KeyspanIter) materializeSpan(ki keyIndices) *keyspan.Span {
 	i.span = keyspan.Span{
 		Start: i.r.boundaryKeys.At(i.startBoundIndex),
 		End:   i.r.boundaryKeys.At(i.startBoundIndex + 1),
 		Keys:  i.span.Keys[:0],
 	}
-	startIndex := i.r.boundaryKeyIndices.At(i.startBoundIndex)
-	endIndex := i.r.boundaryKeyIndices.At(i.startBoundIndex + 1)
-	if cap(i.span.Keys) < int(endIndex-startIndex) {
-		i.span.Keys = make([]keyspan.Key, 0, int(endIndex-startIndex))
+	if cap(i.span.Keys) < int(ki.end-ki.start) {
+		i.span.Keys = make([]keyspan.Key, 0, int(ki.end-ki.start))
 	}
-	for j := startIndex; j < endIndex; j++ {
+	for j := ki.start; j < ki.end; j++ {
 		i.span.Keys = append(i.span.Keys, keyspan.Key{
 			Trailer: base.InternalKeyTrailer(i.r.trailers.At(int(j))),
 			Suffix:  i.r.suffixes.At(int(j)),
