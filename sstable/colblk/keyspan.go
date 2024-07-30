@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
@@ -230,6 +229,8 @@ func (r *KeyspanReader) DebugString() string {
 	return f.String()
 }
 
+// searchBoundaryKeys returns the index of the first boundary key greater than
+// or equal to key and whether or not the key was found exactly.
 func (r *KeyspanReader) searchBoundaryKeys(cmp base.Compare, key []byte) (index int, equal bool) {
 	i, j := 0, int(r.boundaryKeysCount)
 	for i < j {
@@ -240,10 +241,9 @@ func (r *KeyspanReader) searchBoundaryKeys(cmp base.Compare, key []byte) (index 
 			i = h + 1
 		case 0:
 			return h, true
-		case -1:
-			j = h
 		default:
-			panic("unreachable")
+			// -1
+			j = h
 		}
 	}
 	return i, false
@@ -260,12 +260,7 @@ type KeyspanIter struct {
 	// and the current span's end key is the user key at
 	//   i.r.userKeys.At(i.startBoundIndex+1)
 	startBoundIndex int
-	// When positioned, the current span's keys are the keys at indices
-	// [startKeyIndex, endKeyIndex). When positioned, endKeyIndex >=
-	// startKeyIndex.
-	startKeyIndex uint32
-	endKeyIndex   uint32
-	keyBuf        [2]keyspan.Key
+	keyBuf          [2]keyspan.Key
 }
 
 // Assert that KeyspanIter implements the FragmentIterator interface.
@@ -278,8 +273,6 @@ func (i *KeyspanIter) Init(cmp base.Compare, r *KeyspanReader) {
 	i.cmp = cmp
 	i.span.Start, i.span.End = nil, nil
 	i.startBoundIndex = -1
-	i.startKeyIndex = math.MaxUint32
-	i.endKeyIndex = math.MaxUint32
 	if i.span.Keys == nil {
 		i.span.Keys = i.keyBuf[:0]
 	}
@@ -292,8 +285,8 @@ func (i *KeyspanIter) SeekGE(key []byte) (*keyspan.Span, error) {
 	// Seek among the boundary keys.
 	j, eq := i.r.searchBoundaryKeys(i.cmp, key)
 	// If the found boundary key does not exactly equal the given key, it's
-	// strictly greater than key. We need to back up one consider the span that
-	// ends at the this boundary key.
+	// strictly greater than key. We need to back up one to consider the span
+	// that ends at the this boundary key.
 	if !eq {
 		j = max(j-1, 0)
 	}
@@ -312,7 +305,7 @@ func (i *KeyspanIter) SeekLT(key []byte) (*keyspan.Span, error) {
 	if eq {
 		j--
 	}
-	// If all boundries are less than [key], or only the last boundary is
+	// If all boundaries are less than [key], or only the last boundary is
 	// greater than the key, then we want the last span so we clamp the index to
 	// the second to last boundary.
 	return i.gatherKeysBackward(min(j, int(i.r.boundaryKeysCount)-2)), nil
@@ -342,45 +335,24 @@ func (i *KeyspanIter) Prev() (*keyspan.Span, error) {
 // starting with the span formed by using the boundary key at index
 // [startBoundIndex] as the span's start boundary.
 func (i *KeyspanIter) gatherKeysForward(startBoundIndex int) *keyspan.Span {
-	numRows := i.r.blockReader.header.Rows
-
+	if invariants.Enabled && startBoundIndex < 0 {
+		panic(errors.AssertionFailedf("out of bounds: i.startBoundIndex=%d", startBoundIndex))
+	}
 	i.startBoundIndex = startBoundIndex
 	if i.startBoundIndex >= int(i.r.boundaryKeysCount)-1 {
-		i.startKeyIndex = numRows
-		i.endKeyIndex = numRows
 		return nil
 	}
-	if invariants.Enabled && i.startBoundIndex < 0 {
-		panic(errors.AssertionFailedf("out of bounds: i.startBoundIndex=%d", i.startBoundIndex))
-	}
-
-	// i.startBoundIndex is the index of the first user key >= key. Find the
-	// keys that exist between the user key at index i.startBoundIndex and the
-	// user key at index i.startBoundIndex+1. There may be none if there are two
-	// non-abutting spans that we seeked between.
-	i.startKeyIndex = i.r.boundaryKeyIndices.At(i.startBoundIndex)
-	i.endKeyIndex = i.startKeyIndex
-	for i.startKeyIndex < numRows {
-		// The set of keyspan.Keys with the bounds between
-		//   [i.r.userKeys.At(i.startBoundIndex), i.r.userKeys.At(i.startBoundIndex+1))
-		// is the keys between the indices
-		//   [i.r.startIndices.At(i.startBoundIndex), i.r.startIndices.At(i.startBoundIndex+1))
-		//
-		// If the bounds' associated start indices are equal, then there are no
-		// Keys that exist between the two bounds, and we should progress to the
-		// next set of bounds.
-		i.endKeyIndex = i.r.boundaryKeyIndices.At(i.startBoundIndex + 1)
-		if i.endKeyIndex > i.startKeyIndex {
-			return i.materializeSpan()
+	if !i.isNonemptySpan(i.startBoundIndex) {
+		if i.startBoundIndex == int(i.r.boundaryKeysCount)-2 {
+			// Corruption error
+			panic(base.CorruptionErrorf("keyspan block has empty span at end"))
 		}
 		i.startBoundIndex++
-		i.startKeyIndex = i.endKeyIndex
-		// Advance to considering the span starting at the previous end
-		// bound.
+		if !i.isNonemptySpan(i.startBoundIndex) {
+			panic(base.CorruptionErrorf("keyspan block has consecutive empty spans"))
+		}
 	}
-	i.startKeyIndex = numRows
-	i.endKeyIndex = numRows
-	return nil
+	return i.materializeSpan()
 }
 
 // gatherKeysBackward returns the first non-empty Span in the backward direction,
@@ -389,37 +361,27 @@ func (i *KeyspanIter) gatherKeysForward(startBoundIndex int) *keyspan.Span {
 func (i *KeyspanIter) gatherKeysBackward(startBoundIndex int) *keyspan.Span {
 	i.startBoundIndex = startBoundIndex
 	if i.startBoundIndex < 0 {
-		i.startKeyIndex = 0
-		i.endKeyIndex = 0
 		return nil
 	}
 	if invariants.Enabled && i.startBoundIndex >= int(i.r.boundaryKeysCount)-1 {
 		panic(errors.AssertionFailedf("out of bounds: i.startBoundIndex=%d, i.r.boundaryKeysCount=%d",
 			i.startBoundIndex, i.r.boundaryKeysCount))
 	}
-
-	i.endKeyIndex = i.r.boundaryKeyIndices.At(i.startBoundIndex + 1)
-	for i.endKeyIndex > 0 {
-		// The set of keyspan.Keys with the bounds between
-		//   [i.r.userKeys.At(i.startBoundIndex), i.r.userKeys.At(i.startBoundIndex+1))
-		// is the keys between the indices
-		//   [i.r.startIndices.At(i.startBoundIndex), i.r.startIndices.At(i.startBoundIndex+1))
-		//
-		// If the bounds' associated start indices are equal, then there are no
-		// Keys that exist between the two bounds, and we should progress to the
-		// next set of bounds.
-		i.startKeyIndex = i.r.boundaryKeyIndices.At(i.startBoundIndex)
-		if i.endKeyIndex > i.startKeyIndex {
-			return i.materializeSpan()
+	if !i.isNonemptySpan(i.startBoundIndex) {
+		if i.startBoundIndex == 0 {
+			// Corruption error
+			panic(base.CorruptionErrorf("keyspan block has empty span at beginning"))
 		}
 		i.startBoundIndex--
-		i.endKeyIndex = i.startKeyIndex
-		// Advance to considering the span starting at the previous end
-		// bound.
+		if !i.isNonemptySpan(i.startBoundIndex) {
+			panic(base.CorruptionErrorf("keyspan block has consecutive empty spans"))
+		}
 	}
-	i.startKeyIndex = 0
-	i.endKeyIndex = 0
-	return nil
+	return i.materializeSpan()
+}
+
+func (i *KeyspanIter) isNonemptySpan(startBoundIndex int) bool {
+	return i.r.boundaryKeyIndices.At(startBoundIndex) < i.r.boundaryKeyIndices.At(startBoundIndex+1)
 }
 
 // materializeSpan constructs the current span from i.startBoundIndex and
@@ -430,10 +392,12 @@ func (i *KeyspanIter) materializeSpan() *keyspan.Span {
 		End:   i.r.boundaryKeys.At(i.startBoundIndex + 1),
 		Keys:  i.span.Keys[:0],
 	}
-	if cap(i.span.Keys) < int(i.endKeyIndex-i.startKeyIndex) {
-		i.span.Keys = make([]keyspan.Key, 0, int(i.endKeyIndex-i.startKeyIndex))
+	startIndex := i.r.boundaryKeyIndices.At(i.startBoundIndex)
+	endIndex := i.r.boundaryKeyIndices.At(i.startBoundIndex + 1)
+	if cap(i.span.Keys) < int(endIndex-startIndex) {
+		i.span.Keys = make([]keyspan.Key, 0, int(endIndex-startIndex))
 	}
-	for j := i.startKeyIndex; j < i.endKeyIndex; j++ {
+	for j := startIndex; j < endIndex; j++ {
 		i.span.Keys = append(i.span.Keys, keyspan.Key{
 			Trailer: base.InternalKeyTrailer(i.r.trailers.At(int(j))),
 			Suffix:  i.r.suffixes.At(int(j)),
