@@ -317,18 +317,18 @@ func (ks *defaultKeySeeker) seekGEOnSuffix(index int, suffix []byte) (row int) {
 	return l
 }
 
-func (ks *defaultKeySeeker) MaterializeUserKey(buf []byte, row int) []byte {
+func (ks *defaultKeySeeker) MaterializeUserKey(dst []byte, row int) []byte {
 	// Retrieve the various components of the user key.
 	bundlePrefix := ks.prefixes.RowBundlePrefix(row)
 	rowSuffix := ks.prefixes.RowSuffix(row)
 	suffix := ks.suffixes.At(row)
 	// Ensure buf has sufficient capacity.
-	buf = slices.Grow(buf[:0], len(ks.sharedPrefix)+len(bundlePrefix)+len(rowSuffix)+len(suffix))
-	buf = append(buf, ks.sharedPrefix...)
-	buf = append(buf, bundlePrefix...)
-	buf = append(buf, rowSuffix...)
-	buf = append(buf, suffix...)
-	return buf
+	dst = slices.Grow(dst, len(ks.sharedPrefix)+len(bundlePrefix)+len(rowSuffix)+len(suffix))
+	dst = append(dst, ks.sharedPrefix...)
+	dst = append(dst, bundlePrefix...)
+	dst = append(dst, rowSuffix...)
+	dst = append(dst, suffix...)
+	return dst
 }
 
 func (ks *defaultKeySeeker) Release() {
@@ -695,7 +695,7 @@ func (i *DataBlockIter) decodeRow(row int) *base.InternalKV {
 		i.row = row
 		i.kv = base.InternalKV{
 			K: base.InternalKey{
-				UserKey: i.keySeeker.MaterializeUserKey(i.kv.K.UserKey[:cap(i.kv.K.UserKey)], row),
+				UserKey: i.keySeeker.MaterializeUserKey(i.kv.K.UserKey[:0], row),
 				Trailer: base.InternalKeyTrailer(i.r.trailers.At(row)),
 			},
 		}

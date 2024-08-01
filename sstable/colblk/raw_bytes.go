@@ -112,6 +112,12 @@ func (b RawBytes) At(i int) []byte {
 	return b.slice(b.offsets.At(i), b.offsets.At(i+1))
 }
 
+// SliceLen returns the length of the []byte at index i without actually
+// retrieving the slice.
+func (b RawBytes) SliceLen(i int) int {
+	return int(b.offsets.At(i+1) - b.offsets.At(i))
+}
+
 // Slices returns the number of []byte slices encoded within the RawBytes.
 func (b *RawBytes) Slices() int {
 	return b.slices
