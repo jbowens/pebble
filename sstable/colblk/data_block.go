@@ -8,9 +8,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"slices"
 	"sync"
 	"unsafe"
 
@@ -107,8 +107,11 @@ type KeySeeker interface {
 	// may be set in practice.
 	SeekGE(key []byte, boundRow int, searchDir int8) (row int)
 	// MaterializeUserKey materializes the user key of the specified row.
-	// Implementations may use the memory of buf to avoid an allocation.
-	MaterializeUserKey(buf []byte, row int) []byte
+	// Implementations may use the memory of buf to avoid an allocation. The buf
+	// is guaranteed to contain the the bufRow'th row, if bufRow >= 0.
+	// Implementations may take advantage of this to avoid materializing shared
+	// portions of the user key.
+	MaterializeUserKey(pi *PrefixBytesIter, bufRow, row int) []byte
 	// Release releases the KeySeeker. It's called when the seeker is no longer
 	// in use. Implementations may pool KeySeeker objects.
 	Release()
@@ -317,24 +320,19 @@ func (ks *defaultKeySeeker) seekGEOnSuffix(index int, suffix []byte) (row int) {
 	return l
 }
 
-func (ks *defaultKeySeeker) MaterializeUserKey(dst []byte, row int) []byte {
-	// Retrieve the various components of the user key.
-	bundlePrefix := ks.prefixes.RowBundlePrefix(row)
-	rowSuffix := ks.prefixes.RowSuffix(row)
-	suffix := ks.suffixes.At(row)
-	// Ensure buf has sufficient capacity.
-	dst = slices.Grow(dst, len(ks.sharedPrefix)+len(bundlePrefix)+len(rowSuffix)+len(suffix))
-	dst = append(dst, ks.sharedPrefix...)
-	dst = append(dst, bundlePrefix...)
-	dst = append(dst, rowSuffix...)
-	dst = append(dst, suffix...)
-	return dst
+func (ks *defaultKeySeeker) MaterializeUserKey(ki *PrefixBytesIter, bufRow, row int) []byte {
+	// TODO(jackson): Make use of bufRow.
+	ks.prefixes.SetAt(ki, row)
+	ki.Append(ks.suffixes.At(row))
+	return ki.UnsafeSlice()
 }
 
 func (ks *defaultKeySeeker) Release() {
 	*ks = defaultKeySeeker{}
 	defaultKeySeekerPool.Put(ks)
 }
+
+const dataBlockCustomHeaderSize = 4
 
 // DataBlockWriter writes columnar data blocks, encoding keys using a
 // user-defined schema.
@@ -356,6 +354,7 @@ type DataBlockWriter struct {
 	// that indicates when a value is stored out-of-band in a value block.
 	isValueExternal BitmapBuilder
 
+	longestKeyLen  int
 	enc            blockEncoder
 	rows           int
 	valuePrefixTmp [1]byte
@@ -379,6 +378,7 @@ func (w *DataBlockWriter) Init(schema KeySchema) {
 	w.prefixSame.Reset()
 	w.values.Init()
 	w.isValueExternal.Reset()
+	w.longestKeyLen = 0
 	w.rows = 0
 }
 
@@ -389,6 +389,7 @@ func (w *DataBlockWriter) Reset() {
 	w.prefixSame.Reset()
 	w.values.Reset()
 	w.isValueExternal.Reset()
+	w.longestKeyLen = 0
 	w.rows = 0
 	w.enc.reset()
 }
@@ -446,6 +447,9 @@ func (w *DataBlockWriter) Add(
 		w.values.Put(value)
 	}
 	w.rows++
+	if len(ikey.UserKey) > w.longestKeyLen {
+		w.longestKeyLen = len(ikey.UserKey)
+	}
 }
 
 // Rows returns the number of rows in the current pending data block.
@@ -455,7 +459,7 @@ func (w *DataBlockWriter) Rows() int {
 
 // Size returns the size of the current pending data block.
 func (w *DataBlockWriter) Size() int {
-	off := blockHeaderSize(len(w.Schema.ColumnTypes)+dataBlockColumnMax, 0)
+	off := blockHeaderSize(len(w.Schema.ColumnTypes)+dataBlockColumnMax, dataBlockCustomHeaderSize)
 	off = w.KeyWriter.Size(w.rows, off)
 	off = w.trailers.Size(w.rows, off)
 	off = w.prefixSame.Size(w.rows, off)
@@ -473,7 +477,10 @@ func (w *DataBlockWriter) Finish() []byte {
 		Columns: uint16(cols),
 		Rows:    uint32(w.rows),
 	}
-	w.enc.init(w.Size(), h, 0)
+	w.enc.init(w.Size(), h, dataBlockCustomHeaderSize)
+
+	// The keyspan block has a 4-byte custom header used to encode the longest key length.
+	binary.LittleEndian.PutUint32(w.enc.data()[:dataBlockCustomHeaderSize], uint32(w.longestKeyLen))
 
 	// Write the user-defined key columns.
 	w.enc.encode(w.rows, w.KeyWriter)
@@ -517,6 +524,7 @@ type DataBlockReader struct {
 	// true, the value contains a ValuePrefix byte followed by an encoded value
 	// handle indicating the value's location within the value block(s).
 	isValueExternal Bitmap
+	longestKeyLen   uint32
 }
 
 // BlockReader returns a pointer to the underlying BlockReader.
@@ -526,7 +534,8 @@ func (r *DataBlockReader) BlockReader() *BlockReader {
 
 // Init initializes the data block reader with the given serialized data block.
 func (r *DataBlockReader) Init(schema KeySchema, data []byte) {
-	r.r.Init(data, 0)
+	r.longestKeyLen = binary.LittleEndian.Uint32(data[:dataBlockCustomHeaderSize])
+	r.r.Init(data, dataBlockCustomHeaderSize)
 	r.trailers = r.r.Uint64s(len(schema.ColumnTypes) + dataBlockColumnTrailer)
 	r.prefixChanged = r.r.Bitmap(len(schema.ColumnTypes) + dataBlockColumnPrefixChanged)
 	r.values = r.r.RawBytes(len(schema.ColumnTypes) + dataBlockColumnValue)
@@ -548,8 +557,11 @@ type DataBlockIter struct {
 	getLazyValue func([]byte) base.LazyValue
 
 	// state
-	row int
-	kv  base.InternalKV
+	row        int
+	prefixIter PrefixBytesIter
+
+	kv    base.InternalKV
+	kvRow int
 }
 
 var _ base.InternalIterator = (*DataBlockIter)(nil)
@@ -565,7 +577,9 @@ func (i *DataBlockIter) Init(
 		getLazyValue: getLazyValue,
 		row:          -1,
 		kv:           base.InternalKV{},
+		kvRow:        -1,
 	}
+	i.prefixIter.Grow(int(r.longestKeyLen))
 	return i.keySeeker.Init(r)
 }
 
@@ -682,29 +696,30 @@ func (i *DataBlockIter) decodeRow(row int) *base.InternalKV {
 	switch {
 	case row < 0:
 		i.row = -1
-		i.kv = base.InternalKV{}
 		return nil
-	case row >= i.r.BlockReader().Rows():
-		i.row = i.r.BlockReader().Rows()
-		i.kv = base.InternalKV{}
+	case row >= int(i.r.r.header.Rows):
+		i.row = int(i.r.r.header.Rows)
 		return nil
-	case i.row == row:
-		// Already positioned at row.
+	case i.kvRow == row:
+		// i.kv already holds the KV at row.
+		i.row = row
 		return &i.kv
 	default:
-		i.row = row
-		i.kv = base.InternalKV{
-			K: base.InternalKey{
-				UserKey: i.keySeeker.MaterializeUserKey(i.kv.K.UserKey[:0], row),
-				Trailer: base.InternalKeyTrailer(i.r.trailers.At(row)),
-			},
+		i.keySeeker.MaterializeUserKey(&i.prefixIter, i.kvRow, row)
+		i.kv.K = base.InternalKey{
+			UserKey: i.prefixIter.UnsafeSlice(),
+			Trailer: base.InternalKeyTrailer(i.r.trailers.At(row)),
 		}
 		if i.r.isValueExternal.At(row) {
 			i.kv.V = i.getLazyValue(i.r.values.At(row))
 		} else {
-			// TODO(peter): Does manually inlining Bytes.At help?
-			i.kv.V = base.MakeInPlaceValue(i.r.values.At(i.row))
+			// Inline i.r.values.At(row).
+			startOffset := i.r.values.offsets.At(row)
+			v := unsafe.Slice((*byte)(i.r.values.ptr(startOffset)), i.r.values.offsets.At(row+1)-startOffset)
+			i.kv.V = base.MakeInPlaceValue(v)
 		}
+		i.kvRow = row
+		i.row = row
 		return &i.kv
 	}
 }

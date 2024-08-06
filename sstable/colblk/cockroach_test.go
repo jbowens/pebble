@@ -10,10 +10,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"slices"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/crdbtest"
@@ -258,38 +258,34 @@ func (ks *cockroachKeySeeker) seekGEOnSuffix(index int, seekSuffix []byte) (row 
 	return l
 }
 
-func (ks *cockroachKeySeeker) MaterializeUserKey(dst []byte, row int) []byte {
-	// Retrieve the various components of the prefix.
-	bundlePrefix := ks.prefixes.RowBundlePrefix(row)
-	rowSuffix := ks.prefixes.RowSuffix(row)
-	prefixLen := len(ks.sharedPrefix) + len(bundlePrefix) + len(rowSuffix)
-	dst = slices.Grow(dst, prefixLen+crdbtest.MaxSuffixLen)[:prefixLen]
-	pos := copy(dst, ks.sharedPrefix)
-	pos += copy(dst[pos:], bundlePrefix)
-	pos += copy(dst[pos:], rowSuffix)
+func (ks *cockroachKeySeeker) MaterializeUserKey(ki *PrefixBytesIter, bufRow, row int) []byte {
+	if bufRow+1 == row && bufRow >= 0 {
+		ks.prefixes.SetNext(ki)
+	} else {
+		ks.prefixes.SetAt(ki, row)
+	}
 
 	mvccWall := ks.mvccWallTimes.At(row)
 	mvccLogical := ks.mvccLogical.At(row)
 	if mvccWall == 0 && mvccLogical == 0 {
 		// This is not an MVCC key. Use the untyped suffix.
-		return append(dst, ks.untypedSuffixes.At(row)...)
+		ki.Append(ks.untypedSuffixes.At(row))
+		return ki.UnsafeSlice()
 	}
 
 	// This is an MVCC key.
 	if mvccLogical == 0 {
-		dst = dst[:pos+1+8+1]
-		dst[pos] = 0 // sentinel byte
-		dst[pos+1+8] = 9
-		binary.BigEndian.PutUint64(dst[pos+1:], mvccWall)
-		return dst
+		l := ki.buf.len
+		ki.buf.len += 9
+		binary.BigEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(l))), 8), mvccWall)
+		*(*byte)(unsafe.Pointer(uintptr(ki.buf.ptr) + uintptr(ki.buf.len-1))) = 9
 	}
-
-	dst = dst[:pos+1+12+1]
-	dst[pos] = 0 // sentinel byte
-	dst[pos+1+8+4] = 13
-	binary.BigEndian.PutUint64(dst[pos+1:], mvccWall)
-	binary.BigEndian.PutUint32(dst[pos+1+8:], mvccLogical)
-	return dst
+	l := ki.buf.len
+	ki.buf.len += 13
+	binary.BigEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(l))), 8), mvccWall)
+	binary.BigEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(l+8))), 4), mvccLogical)
+	*(*byte)(unsafe.Pointer(uintptr(ki.buf.ptr) + uintptr(ki.buf.len-1))) = 13
+	return ki.UnsafeSlice()
 }
 
 func (ks *cockroachKeySeeker) Release() {
@@ -330,7 +326,7 @@ func TestCockroachDataBlock(t *testing.T) {
 		i := 0
 		for kv := it.First(); kv != nil; i, kv = i+1, it.Next() {
 			if !bytes.Equal(kv.K.UserKey, keys[i]) {
-				t.Fatalf("expected %q, but found %q", keys[i], kv.K)
+				t.Fatalf("expected %q, but found %q", keys[i], kv.K.UserKey)
 			}
 			if !bytes.Equal(kv.V.InPlaceValue(), values[i]) {
 				t.Fatalf("expected %x, but found %x", values[i], kv.V.InPlaceValue())

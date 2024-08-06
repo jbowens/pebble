@@ -253,6 +253,21 @@ type PrefixBytesIter struct {
 	nextBundleOffsetIndex int
 }
 
+func (it *PrefixBytesIter) Append(b []byte) {
+	it.buf.len += len(b)
+	memmove(unsafe.Pointer(uintptr(it.buf.ptr)+uintptr(it.buf.len-len(b))), unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)))
+}
+
+func (it *PrefixBytesIter) Grow(n int) {
+	it.buf.len += n
+	if it.buf.len > it.buf.cap {
+		it.buf.cap = it.buf.len << 1
+		prevPtr := it.buf.ptr
+		it.buf.ptr = mallocgc(uintptr(it.buf.cap), nil, false)
+		memmove(it.buf.ptr, prevPtr, uintptr(it.buf.len-n))
+	}
+}
+
 // UnsafeSlice returns the current []byte slice held by the PrefixBytesIter.
 func (it *PrefixBytesIter) UnsafeSlice() []byte {
 	return unsafe.Slice((*byte)(it.buf.ptr), it.buf.len)
@@ -272,10 +287,6 @@ func (b *PrefixBytes) SetAt(it *PrefixBytesIter, i int) {
 
 	// Grow the size of the iterator's buffer if necessary.
 	it.buf.len = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
-	if it.buf.len > it.buf.cap {
-		it.buf.cap = it.buf.len << 1
-		it.buf.ptr = mallocgc(uintptr(it.buf.cap), nil, false)
-	}
 
 	// Copy the shared key prefix.
 	memmove(it.buf.ptr, b.rawBytes.data, uintptr(b.sharedPrefixLen))
@@ -310,14 +321,7 @@ func (b *PrefixBytes) SetNext(it *PrefixBytesIter) {
 			// nothing left to do, we can leave buf as-is.
 			return
 		}
-		// Grow the buffer if necessary.
 		it.buf.len = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
-		if it.buf.len > it.buf.cap {
-			it.buf.cap = it.buf.len << 1
-			prevPtr := it.buf.ptr
-			it.buf.ptr = mallocgc(uintptr(it.buf.cap), nil, false)
-			memmove(it.buf.ptr, prevPtr, uintptr(b.sharedPrefixLen)+uintptr(it.bundlePrefixLen))
-		}
 		// Copy in the per-row suffix.
 		memmove(
 			unsafe.Pointer(uintptr(it.buf.ptr)+uintptr(b.sharedPrefixLen)+uintptr(it.bundlePrefixLen)),
@@ -339,13 +343,7 @@ func (b *PrefixBytes) SetNext(it *PrefixBytesIter) {
 	it.bundlePrefixLen = rowSuffixStart - bundlePrefixStart
 	it.nextBundleOffsetIndex = it.offsetIndex + (1 << b.bundleShift)
 
-	// Grow the buffer if necessary.
 	it.buf.len = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
-	if it.buf.len > it.buf.cap {
-		it.buf.cap = it.buf.len << 1
-		it.buf.ptr = mallocgc(uintptr(it.buf.cap), nil, false)
-		memmove(it.buf.ptr, b.rawBytes.data, uintptr(b.sharedPrefixLen))
-	}
 	// Copy in the new bundle suffix.
 	memmove(
 		unsafe.Pointer(uintptr(it.buf.ptr)+uintptr(b.sharedPrefixLen)),
