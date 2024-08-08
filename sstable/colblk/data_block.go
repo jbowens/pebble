@@ -553,6 +553,7 @@ func (r *DataBlockReader) toFormatter(f *binfmt.Formatter) {
 type DataBlockIter struct {
 	// configuration
 	r            *DataBlockReader
+	maxRow       int
 	keySeeker    KeySeeker
 	getLazyValue func([]byte) base.LazyValue
 
@@ -573,6 +574,7 @@ func (i *DataBlockIter) Init(
 ) error {
 	*i = DataBlockIter{
 		r:            r,
+		maxRow:       int(r.r.header.Rows) - 1,
 		keySeeker:    keyIterator,
 		getLazyValue: getLazyValue,
 		row:          -1,
@@ -624,7 +626,27 @@ func (i *DataBlockIter) Last() *base.InternalKV {
 
 // Next advances to the next KV pair in the block.
 func (i *DataBlockIter) Next() *base.InternalKV {
-	return i.decodeRow(i.row + 1)
+	// Inline decodeRow, but avoiding unnecessary checks against i.row.
+	if i.row >= i.maxRow {
+		i.row = i.maxRow + 1
+		return nil
+	}
+	i.row++
+	i.keySeeker.MaterializeUserKey(&i.prefixIter, i.kvRow, i.row)
+	i.kv.K = base.InternalKey{
+		UserKey: i.prefixIter.UnsafeSlice(),
+		Trailer: base.InternalKeyTrailer(i.r.trailers.At(i.row)),
+	}
+	// Inline i.r.values.At(row).
+	startOffset := i.r.values.offsets.At(i.row)
+	v := unsafe.Slice((*byte)(i.r.values.ptr(startOffset)), i.r.values.offsets.At(i.row+1)-startOffset)
+	if i.r.isValueExternal.At(i.row) {
+		i.kv.V = i.getLazyValue(v)
+	} else {
+		i.kv.V = base.MakeInPlaceValue(v)
+	}
+	i.kvRow = i.row
+	return &i.kv
 }
 
 // NextPrefix moves the iterator to the next row with a different prefix than
@@ -710,12 +732,12 @@ func (i *DataBlockIter) decodeRow(row int) *base.InternalKV {
 			UserKey: i.prefixIter.UnsafeSlice(),
 			Trailer: base.InternalKeyTrailer(i.r.trailers.At(row)),
 		}
+		// Inline i.r.values.At(row).
+		startOffset := i.r.values.offsets.At(row)
+		v := unsafe.Slice((*byte)(i.r.values.ptr(startOffset)), i.r.values.offsets.At(row+1)-startOffset)
 		if i.r.isValueExternal.At(row) {
-			i.kv.V = i.getLazyValue(i.r.values.At(row))
+			i.kv.V = i.getLazyValue(v)
 		} else {
-			// Inline i.r.values.At(row).
-			startOffset := i.r.values.offsets.At(row)
-			v := unsafe.Slice((*byte)(i.r.values.ptr(startOffset)), i.r.values.offsets.At(row+1)-startOffset)
 			i.kv.V = base.MakeInPlaceValue(v)
 		}
 		i.kvRow = row

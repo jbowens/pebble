@@ -248,6 +248,7 @@ type PrefixBytesIter struct {
 		len int
 		cap int
 	}
+	prefixLen             int
 	bundlePrefixLen       uint32
 	offsetIndex           int
 	nextBundleOffsetIndex int
@@ -286,7 +287,8 @@ func (b *PrefixBytes) SetAt(it *PrefixBytesIter, i int) {
 	rowSuffixStart, rowSuffixEnd := b.rowSuffixOffsets(i, it.offsetIndex)
 
 	// Grow the size of the iterator's buffer if necessary.
-	it.buf.len = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
+	it.prefixLen = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
+	it.buf.len = it.prefixLen
 
 	// Copy the shared key prefix.
 	memmove(it.buf.ptr, b.rawBytes.data, uintptr(b.sharedPrefixLen))
@@ -319,9 +321,11 @@ func (b *PrefixBytes) SetNext(it *PrefixBytesIter) {
 			// The start and end offsets are equal, indicating that the key is a
 			// duplicate. Since it's identical to the previous key, there's
 			// nothing left to do, we can leave buf as-is.
+			it.buf.len = it.prefixLen
 			return
 		}
-		it.buf.len = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
+		it.prefixLen = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
+		it.buf.len = it.prefixLen
 		// Copy in the per-row suffix.
 		memmove(
 			unsafe.Pointer(uintptr(it.buf.ptr)+uintptr(b.sharedPrefixLen)+uintptr(it.bundlePrefixLen)),
@@ -343,7 +347,8 @@ func (b *PrefixBytes) SetNext(it *PrefixBytesIter) {
 	it.bundlePrefixLen = rowSuffixStart - bundlePrefixStart
 	it.nextBundleOffsetIndex = it.offsetIndex + (1 << b.bundleShift)
 
-	it.buf.len = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
+	it.prefixLen = b.sharedPrefixLen + int(it.bundlePrefixLen) + int(rowSuffixEnd-rowSuffixStart)
+	it.buf.len = it.prefixLen
 	// Copy in the new bundle suffix.
 	memmove(
 		unsafe.Pointer(uintptr(it.buf.ptr)+uintptr(b.sharedPrefixLen)),

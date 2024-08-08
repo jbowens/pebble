@@ -275,15 +275,14 @@ func (ks *cockroachKeySeeker) MaterializeUserKey(ki *PrefixBytesIter, bufRow, ro
 
 	// This is an MVCC key.
 	if mvccLogical == 0 {
-		l := ki.buf.len
 		ki.buf.len += 9
-		binary.BigEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(l))), 8), mvccWall)
+		binary.BigEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(ki.prefixLen))), 8), mvccWall)
 		*(*byte)(unsafe.Pointer(uintptr(ki.buf.ptr) + uintptr(ki.buf.len-1))) = 9
+		return ki.UnsafeSlice()
 	}
-	l := ki.buf.len
 	ki.buf.len += 13
-	binary.BigEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(l))), 8), mvccWall)
-	binary.BigEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(l+8))), 4), mvccLogical)
+	binary.BigEndian.PutUint64(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(ki.prefixLen))), 8), mvccWall)
+	binary.BigEndian.PutUint32(unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ki.buf.ptr)+uintptr(ki.prefixLen+8))), 4), mvccLogical)
 	*(*byte)(unsafe.Pointer(uintptr(ki.buf.ptr) + uintptr(ki.buf.len-1))) = 13
 	return ki.UnsafeSlice()
 }
