@@ -5,6 +5,7 @@
 package sstable
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -21,12 +22,21 @@ import (
 func TestColumnarWriter(t *testing.T) {
 	var meta *WriterMetadata
 	var obj *objstorage.MemObj
+	var r *Reader
+	defer func() {
+		if r != nil {
+			require.NoError(t, r.Close())
+			r = nil
+		}
+	}()
+
 	keySchema := colblk.DefaultKeySchema(testkeys.Comparer, 16)
 	datadriven.Walk(t, "testdata/columnar_writer", func(t *testing.T, path string) {
 		datadriven.RunTest(t, path, func(t *testing.T, td *datadriven.TestData) string {
 			switch td.Cmd {
 			case "build":
 				var writerOpts WriterOptions
+				writerOpts.Comparer = testkeys.Comparer
 				writerOpts.Compression = block.NoCompression
 				writerOpts.TableFormat = TableFormatPebblev5
 				writerOpts.KeySchema = keySchema
@@ -45,6 +55,20 @@ func TestColumnarWriter(t *testing.T) {
 					return err.Error()
 				}
 				return f.String()
+			case "open":
+				if r != nil {
+					require.NoError(t, r.Close())
+					r = nil
+				}
+				var err error
+				r, err = NewReader(context.Background(), obj, ReaderOptions{
+					Comparer:  testkeys.Comparer,
+					KeySchema: keySchema,
+				})
+				require.NoError(t, err)
+				return "ok"
+			case "props":
+				return r.Properties.String()
 			default:
 				panic(fmt.Sprintf("unrecognized command %q", td.Cmd))
 			}

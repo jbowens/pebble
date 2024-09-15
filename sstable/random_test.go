@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/bytealloc"
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
+	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/pebble/vfs/errorfs"
 	"github.com/stretchr/testify/require"
@@ -286,12 +287,14 @@ func (cfg *randomTableConfig) randomize() {
 	if cfg.wopts == nil {
 		cfg.wopts = &WriterOptions{
 			// Test all table formats in [TableFormatLevelDB, TableFormatMax].
+			Comparer:                testkeys.Comparer,
 			TableFormat:             TableFormat(cfg.rng.Intn(int(TableFormatMax)) + 1),
 			BlockRestartInterval:    (1 << cfg.rng.Intn(6)),             // {1, 2, 4, ..., 32}
 			BlockSizeThreshold:      min(int(100*cfg.rng.Float64()), 1), // 1-100%
 			BlockSize:               (1 << cfg.rng.Intn(18)),            // {1, 2, 4, ..., 128 KiB}
 			IndexBlockSize:          (1 << cfg.rng.Intn(20)),            // {1, 2, 4, ..., 512 KiB}
 			BlockPropertyCollectors: nil,
+			KeySchema:               colblk.DefaultKeySchema(testkeys.Comparer, 16 /* bundleSize */),
 			WritingToLowestLevel:    cfg.rng.Intn(2) == 1,
 			Parallelism:             cfg.rng.Intn(2) == 1,
 		}

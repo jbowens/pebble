@@ -84,6 +84,10 @@ type ReaderOptions struct {
 	Comparers Comparers
 	Mergers   Mergers
 
+	// KeySchema describes the schema to use when building columnar data blocks.
+	// Only used for TableFormatPebblev5 or higher.
+	KeySchema colblk.KeySchema
+
 	// Filters is a map from filter policy name to filter policy. Filters with
 	// policies that are not in this map will be ignored.
 	Filters map[string]FilterPolicy
@@ -124,6 +128,9 @@ func (o ReaderOptions) ensureDefaults() ReaderOptions {
 	}
 	if o.DeniedUserProperties == nil {
 		o.DeniedUserProperties = ignoredInternalProperties
+	}
+	if len(o.KeySchema.ColumnTypes) == 0 {
+		o.KeySchema = colblk.DefaultKeySchema(o.Comparer, 16 /* bundle size */)
 	}
 	return o
 }
@@ -314,6 +321,9 @@ func (o WriterOptions) ensureDefaults() WriterOptions {
 	}
 	if o.DeletionSizeRatioThreshold == 0 {
 		o.DeletionSizeRatioThreshold = DefaultDeletionSizeRatioThreshold
+	}
+	if o.TableFormat.BlockColumnar() && len(o.KeySchema.ColumnTypes) == 0 {
+		o.KeySchema = colblk.DefaultKeySchema(o.Comparer, 16 /* bundle size */)
 	}
 	return o
 }

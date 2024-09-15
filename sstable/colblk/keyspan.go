@@ -16,6 +16,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/treeprinter"
+	"github.com/cockroachdb/pebble/sstable/block"
 )
 
 // the keyspan header encodes a 32-bit count of the number of unique boundary
@@ -285,9 +286,17 @@ func (r *KeyspanReader) searchBoundaryKeys(cmp base.Compare, key []byte) (index 
 	return i, false
 }
 
+// NewKeyspanIter constructs a new iterator over a keyspan columnar block.
+func NewKeyspanIter(cmp base.Compare, h block.BufferHandle) *KeyspanIter {
+	it := new(KeyspanIter)
+	it.InitHandle(cmp, h)
+	return it
+}
+
 // A KeyspanIter is an iterator over a keyspan block. It implements the
 // keyspan.FragmentIterator interface.
 type KeyspanIter struct {
+	h    block.BufferHandle
 	r    *KeyspanReader
 	cmp  base.Compare
 	span keyspan.Span
@@ -297,6 +306,7 @@ type KeyspanIter struct {
 	//   i.r.userKeys.At(i.startBoundIndex+1)
 	startBoundIndex int
 	keyBuf          [2]keyspan.Key
+	allocReader     KeyspanReader
 }
 
 // Assert that KeyspanIter implements the FragmentIterator interface.
@@ -312,6 +322,14 @@ func (i *KeyspanIter) Init(cmp base.Compare, r *KeyspanReader) {
 	if i.span.Keys == nil {
 		i.span.Keys = i.keyBuf[:0]
 	}
+}
+
+// InitHandle initializes the iterator with the given comparison function and
+// the buffer handle.
+func (i *KeyspanIter) InitHandle(cmp base.Compare, h block.BufferHandle) {
+	i.h = h
+	i.allocReader.Init(h.Get())
+	i.Init(cmp, &i.allocReader)
 }
 
 // SeekGE moves the iterator to the first span covering a key greater than
@@ -446,7 +464,11 @@ func (i *KeyspanIter) materializeSpan() *keyspan.Span {
 }
 
 // Close closes the iterator.
-func (i *KeyspanIter) Close() {}
+func (i *KeyspanIter) Close() {
+	// TODO(jackson): Pool the keyspan iterators.
+	i.h.Release()
+	*i = KeyspanIter{cmp: i.cmp}
+}
 
 // SetContext implements keyspan.FragmentIterator.
 func (i *KeyspanIter) SetContext(context.Context) {}

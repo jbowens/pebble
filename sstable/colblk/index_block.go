@@ -242,7 +242,6 @@ func (i *IndexIter) Valid() bool {
 // it was initialized with.
 func (i *IndexIter) Invalidate() {
 	i.r = nil
-	i.h = block.BufferHandle{}
 }
 
 // IsDataInvalidated returns true when the iterator has been invalidated

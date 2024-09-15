@@ -32,6 +32,7 @@ import (
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/cockroachdb/pebble/sstable/rowblk"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/pebble/vfs/errorfs"
@@ -534,6 +535,7 @@ func TestReaderWithBlockPropertyFilter(t *testing.T) {
 			}
 			writerOpt := WriterOptions{
 				Comparer:                testkeys.Comparer,
+				KeySchema:               colblk.DefaultKeySchema(testkeys.Comparer, 16 /* bundleSize */),
 				TableFormat:             format,
 				BlockPropertyCollectors: []func() BlockPropertyCollector{NewTestKeysBlockPropertyCollector},
 			}
