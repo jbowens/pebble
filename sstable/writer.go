@@ -306,6 +306,8 @@ type RawWriter interface {
 	// Metadata returns the metadata for the finished sstable. Only valid to
 	// call after the sstable has been finished.
 	Metadata() (*WriterMetadata, error)
+
+	prepareForRewrite(r *Reader, filterBlock []byte) (blockRewriter, error)
 }
 
 // WriterMetadata holds info about a finished sstable.

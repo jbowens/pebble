@@ -4,7 +4,11 @@
 
 package sstable
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/cockroachdb/errors"
+)
 
 // FilterMetrics holds metrics for the filter policy.
 type FilterMetrics struct {
@@ -94,9 +98,18 @@ func (f *tableFilterWriter) finish() ([]byte, error) {
 }
 
 func (f *tableFilterWriter) metaName() string {
-	return "fullfilter." + f.policy.Name()
+	return filterMetaName(TableFilter, f.policy.Name())
 }
 
 func (f *tableFilterWriter) policyName() string {
 	return f.policy.Name()
+}
+
+func filterMetaName(typ FilterType, policyName string) string {
+	switch typ {
+	case TableFilter:
+		return "fullfilter." + policyName
+	default:
+		panic(errors.AssertionFailedf("unrecognized filter type: %d", typ))
+	}
 }

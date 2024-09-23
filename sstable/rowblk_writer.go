@@ -1944,3 +1944,18 @@ func (w *RawRowWriter) SetSnapshotPinnedProperties(
 	w.props.SnapshotPinnedKeySize = pinnedKeySize
 	w.props.SnapshotPinnedValueSize = pinnedValueSize
 }
+
+func (w *RawRowWriter) prepareForRewrite(r *Reader, filterBlock []byte) (blockRewriter, error) {
+	for _, c := range w.blockPropCollectors {
+		if !c.SupportsSuffixReplacement() {
+			return nil, errors.Errorf("block property collector %s does not support suffix replacement", c.Name())
+		}
+	}
+	// Copy the filter block verbatim.
+	w.filter = copyFilterWriter{
+		origPolicyName: w.filter.policyName(),
+		origMetaName:   w.filter.metaName(),
+		data:           filterBlock,
+	}
+	return rowblk.NewRewriter(r.Comparer, w.dataBlockBuf.dataBlock.RestartInterval), nil
+}

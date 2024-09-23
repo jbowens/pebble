@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/rowblk"
 )
 
 // RewriteKeySuffixesAndReturnFormat copies the content of the passed SSTable
@@ -94,49 +93,46 @@ func rewriteKeySuffixesInBlocks(
 		return nil, TableFormatUnspecified,
 			errors.New("sstable with a single suffix should not have value blocks")
 	}
-
+	if r.Properties.FilterPolicyName != o.FilterPolicy.Name() {
+		return nil, TableFormatUnspecified, errors.New("mismatched filters")
+	}
+	if was, is := r.Properties.ComparerName, o.Comparer.Name; was != is {
+		return nil, TableFormatUnspecified, errors.Newf("mismatched Comparer %s vs %s, replacement requires same splitter to copy filters", was, is)
+	}
 	tableFormat := r.tableFormat
 	o.TableFormat = tableFormat
-	w := newRowWriter(out, o)
+	w := NewRawWriter(out, o)
 	defer func() {
 		if w != nil {
 			w.Close()
 		}
 	}()
-
-	for _, c := range w.blockPropCollectors {
-		if !c.SupportsSuffixReplacement() {
-			return nil, TableFormatUnspecified,
-				errors.Errorf("block property collector %s does not support suffix replacement", c.Name())
-		}
-	}
-
 	l, err := r.Layout()
 	if err != nil {
 		return nil, TableFormatUnspecified, errors.Wrap(err, "reading layout")
 	}
 
-	if err := rewriteDataBlocksToWriter(r, w, l.Data, from, to, concurrency); err != nil {
+	// If the input sstable contains a filter block, read it and pass it to
+	// prepareForRewrite so that the Writer can use it verbatim.
+	var filterBlock []byte
+	if filterBlockBH, ok := l.FilterByName(filterMetaName(TableFilter, o.FilterPolicy.Name())); ok {
+		filterBlock, _, err = readBlockBuf(r, filterBlockBH, nil)
+		if err != nil {
+			return nil, TableFormatUnspecified, errors.Wrap(err, "reading filter")
+		}
+	}
+	dataBlockRewriter, err := w.prepareForRewrite(r, filterBlock)
+	if err != nil {
+		return nil, TableFormatUnspecified, err
+	}
+
+	if err := rewriteDataBlocksToWriter(r, w, o, dataBlockRewriter, l.Data, from, to, concurrency); err != nil {
 		return nil, TableFormatUnspecified, errors.Wrap(err, "rewriting data blocks")
 	}
 
 	// Copy over the range key block and replace suffixes in it if it exists.
 	if err := rewriteRangeKeyBlockToWriter(r, w, from, to); err != nil {
 		return nil, TableFormatUnspecified, errors.Wrap(err, "rewriting range key blocks")
-	}
-
-	// Copy over the filter block if it exists (rewriteDataBlocksToWriter will
-	// already have ensured this is valid if it exists).
-	if w.filter != nil {
-		if filterBlockBH, ok := l.FilterByName(w.filter.metaName()); ok {
-			filterBlock, _, err := readBlockBuf(r, filterBlockBH, nil)
-			if err != nil {
-				return nil, TableFormatUnspecified, errors.Wrap(err, "reading filter")
-			}
-			w.filter = copyFilterWriter{
-				origPolicyName: w.filter.policyName(), origMetaName: w.filter.metaName(), data: filterBlock,
-			}
-		}
 	}
 
 	if err := w.Close(); err != nil {
@@ -164,8 +160,7 @@ type blockRewriter interface {
 func rewriteBlocks[R blockRewriter](
 	r *Reader,
 	rw R,
-	checksumType block.ChecksumType,
-	compression block.Compression,
+	wOpts WriterOptions,
 	input []block.HandleWithProperties,
 	output []blockWithSpan,
 	totalWorkers, worker int,
@@ -174,7 +169,7 @@ func rewriteBlocks[R blockRewriter](
 	var blockAlloc bytealloc.A
 	var compressedBuf []byte
 	var inputBlock, inputBlockBuf []byte
-	checksummer := block.Checksummer{Type: checksumType}
+	checksummer := block.Checksummer{Type: wOpts.Checksum}
 	// We'll assume all blocks are _roughly_ equal so round-robin static partition
 	// of each worker doing every ith block is probably enough.
 	for i := worker; i < len(input); i += totalWorkers {
@@ -191,36 +186,26 @@ func rewriteBlocks[R blockRewriter](
 			return err
 		}
 		compressedBuf = compressedBuf[:cap(compressedBuf)]
-		finished := block.CompressAndChecksum(&compressedBuf, outputBlock, compression, &checksummer)
+		finished := block.CompressAndChecksum(&compressedBuf, outputBlock, wOpts.Compression, &checksummer)
 		output[i].physical = finished.CloneWithByteAlloc(&blockAlloc)
 	}
 	return nil
 }
 
-func checkWriterFilterMatchesReader(r *Reader, w *RawRowWriter) error {
-	if r.Properties.FilterPolicyName != w.filter.policyName() {
-		return errors.New("mismatched filters")
-	}
-	if was, is := r.Properties.ComparerName, w.props.ComparerName; was != is {
-		return errors.Errorf("mismatched Comparer %s vs %s, replacement requires same splitter to copy filters", was, is)
-	}
-	return nil
-}
-
 func rewriteDataBlocksToWriter(
-	r *Reader, w *RawRowWriter, data []block.HandleWithProperties, from, to []byte, concurrency int,
+	r *Reader,
+	w RawWriter,
+	wOpts WriterOptions,
+	rw blockRewriter,
+	data []block.HandleWithProperties,
+	from, to []byte,
+	concurrency int,
 ) error {
 	if r.Properties.NumEntries == 0 {
 		// No point keys.
 		return nil
 	}
 	blocks := make([]blockWithSpan, len(data))
-
-	if w.filter != nil {
-		if err := checkWriterFilterMatchesReader(r, w); err != nil {
-			return err
-		}
-	}
 
 	g := &sync.WaitGroup{}
 	g.Add(concurrency)
@@ -229,21 +214,7 @@ func rewriteDataBlocksToWriter(
 		worker := i
 		go func() {
 			defer g.Done()
-
-			rw := rowblk.NewRewriter(
-				r.Comparer,
-				w.dataBlockBuf.dataBlock.RestartInterval)
-			err := rewriteBlocks(
-				r,
-				rw,
-				w.blockBuf.checksummer.Type,
-				w.compression,
-				data,
-				blocks,
-				concurrency,
-				worker,
-				from, to,
-			)
+			err := rewriteBlocks(r, rw, wOpts, data, blocks, concurrency, worker, from, to)
 			if err != nil {
 				errCh <- err
 			}
