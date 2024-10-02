@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,6 +24,7 @@ func TestRewriteSuffixProps(t *testing.T) {
 			wOpts := WriterOptions{
 				FilterPolicy: bloom.FilterPolicy(10),
 				Comparer:     test4bSuffixComparer,
+				KeySchema:    colblk.DefaultKeySchema(test4bSuffixComparer, 16),
 				BlockPropertyCollectors: []func() BlockPropertyCollector{
 					keyCountCollectorFn("count"),
 					intSuffixIntervalCollectorFn("bp3", 3),
@@ -56,14 +58,15 @@ func TestRewriteSuffixProps(t *testing.T) {
 				rwOpts.IsStrictObsolete = false
 				t.Log("table format set to TableFormatPebblev2")
 			}
-			fmt.Printf("from format %s, to format %s\n", format.String(), rwOpts.TableFormat.String())
+			t.Logf("from format %s, to format %s\n", format.String(), rwOpts.TableFormat.String())
 			rwOpts.BlockPropertyCollectors = rwOpts.BlockPropertyCollectors[:3]
 			rwOpts.BlockPropertyCollectors[0], rwOpts.BlockPropertyCollectors[1] = rwOpts.BlockPropertyCollectors[1], rwOpts.BlockPropertyCollectors[0]
 
 			// Rewrite the SST using updated options and check the returned props.
 			readerOpts := ReaderOptions{
-				Comparer: test4bSuffixComparer,
-				Filters:  map[string]base.FilterPolicy{wOpts.FilterPolicy.Name(): wOpts.FilterPolicy},
+				Comparer:  test4bSuffixComparer,
+				KeySchema: colblk.DefaultKeySchema(test4bSuffixComparer, 16),
+				Filters:   map[string]base.FilterPolicy{wOpts.FilterPolicy.Name(): wOpts.FilterPolicy},
 			}
 			r, err := NewMemReader(sst, readerOpts)
 			require.NoError(t, err)
@@ -71,7 +74,7 @@ func TestRewriteSuffixProps(t *testing.T) {
 
 			var sstBytes [2][]byte
 			adjustPropsForEffectiveFormat := func(effectiveFormat TableFormat) {
-				if effectiveFormat == TableFormatPebblev4 {
+				if effectiveFormat >= TableFormatPebblev4 {
 					expectedProps["obsolete-key"] = string([]byte{3})
 				} else {
 					delete(expectedProps, "obsolete-key")

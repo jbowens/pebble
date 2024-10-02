@@ -788,14 +788,14 @@ func (c *MultiDataBlockIter) Handle() block.BufferHandle {
 }
 
 // Valid returns true if the iterator is currently positioned at a valid KV.
-func (i *MultiDataBlockIter) Valid() bool {
-	return i.row >= 0 && i.row <= i.maxRow
+func (c *MultiDataBlockIter) Valid() bool {
+	return c.row >= 0 && c.row <= c.maxRow && !c.IsDataInvalidated()
 }
 
 // KV returns the key-value pair at the current iterator position. The
 // iterator must be positioned over a valid KV.
-func (i *MultiDataBlockIter) KV() *base.InternalKV {
-	return &i.kv
+func (c *MultiDataBlockIter) KV() *base.InternalKV {
+	return &c.kv
 }
 
 // Invalidate invalidates the block iterator, removing references to the block

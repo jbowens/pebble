@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/testkeys"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable"
+	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
@@ -194,6 +196,12 @@ func TestTableRangeDeletionIter(t *testing.T) {
 	var m *fileMetadata
 	cmp := base.DefaultComparer
 	fs := vfs.NewMem()
+	tableFormat := sstable.TableFormat(rand.Intn(int(sstable.TableFormatMax-sstable.TableFormatPebblev3)+1)) + sstable.TableFormatPebblev3
+	wopts := sstable.WriterOptions{
+		Comparer:    cmp,
+		KeySchema:   colblk.DefaultKeySchema(cmp, 16),
+		TableFormat: tableFormat,
+	}
 	datadriven.RunTest(t, "testdata/table_stats_deletion_iter", func(t *testing.T, td *datadriven.TestData) string {
 		switch cmd := td.Cmd; cmd {
 		case "build":
@@ -201,9 +209,7 @@ func TestTableRangeDeletionIter(t *testing.T) {
 			if err != nil {
 				return err.Error()
 			}
-			w := sstable.NewRawWriter(objstorageprovider.NewFileWritable(f), sstable.WriterOptions{
-				TableFormat: sstable.TableFormatMax,
-			})
+			w := sstable.NewRawWriter(objstorageprovider.NewFileWritable(f), wopts)
 			m = &fileMetadata{}
 			for _, line := range strings.Split(td.Input, "\n") {
 				err = w.EncodeSpan(keyspan.ParseSpan(line))
