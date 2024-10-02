@@ -757,8 +757,9 @@ func (r *DataBlockReader) Describe(f *binfmt.Formatter) {
 // reused, it does not retain any configuration beyond a reset.
 type MultiDataBlockIter struct {
 	DataBlockIter
-	h block.BufferHandle
-	r DataBlockReader
+	h         block.BufferHandle
+	r         DataBlockReader
+	keySeeker KeySeeker
 
 	// KeySchema configures the DataBlockIterConfig to use the provided
 	// KeySchema when initializing the DataBlockIter for iteration over a new
@@ -779,7 +780,10 @@ func (c *MultiDataBlockIter) InitHandle(
 	c.h.Release()
 	c.h = h
 	c.r.Init(c.KeySchema, h.Get())
-	return c.DataBlockIter.Init(&c.r, c.KeySchema.NewKeySeeker(), c.GetLazyValuer, t)
+	if c.keySeeker == nil {
+		c.keySeeker = c.KeySchema.NewKeySeeker()
+	}
+	return c.DataBlockIter.Init(&c.r, c.keySeeker, c.GetLazyValuer, t)
 }
 
 // Handle returns the handle to the block.
@@ -819,6 +823,7 @@ func (i *MultiDataBlockIter) ResetForReuse() MultiDataBlockIter {
 		DataBlockIter: DataBlockIter{
 			keyIter: PrefixBytesIter{buf: i.DataBlockIter.keyIter.buf},
 		},
+		keySeeker:     i.keySeeker,
 		KeySchema:     i.KeySchema,
 		GetLazyValuer: i.GetLazyValuer,
 	}
@@ -826,13 +831,13 @@ func (i *MultiDataBlockIter) ResetForReuse() MultiDataBlockIter {
 
 // Close implements the base.InternalIterator interface.
 func (i *MultiDataBlockIter) Close() error {
+	i.DataBlockIter = DataBlockIter{}
+	i.h.Release()
+	i.h = block.BufferHandle{}
 	if i.keySeeker != nil {
 		i.keySeeker.Release()
 		i.keySeeker = nil
 	}
-	i.DataBlockIter = DataBlockIter{}
-	i.h.Release()
-	i.h = block.BufferHandle{}
 	return nil
 }
 
