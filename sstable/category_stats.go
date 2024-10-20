@@ -96,10 +96,8 @@ type CategoryStatsAggregate struct {
 	CategoryStats CategoryStats
 }
 
-type categoryStatsWithMu struct {
-	mu sync.Mutex
-	// Protected by mu.
-	stats CategoryStatsAggregate
+type IterStatsAccumulator interface {
+	Accumulate(CategoryStats)
 }
 
 // CategoryStatsCollector collects and aggregates the stats per category.
@@ -110,28 +108,11 @@ type CategoryStatsCollector struct {
 	statsMap sync.Map
 }
 
-func (c *CategoryStatsCollector) reportStats(
-	category Category, qosLevel QoSLevel, stats CategoryStats,
-) {
-	v, ok := c.statsMap.Load(category)
-	if !ok {
-		c.mu.Lock()
-		v, _ = c.statsMap.LoadOrStore(category, &categoryStatsWithMu{
-			stats: CategoryStatsAggregate{Category: category, QoSLevel: qosLevel},
-		})
-		c.mu.Unlock()
-	}
-	aggStats := v.(*categoryStatsWithMu)
-	aggStats.mu.Lock()
-	aggStats.stats.CategoryStats.aggregate(stats)
-	aggStats.mu.Unlock()
-}
-
 // GetStats returns the aggregated stats.
 func (c *CategoryStatsCollector) GetStats() []CategoryStatsAggregate {
 	var stats []CategoryStatsAggregate
 	c.statsMap.Range(func(_, v any) bool {
-		aggStats := v.(*categoryStatsWithMu)
+		aggStats := v.(*CategoryStatsAccumulator)
 		aggStats.mu.Lock()
 		s := aggStats.stats
 		aggStats.mu.Unlock()
@@ -147,34 +128,53 @@ func (c *CategoryStatsCollector) GetStats() []CategoryStatsAggregate {
 	return stats
 }
 
-// iterStatsAccumulator is a helper for a sstable iterator to accumulate
-// stats, which are reported to the CategoryStatsCollector when the
-// accumulator is closed.
-type iterStatsAccumulator struct {
-	Category
-	QoSLevel
-	stats     CategoryStats
-	collector *CategoryStatsCollector
+func (c *CategoryStatsCollector) Accumulator(caq CategoryAndQoS) IterStatsAccumulator {
+	v, ok := c.statsMap.Load(caq.Category)
+	if !ok {
+		c.mu.Lock()
+		v, _ = c.statsMap.LoadOrStore(caq.Category, &CategoryStatsAccumulator{
+			stats: CategoryStatsAggregate{Category: caq.Category, QoSLevel: caq.QoSLevel},
+		})
+		c.mu.Unlock()
+	}
+	accum := v.(*CategoryStatsAccumulator)
+	return accum
 }
 
-func (accum *iterStatsAccumulator) init(
-	categoryAndQoS CategoryAndQoS, collector *CategoryStatsCollector,
-) {
-	accum.Category = categoryAndQoS.Category
-	accum.QoSLevel = categoryAndQoS.QoSLevel
-	accum.collector = collector
+type CategoryStatsAccumulator struct {
+	mu sync.Mutex
+	// Protected by mu.
+	stats CategoryStatsAggregate
 }
 
-func (accum *iterStatsAccumulator) reportStats(
+func (c *CategoryStatsAccumulator) Accumulate(stats CategoryStats) {
+	c.mu.Lock()
+	c.stats.CategoryStats.aggregate(stats)
+	c.mu.Unlock()
+}
+
+// deferredIterStatsAccumulator is a helper for a sstable iterator to accumulate
+// stats, which are reported to the CategoryStatsCollector when the accumulator
+// is closed.
+type deferredIterStatsAccumulator struct {
+	stats  CategoryStats
+	parent IterStatsAccumulator
+}
+
+func (a *deferredIterStatsAccumulator) init(parent IterStatsAccumulator) {
+	a.parent = parent
+}
+
+func (a *deferredIterStatsAccumulator) Accumulate(
 	blockBytes, blockBytesInCache uint64, blockReadDuration time.Duration,
 ) {
-	accum.stats.BlockBytes += blockBytes
-	accum.stats.BlockBytesInCache += blockBytesInCache
-	accum.stats.BlockReadDuration += blockReadDuration
+	a.stats.BlockBytes += blockBytes
+	a.stats.BlockBytesInCache += blockBytesInCache
+	a.stats.BlockReadDuration += blockReadDuration
 }
 
-func (accum *iterStatsAccumulator) close() {
-	if accum.collector != nil {
-		accum.collector.reportStats(accum.Category, accum.QoSLevel, accum.stats)
+func (a *deferredIterStatsAccumulator) close() {
+	if a.parent != nil {
+		a.parent.Accumulate(a.stats)
 	}
 }

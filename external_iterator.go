@@ -158,8 +158,7 @@ func createExternalPointIter(ctx context.Context, it *Iterator) (topLevelIterato
 			seqNum--
 			pointIter, err = r.NewPointIter(
 				ctx, transforms, it.opts.LowerBound, it.opts.UpperBound, nil, /* BlockPropertiesFilterer */
-				sstable.NeverUseFilterBlock,
-				&it.stats.InternalStats, it.opts.CategoryAndQoS, nil,
+				sstable.NeverUseFilterBlock, &it.stats.InternalStats, nil,
 				sstable.MakeTrivialReaderProvider(r))
 			if err != nil {
 				return nil, err

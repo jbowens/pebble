@@ -233,7 +233,7 @@ func runVirtualReaderTest(t *testing.T, path string, blockSize, indexBlockSize i
 
 			var rp ReaderProvider
 			transforms := IterTransforms{SyntheticSuffix: syntheticSuffix}
-			iter, err := v.NewCompactionIter(transforms, CategoryAndQoS{}, nil, rp, &bp)
+			iter, err := v.NewCompactionIter(transforms, nil, rp, &bp)
 			if err != nil {
 				return err.Error()
 			}
@@ -354,7 +354,7 @@ func runVirtualReaderTest(t *testing.T, path string, blockSize, indexBlockSize i
 			transforms := IterTransforms{SyntheticSuffix: syntheticSuffix}
 			iter, err := v.NewPointIter(
 				context.Background(), transforms, lower, upper, filterer, NeverUseFilterBlock,
-				&stats, CategoryAndQoS{}, nil, MakeTrivialReaderProvider(r))
+				&stats, nil, MakeTrivialReaderProvider(r))
 			if err != nil {
 				return err.Error()
 			}
@@ -748,7 +748,6 @@ func runTestReader(t *testing.T, o WriterOptions, dir string, r *Reader, printVa
 					filterer,
 					AlwaysUseFilterBlock,
 					&stats,
-					CategoryAndQoS{},
 					nil,
 					MakeTrivialReaderProvider(r),
 				)
@@ -892,7 +891,7 @@ func TestCompactionIteratorSetupForCompaction(t *testing.T) {
 				var pool block.BufferPool
 				pool.Init(5)
 				citer, err := r.NewCompactionIter(
-					NoTransforms, CategoryAndQoS{}, nil, MakeTrivialReaderProvider(r), &pool)
+					NoTransforms, nil, MakeTrivialReaderProvider(r), &pool)
 				require.NoError(t, err)
 				switch i := citer.(type) {
 				case *singleLevelIteratorRowBlocks:
@@ -950,7 +949,7 @@ func TestReadaheadSetupForV3TablesWithMultipleVersions(t *testing.T) {
 		pool.Init(5)
 		defer pool.Release()
 		citer, err := r.NewCompactionIter(
-			NoTransforms, CategoryAndQoS{}, nil, MakeTrivialReaderProvider(r), &pool)
+			NoTransforms, nil, MakeTrivialReaderProvider(r), &pool)
 		require.NoError(t, err)
 		defer citer.Close()
 		i := citer.(*singleLevelIteratorRowBlocks)
@@ -1245,7 +1244,7 @@ func TestRandomizedPrefixSuffixRewriter(t *testing.T) {
 			context.Background(),
 			block.IterTransforms{SyntheticSuffix: syntheticSuffix, SyntheticPrefix: syntheticPrefix},
 			nil, nil, nil,
-			AlwaysUseFilterBlock, nil, CategoryAndQoS{}, nil,
+			AlwaysUseFilterBlock, nil, nil,
 			MakeTrivialReaderProvider(eReader), &virtualState{
 				lower: base.MakeInternalKey([]byte("_"), base.SeqNumMax, base.InternalKeyKindSet),
 				upper: base.MakeRangeDeleteSentinelKey([]byte("~~~~~~~~~~~~~~~~")),
@@ -2392,7 +2391,7 @@ func BenchmarkIteratorScanObsolete(b *testing.B) {
 								transforms := IterTransforms{HideObsoletePoints: hideObsoletePoints}
 								iter, err := r.NewPointIter(
 									context.Background(), transforms, nil, nil, filterer,
-									AlwaysUseFilterBlock, nil, CategoryAndQoS{}, nil,
+									AlwaysUseFilterBlock, nil, nil,
 									MakeTrivialReaderProvider(r))
 								require.NoError(b, err)
 								b.ResetTimer()
