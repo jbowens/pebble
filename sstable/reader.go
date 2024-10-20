@@ -330,7 +330,7 @@ type readBlockEnv struct {
 	// iterator is closed. In the important code paths, the CategoryStatsCollector
 	// is managed by the tableCacheContainer.
 	Stats     *base.InternalIteratorStats
-	IterStats *deferredIterStatsAccumulator
+	IterStats *DeferredIterStatsAccumulator
 
 	// BufferPool is not-nil if we read blocks into a buffer pool and not into the
 	// cache. This is used during compactions.
@@ -344,7 +344,11 @@ func (env *readBlockEnv) BlockServedFromCache(blockLength uint64) {
 		env.Stats.BlockBytesInCache += blockLength
 	}
 	if env.IterStats != nil {
-		env.IterStats.Accumulate(blockLength, blockLength, 0)
+		env.IterStats.Accumulate(CategoryStats{
+			BlockBytes:        blockLength,
+			BlockBytesInCache: blockLength,
+			BlockReadDuration: 0,
+		})
 	}
 }
 
@@ -355,7 +359,11 @@ func (env *readBlockEnv) BlockRead(blockLength uint64, readDuration time.Duratio
 		env.Stats.BlockReadDuration += readDuration
 	}
 	if env.IterStats != nil {
-		env.IterStats.Accumulate(blockLength, 0, readDuration)
+		env.IterStats.Accumulate(CategoryStats{
+			BlockBytes:        blockLength,
+			BlockBytesInCache: 0,
+			BlockReadDuration: readDuration,
+		})
 	}
 }
 

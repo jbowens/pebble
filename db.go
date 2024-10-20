@@ -1037,20 +1037,20 @@ type newIterOpts struct {
 // newIter constructs a new iterator, merging in batch iterators as an extra
 // level.
 func (d *DB) newIter(
-	ctx context.Context, batch *Batch, internalOpts newIterOpts, o *IterOptions,
+	ctx context.Context, batch *Batch, newIterOpts newIterOpts, o *IterOptions,
 ) *Iterator {
-	if internalOpts.batch.batchOnly {
+	if newIterOpts.batch.batchOnly {
 		if batch == nil {
 			panic("batchOnly is true, but batch is nil")
 		}
-		if internalOpts.snapshot.vers != nil {
+		if newIterOpts.snapshot.vers != nil {
 			panic("batchOnly is true, but snapshotIterOpts is initialized")
 		}
 	}
 	if err := d.closed.Load(); err != nil {
 		panic(err)
 	}
-	seqNum := internalOpts.snapshot.seqNum
+	seqNum := newIterOpts.snapshot.seqNum
 	if o != nil && o.RangeKeyMasking.Suffix != nil && o.KeyTypes != IterKeyTypePointsAndRanges {
 		panic("pebble: range key masking requires IterKeyTypePointsAndRanges")
 	}
@@ -1064,13 +1064,13 @@ func (d *DB) newIter(
 	var readState *readState
 	var newIters tableNewIters
 	var newIterRangeKey keyspanimpl.TableNewSpanIter
-	if !internalOpts.batch.batchOnly {
+	if !newIterOpts.batch.batchOnly {
 		// Grab and reference the current readState. This prevents the underlying
 		// files in the associated version from being deleted if there is a current
 		// compaction. The readState is unref'd by Iterator.Close().
-		if internalOpts.snapshot.vers == nil {
-			if internalOpts.snapshot.readState != nil {
-				readState = internalOpts.snapshot.readState
+		if newIterOpts.snapshot.vers == nil {
+			if newIterOpts.snapshot.readState != nil {
+				readState = newIterOpts.snapshot.readState
 				readState.ref()
 			} else {
 				// NB: loadReadState() calls readState.ref().
@@ -1078,7 +1078,7 @@ func (d *DB) newIter(
 			}
 		} else {
 			// vers != nil
-			internalOpts.snapshot.vers.Ref()
+			newIterOpts.snapshot.vers.Ref()
 		}
 
 		// Determine the seqnum to read at after grabbing the read state (current and
@@ -1100,7 +1100,7 @@ func (d *DB) newIter(
 		merge:               d.merge,
 		comparer:            *d.opts.Comparer,
 		readState:           readState,
-		version:             internalOpts.snapshot.vers,
+		version:             newIterOpts.snapshot.vers,
 		keyBuf:              buf.keyBuf,
 		prefixOrFullSeekKey: buf.prefixOrFullSeekKey,
 		boundsBuf:           buf.boundsBuf,
@@ -1108,11 +1108,22 @@ func (d *DB) newIter(
 		newIters:            newIters,
 		newIterRangeKey:     newIterRangeKey,
 		seqNum:              seqNum,
-		batchOnlyIter:       internalOpts.batch.batchOnly,
+		batchOnlyIter:       newIterOpts.batch.batchOnly,
 	}
+
+	var categoryAndQoS sstable.CategoryAndQoS
 	if o != nil {
+		categoryAndQoS = o.CategoryAndQoS
 		dbi.opts = *o
 		dbi.processBounds(o.LowerBound, o.UpperBound)
+	}
+	// Configure dbi.iterStatsAccum to accumulate its accumulated stats to the
+	// global stats collector for the configured category and QoS level. When
+	// constructing sstable iterators, we'll configure them to accumulate their
+	// stats to dbi.iterStatsAccum. When the Iterator is closed;
+	// dbi.iterStatsAccum will propagate them up.
+	if collector := d.tableCache.dbOpts.sstStatsCollector; collector != nil {
+		dbi.iterStatsAccum.Init(collector.Accumulator(categoryAndQoS))
 	}
 	dbi.opts.logger = d.opts.Logger
 	if d.opts.private.disableLazyCombinedIteration {
@@ -1399,7 +1410,10 @@ func (i *Iterator) constructPointIter(
 		// Already have one.
 		return
 	}
-	internalOpts := internalIterOpts{stats: &i.stats.InternalStats}
+	internalOpts := internalIterOpts{
+		stats:      &i.stats.InternalStats,
+		statsAccum: &i.iterStatsAccum,
+	}
 	if i.opts.RangeKeyMasking.Filter != nil {
 		internalOpts.boundLimitedFilter = &i.rangeKeyMasking
 	}

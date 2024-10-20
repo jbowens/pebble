@@ -571,8 +571,8 @@ func (c *tableCacheShard) newPointIter(
 	}
 	transforms := file.IterTransforms()
 	transforms.HideObsoletePoints = hideObsoletePoints
-	var statsAccum sstable.IterStatsAccumulator
-	if opts != nil && dbOpts.sstStatsCollector != nil {
+	statsAccum := internalOpts.statsAccum
+	if statsAccum == nil && opts != nil && dbOpts.sstStatsCollector != nil {
 		statsAccum = dbOpts.sstStatsCollector.Accumulator(opts.CategoryAndQoS)
 	}
 	if internalOpts.compaction {

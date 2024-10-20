@@ -153,27 +153,28 @@ func (c *CategoryStatsAccumulator) Accumulate(stats CategoryStats) {
 	c.mu.Unlock()
 }
 
-// deferredIterStatsAccumulator is a helper for a sstable iterator to accumulate
-// stats, which are reported to the CategoryStatsCollector when the accumulator
-// is closed.
-type deferredIterStatsAccumulator struct {
+// DeferredIterStatsAccumulator implements IterStatsAccumulator, accumulating
+// stats and then reporting them to a parent IterStatsAccumulator on Close. It
+// is used to avoid contention on the global, per-category
+// CategoryStatsAccumulator, instead allowing a pebble.Iterator to accumulate
+// iter stats over its lifetime and then report them when the Iterator is
+// closed.
+type DeferredIterStatsAccumulator struct {
 	stats  CategoryStats
 	parent IterStatsAccumulator
 }
 
-func (a *deferredIterStatsAccumulator) init(parent IterStatsAccumulator) {
+func (a *DeferredIterStatsAccumulator) Init(parent IterStatsAccumulator) {
+	a.stats = CategoryStats{}
 	a.parent = parent
 }
 
-func (a *deferredIterStatsAccumulator) Accumulate(
-	blockBytes, blockBytesInCache uint64, blockReadDuration time.Duration,
-) {
-	a.stats.BlockBytes += blockBytes
-	a.stats.BlockBytesInCache += blockBytesInCache
-	a.stats.BlockReadDuration += blockReadDuration
+func (a *DeferredIterStatsAccumulator) Accumulate(stats CategoryStats) {
+	a.stats.aggregate(stats)
 }
 
-func (a *deferredIterStatsAccumulator) close() {
+// Close closes the accumulator, accumulating the stats to the parent.
+func (a *DeferredIterStatsAccumulator) Close() {
 	if a.parent != nil {
 		a.parent.Accumulate(a.stats)
 	}

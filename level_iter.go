@@ -25,6 +25,7 @@ type internalIterOpts struct {
 	compaction         bool
 	bufferPool         *sstable.BufferPool
 	stats              *base.InternalIteratorStats
+	statsAccum         sstable.IterStatsAccumulator
 	boundLimitedFilter sstable.BoundLimitedBlockPropertyFilter
 }
 

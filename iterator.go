@@ -240,6 +240,7 @@ type Iterator struct {
 	readSampling        readSampling
 	stats               IteratorStats
 	externalReaders     [][]*sstable.Reader
+	iterStatsAccum      sstable.DeferredIterStatsAccumulator
 
 	// Following fields used when constructing an iterator stack, eg, in Clone
 	// and SetOptions or when re-fragmenting a batch's range keys/range dels.
@@ -2382,6 +2383,8 @@ func (i *Iterator) Close() error {
 		i.readState.unref()
 		i.readState = nil
 	}
+	// Propagate any accumulated categorized iterator stats.
+	i.iterStatsAccum.Close()
 
 	if i.version != nil {
 		i.version.Unref()

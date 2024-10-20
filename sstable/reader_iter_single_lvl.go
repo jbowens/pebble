@@ -72,7 +72,7 @@ type singleLevelIterator[I any, PI indexBlockIterator[I], D any, PD dataBlockIte
 	err          error
 	closeHook    func(i Iterator) error
 
-	iterStats    deferredIterStatsAccumulator
+	iterStats    DeferredIterStatsAccumulator
 	readBlockEnv readBlockEnv
 
 	// boundsCmp and positionedUsingLatestBounds are for optimizing iteration
@@ -351,7 +351,7 @@ func (i *singleLevelIterator[I, PI, D, PD]) init(
 		i.endKeyInclusive, i.lower, i.upper = v.constrainBounds(lower, upper, false /* endInclusive */)
 	}
 
-	i.iterStats.init(statsAccum)
+	i.iterStats.Init(statsAccum)
 	i.readBlockEnv = readBlockEnv{
 		Stats:      stats,
 		IterStats:  &i.iterStats,
@@ -1584,7 +1584,7 @@ func (i *singleLevelIterator[I, PI, D, PD]) closeInternal() error {
 	if invariants.Enabled && i.inPool {
 		panic("Close called on interator in pool")
 	}
-	i.iterStats.close()
+	i.iterStats.Close()
 	var err error
 	if i.closeHook != nil {
 		err = firstError(err, i.closeHook(i))
