@@ -130,8 +130,9 @@ func TestCopySpan(t *testing.T) {
 			}
 			defer iter.Close()
 			var result strings.Builder
-			for key := iter.First(); key != nil; key = iter.Next() {
-				fmt.Fprintf(&result, "%s: %s\n", key.K, key.V.InPlaceValue())
+			for kv := iter.First(); kv != nil; kv = iter.Next() {
+				lv := kv.V.LazyValue()
+				fmt.Fprintf(&result, "%s: %s\n", kv.K, lv.InPlaceValue())
 			}
 			return result.String()
 

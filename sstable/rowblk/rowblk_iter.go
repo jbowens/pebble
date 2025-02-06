@@ -702,11 +702,11 @@ func (i *Iter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV {
 		// Initialize i.lazyValue
 		if !i.lazyValueHandling.hasValuePrefix ||
 			i.ikv.K.Kind() != base.InternalKeyKindSet {
-			i.ikv.V = base.MakeInPlaceValue(i.val)
+			i.ikv.V = base.InPlaceValuer(i.val)
 		} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-			i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+			i.ikv.V = base.InPlaceValuer(i.val[1:])
 		} else {
-			i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+			i.ikv.V = i
 		}
 		return &i.ikv
 	}
@@ -717,6 +717,14 @@ func (i *Iter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV {
 		}
 	}
 	return nil
+}
+
+func (i *Iter) LazyValue() base.LazyValue {
+	return i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+}
+
+func (i *Iter) InlineLen() uint32 {
+	return uint32(len(i.val))
 }
 
 // SeekPrefixGE implements internalIterator.SeekPrefixGE, as documented in the
@@ -988,11 +996,11 @@ func (i *Iter) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV {
 	}
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
-		i.ikv.V = base.MakeInPlaceValue(i.val)
+		i.ikv.V = base.InPlaceValuer(i.val)
 	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-		i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
-		i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+		i.ikv.V = i
 	}
 	return &i.ikv
 }
@@ -1017,11 +1025,11 @@ func (i *Iter) First() *base.InternalKV {
 	i.maybeReplaceSuffix()
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
-		i.ikv.V = base.MakeInPlaceValue(i.val)
+		i.ikv.V = base.InPlaceValuer(i.val)
 	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-		i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
-		i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+		i.ikv.V = i
 	}
 	return &i.ikv
 }
@@ -1063,11 +1071,11 @@ func (i *Iter) Last() *base.InternalKV {
 	i.maybeReplaceSuffix()
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
-		i.ikv.V = base.MakeInPlaceValue(i.val)
+		i.ikv.V = base.InPlaceValuer(i.val)
 	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-		i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
-		i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+		i.ikv.V = i
 	}
 	return &i.ikv
 }
@@ -1122,11 +1130,11 @@ start:
 	}
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
-		i.ikv.V = base.MakeInPlaceValue(i.val)
+		i.ikv.V = base.InPlaceValuer(i.val)
 	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-		i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
-		i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+		i.ikv.V = i
 	}
 	return &i.ikv
 }
@@ -1412,11 +1420,11 @@ func (i *Iter) nextPrefixV3(succKey []byte) *base.InternalKV {
 				panic(errors.AssertionFailedf("nextPrefixV3 being run for non-v3 sstable"))
 			}
 			if i.ikv.K.Kind() != base.InternalKeyKindSet {
-				i.ikv.V = base.MakeInPlaceValue(i.val)
+				i.ikv.V = base.InPlaceValuer(i.val)
 			} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-				i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+				i.ikv.V = base.InPlaceValuer(i.val[1:])
 			} else {
-				i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+				i.ikv.V = i
 			}
 			return &i.ikv
 		}
@@ -1470,11 +1478,11 @@ start:
 		i.cached = i.cached[:n]
 		if !i.lazyValueHandling.hasValuePrefix ||
 			i.ikv.K.Kind() != base.InternalKeyKindSet {
-			i.ikv.V = base.MakeInPlaceValue(i.val)
+			i.ikv.V = base.InPlaceValuer(i.val)
 		} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-			i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+			i.ikv.V = base.InPlaceValuer(i.val[1:])
 		} else {
-			i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+			i.ikv.V = i
 		}
 		return &i.ikv
 	}
@@ -1552,11 +1560,11 @@ start:
 	}
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
-		i.ikv.V = base.MakeInPlaceValue(i.val)
+		i.ikv.V = base.InPlaceValuer(i.val)
 	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
-		i.ikv.V = base.MakeInPlaceValue(i.val[1:])
+		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
-		i.ikv.V = i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+		i.ikv.V = i
 	}
 	return &i.ikv
 }
@@ -1658,7 +1666,8 @@ func (i *Iter) Describe(tp treeprinter.Node, fmtKV DescribeKV) {
 		enc.KeyUnshared, ptr = decodeVarint(ptr)
 		enc.ValueLen, _ = decodeVarint(ptr)
 		buf.Reset()
-		fmtKV(&buf, &kv.K, kv.V.ValueOrHandle, enc)
+		lv := kv.V.LazyValue()
+		fmtKV(&buf, &kv.K, lv.ValueOrHandle, enc)
 		tp.Child(buf.String())
 	}
 	// Format the restart points.

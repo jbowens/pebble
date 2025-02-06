@@ -601,7 +601,7 @@ func (i *Iterator) findNextEntry(limit []byte) {
 		case InternalKeyKindSet, InternalKeyKindSetWithDelete:
 			i.keyBuf = append(i.keyBuf[:0], key.UserKey...)
 			i.key = i.keyBuf
-			i.value = i.iterKV.V
+			i.value = i.iterKV.V.LazyValue()
 			i.iterValidityState = IterValid
 			i.saveRangeKey()
 			return
@@ -685,7 +685,7 @@ func (i *Iterator) nextPointCurrentUserKey() bool {
 		return false
 
 	case InternalKeyKindSet, InternalKeyKindSetWithDelete:
-		i.value = i.iterKV.V
+		i.value = i.iterKV.V.LazyValue()
 		return true
 
 	case InternalKeyKindMerge:
@@ -1048,7 +1048,8 @@ func (i *Iterator) findPrevEntry(limit []byte) {
 			// call, so use valueBuf instead. Note that valueBuf is only used
 			// in this one instance; everywhere else (eg. in findNextEntry),
 			// we just point i.value to the unsafe i.iter-owned value buffer.
-			i.value, i.valueBuf = i.iterKV.V.Clone(i.valueBuf[:0], &i.fetcher)
+			lv := i.iterKV.V.LazyValue()
+			i.value, i.valueBuf = lv.Clone(i.valueBuf[:0], &i.fetcher)
 			i.saveRangeKey()
 			i.iterValidityState = IterValid
 			i.iterKV = i.iter.Prev()

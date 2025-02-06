@@ -603,14 +603,38 @@ func ParseInternalKeyRange(s string) (start, end InternalKey) {
 func MakeInternalKV(k InternalKey, v []byte) InternalKV {
 	return InternalKV{
 		K: k,
-		V: MakeInPlaceValue(v),
+		V: InPlaceValuer(v),
 	}
+}
+
+// InPlaceValuer implements the LazyValuer interface by returning the contained
+// byte slice as the in-place value.
+type InPlaceValuer []byte
+
+// Assert that InPlaceValuer implements the LazyValuer interface.
+var _ LazyValuer = InPlaceValuer(nil)
+
+// LazyValue implements the LazyValuer interface.
+func (v InPlaceValuer) LazyValue() LazyValue {
+	return MakeInPlaceValue(v)
+}
+
+// InlineLen returns the length of the in-place value. It's required to
+// implement the LazyValuer interface.
+func (v InPlaceValuer) InlineLen() uint32 {
+	return uint32(len(v))
+}
+
+// LazyValuer is a type that can produce a LazyValue.
+type LazyValuer interface {
+	LazyValue() LazyValue
+	InlineLen() uint32
 }
 
 // InternalKV represents a single internal key-value pair.
 type InternalKV struct {
 	K InternalKey
-	V LazyValue
+	V LazyValuer
 }
 
 // Kind returns the KV's internal key kind.
@@ -625,12 +649,14 @@ func (kv *InternalKV) SeqNum() SeqNum {
 
 // InPlaceValue returns the KV's in-place value.
 func (kv *InternalKV) InPlaceValue() []byte {
-	return kv.V.InPlaceValue()
+	lv := kv.V.LazyValue()
+	return lv.InPlaceValue()
 }
 
 // Value return's the KV's underlying value.
 func (kv *InternalKV) Value(buf []byte) (val []byte, callerOwned bool, err error) {
-	return kv.V.Value(buf)
+	lv := kv.V.LazyValue()
+	return lv.Value(buf)
 }
 
 // Visible returns true if the key is visible at the specified snapshot

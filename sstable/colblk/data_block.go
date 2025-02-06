@@ -762,12 +762,13 @@ func (rw *DataBlockRewriter) RewriteSuffixes(
 
 	// Rewrite each key-value pair one-by-one.
 	for i, kv := 0, rw.iter.First(); kv != nil; i, kv = i+1, rw.iter.Next() {
-		value := kv.V.ValueOrHandle
+		lv := kv.V.LazyValue()
+		value := lv.ValueOrHandle
 		valuePrefix := block.InPlaceValuePrefix(false /* setHasSamePrefix (unused) */)
 		isValueExternal := rw.decoder.isValueExternal.At(i)
 		if isValueExternal {
-			valuePrefix = block.ValuePrefix(kv.V.ValueOrHandle[0])
-			value = kv.V.ValueOrHandle[1:]
+			valuePrefix = block.ValuePrefix(lv.ValueOrHandle[0])
+			value = lv.ValueOrHandle[1:]
 		}
 		kcmp := rw.encoder.KeyWriter.ComparePrev(kv.K.UserKey)
 		if !bytes.Equal(kv.K.UserKey[kcmp.PrefixLen:], from) {
@@ -1334,15 +1335,23 @@ func (i *DataBlockIter) Next() *base.InternalKV {
 			i.kv.K.SetSeqNum(base.SeqNum(n))
 		}
 	}
+	i.kv.V = i
+	i.kvRow = i.row
+	return &i.kv
+}
+
+func (i *DataBlockIter) LazyValue() base.LazyValue {
 	// Inline i.d.values.At(row).
 	v := i.d.values.slice(i.d.values.offsets.At2(i.row))
 	if i.d.isValueExternal.At(i.row) {
-		i.kv.V = i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v)
-	} else {
-		i.kv.V = base.MakeInPlaceValue(v)
+		return i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v)
 	}
-	i.kvRow = i.row
-	return &i.kv
+	return base.MakeInPlaceValue(v)
+}
+
+func (i *DataBlockIter) InlineLen() uint32 {
+	a, b := i.d.values.offsets.At2(i.row)
+	return b - a
 }
 
 // NextPrefix moves the iterator to the next row with a different prefix than
@@ -1502,14 +1511,7 @@ func (i *DataBlockIter) decodeRow() *base.InternalKV {
 				i.kv.K.SetSeqNum(base.SeqNum(n))
 			}
 		}
-		// Inline i.d.values.At(row).
-		startOffset := i.d.values.offsets.At(i.row)
-		v := unsafe.Slice((*byte)(i.d.values.ptr(startOffset)), i.d.values.offsets.At(i.row+1)-startOffset)
-		if i.d.isValueExternal.At(i.row) {
-			i.kv.V = i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v)
-		} else {
-			i.kv.V = base.MakeInPlaceValue(v)
-		}
+		i.kv.V = i
 		i.kvRow = i.row
 		return &i.kv
 	}

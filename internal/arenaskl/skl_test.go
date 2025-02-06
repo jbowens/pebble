@@ -104,7 +104,8 @@ func TestFull(t *testing.T) {
 	require.Equal(t, ErrArenaFull, err)
 }
 
-func mustGetValue(t *testing.T, lv base.LazyValue) []byte {
+func mustGetValue(t *testing.T, lazyValuer base.LazyValuer) []byte {
+	lv := lazyValuer.LazyValue()
 	v, _, err := lv.Value(nil)
 	require.NoError(t, err)
 	return v

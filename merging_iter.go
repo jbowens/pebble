@@ -1371,9 +1371,12 @@ func (m *mergingIter) ForEachLevelIter(fn func(li *levelIter) bool) {
 }
 
 func (m *mergingIter) addItemStats(l *mergingIterLevel) {
+	if l.iterKV.V == nil {
+		panic(fmt.Sprintf("pebble: mergingIterLevel.iterKV.V is nil; l.iter = %s", l.iter))
+	}
 	m.stats.PointCount++
 	m.stats.KeyBytes += uint64(len(l.iterKV.K.UserKey))
-	m.stats.ValueBytes += uint64(len(l.iterKV.V.ValueOrHandle))
+	m.stats.ValueBytes += uint64(l.iterKV.V.InlineLen())
 }
 
 var _ internalIterator = &mergingIter{}

@@ -164,7 +164,8 @@ func TestKeySchema_RandomKeys(t *testing.T) {
 		validateEngineKey.MustValidate(kv.K.UserKey)
 
 		// We write keys[k] as the value too, so check that it's verbatim equal.
-		value, callerOwned, err := kv.V.Value(valBuf)
+		lv := kv.V.LazyValue()
+		value, callerOwned, err := lv.Value(valBuf)
 		require.NoError(t, err)
 		require.Equal(t, keys[k], value)
 		if callerOwned {
@@ -191,7 +192,8 @@ func TestKeySchema_RandomKeys(t *testing.T) {
 		require.Equal(t, 0, Compare(keys[i], kv.K.UserKey))
 
 		// We write keys[k] as the value too, so check that it's verbatim equal.
-		value, callerOwned, err := kv.V.Value(valBuf)
+		lv := kv.V.LazyValue()
+		value, callerOwned, err := lv.Value(valBuf)
 		require.NoError(t, err)
 		require.Equal(t, keys[i], value)
 		if callerOwned {

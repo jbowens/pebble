@@ -421,8 +421,9 @@ func testCockroachDataColBlock(t *testing.T, seed uint64, keyCfg keyGenConfig) {
 		if !bytes.Equal(kv.K.UserKey, keys[i]) {
 			t.Fatalf("expected %q, but found %q", keys[i], kv.K.UserKey)
 		}
-		if !bytes.Equal(kv.V.InPlaceValue(), values[i]) {
-			t.Fatalf("expected %x, but found %x", values[i], kv.V.InPlaceValue())
+		lv := kv.V.LazyValue()
+		if !bytes.Equal(lv.InPlaceValue(), values[i]) {
+			t.Fatalf("expected %x, but found %x", values[i], lv.InPlaceValue())
 		}
 	}
 	require.Equal(t, len(keys), i)
@@ -440,11 +441,13 @@ func testCockroachDataColBlock(t *testing.T, seed uint64, keyCfg keyGenConfig) {
 			)
 		}
 		// Search for the correct value among all keys that are equal.
-		for !bytes.Equal(kv.V.InPlaceValue(), values[i]) {
+		lv := kv.V.LazyValue()
+		for !bytes.Equal(lv.InPlaceValue(), values[i]) {
 			kv = it.Next()
 			if kv == nil || Compare(kv.K.UserKey, keys[i]) != 0 {
 				t.Fatalf("could not find correct value for %s", formatUserKey(keys[i]))
 			}
+			lv = kv.V.LazyValue()
 		}
 	}
 }
@@ -645,7 +648,8 @@ func formatInternalKey(key base.InternalKey) string {
 //
 //	foo @ 0001020304050607 #1,SET
 func formatInternalKV(kv base.InternalKV) string {
-	val, _, err := kv.V.Value(nil)
+	lv := kv.V.LazyValue()
+	val, _, err := lv.Value(nil)
 	if err != nil {
 		panic(err)
 	}

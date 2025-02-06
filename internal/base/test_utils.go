@@ -76,6 +76,11 @@ func fakeIkey(s string) InternalKey {
 
 // NewFakeIter returns an iterator over the given KVs.
 func NewFakeIter(kvs []InternalKV) *FakeIter {
+	for i := range kvs {
+		if kvs[i].V == nil {
+			kvs[i].V = InPlaceValuer(nil)
+		}
+	}
 	return &FakeIter{
 		kvs:   kvs,
 		index: 0,
@@ -227,6 +232,15 @@ func (f *FakeIter) KV() *InternalKV {
 		return &f.kvs[0]
 	}
 	return &f.kvs[len(f.kvs)-1]
+}
+
+// LazyValue implements base.LazyValuer.
+func (f *FakeIter) LazyValue() LazyValue {
+	i := min(f.index, len(f.kvs)-1)
+	if f.kvs[i].V == nil {
+		return LazyValue{}
+	}
+	return f.kvs[i].V.LazyValue()
 }
 
 // Valid is part of the InternalIterator interface.

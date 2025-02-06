@@ -28,7 +28,7 @@ func ReadAll(
 		val, _ := testutils.CheckErr2(kv.Value(nil))
 		points = append(points, base.InternalKV{
 			K: kv.K.Clone(),
-			V: base.MakeInPlaceValue(val),
+			V: base.InPlaceValuer(val),
 		})
 	}
 

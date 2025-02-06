@@ -63,7 +63,7 @@ func (it *flushIterator) Next() *base.InternalKV {
 		return nil
 	}
 	it.decodeKey()
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = base.InPlaceValuer(it.value())
 	return &it.kv
 }
 
