@@ -476,7 +476,7 @@ func (i *Iter) Next() (*base.InternalKey, base.LazyValue) {
 			// This goes against the comment on i.key in the struct, and
 			// therefore warrants some investigation.
 			i.saveKey()
-			i.value = i.iterKV.V
+			i.value = i.iterKV.V.LazyValue()
 			if invariants.Enabled && !i.value.IsInPlaceValue() {
 				panic(errors.AssertionFailedf("pebble: span key's value is not in-place"))
 			}
@@ -588,7 +588,7 @@ func (i *Iter) Next() (*base.InternalKey, base.LazyValue) {
 			origSnapshotIdx := i.curSnapshotIdx
 			var valueMerger base.ValueMerger
 			// MERGE values are always stored in-place.
-			valueMerger, i.err = i.cfg.Merge(i.iterKV.K.UserKey, i.iterKV.V.InPlaceValue())
+			valueMerger, i.err = i.cfg.Merge(i.iterKV.K.UserKey, i.iterKV.InPlaceValue())
 			if i.err == nil {
 				i.mergeNext(valueMerger)
 			}
@@ -779,7 +779,7 @@ func (i *Iter) nextInStripeHelper() stripeChangeType {
 func (i *Iter) setNext() {
 	// Save the current key.
 	i.saveKey()
-	i.value = i.iterKV.V
+	i.value = i.iterKV.V.LazyValue()
 	i.maybeZeroSeqnum(i.curSnapshotIdx)
 
 	// If this key is already a SETWITHDEL we can early return and skip the remaining
@@ -920,8 +920,11 @@ func (i *Iter) mergeNext(valueMerger base.ValueMerger) {
 func (i *Iter) singleDeleteNext() bool {
 	// Save the current key.
 	i.saveKey()
-	if invariants.Enabled && (!i.iterKV.V.IsInPlaceValue() || i.iterKV.V.Len() != 0) {
-		panic(errors.AssertionFailedf("pebble: single delete value is not in-place or is non-empty"))
+	if invariants.Enabled {
+		lv := i.iterKV.V.LazyValue()
+		if !lv.IsInPlaceValue() || lv.Len() != 0 {
+			panic(errors.AssertionFailedf("pebble: single delete value is not in-place or is non-empty"))
+		}
 	}
 	i.value = base.LazyValue{} // SINGLEDELs are value-less.
 
@@ -1115,7 +1118,7 @@ func (i *Iter) deleteSizedNext() (*base.InternalKey, base.LazyValue) {
 	// In this case, we still peek forward in case there's another DELSIZED key
 	// with a lower sequence number, in which case we'll adopt its value.
 	// If the DELSIZED does have a value, it must be in-place.
-	i.valueBuf = append(i.valueBuf[:0], i.iterKV.V.InPlaceValue()...)
+	i.valueBuf = append(i.valueBuf[:0], i.iterKV.InPlaceValue()...)
 	i.value = base.MakeInPlaceValue(i.valueBuf)
 
 	// Loop through all the keys within this stripe that are skippable.
@@ -1214,7 +1217,8 @@ func (i *Iter) deleteSizedNext() (*base.InternalKey, base.LazyValue) {
 				i.err = base.CorruptionErrorf("DELSIZED holds invalid value: %x", errors.Safe(v))
 				return nil, base.LazyValue{}
 			}
-			elidedSize := uint64(len(i.iterKV.K.UserKey)) + uint64(i.iterKV.V.Len())
+			iterLV := i.iterKV.V.LazyValue()
+			elidedSize := uint64(len(i.iterKV.K.UserKey)) + uint64(iterLV.Len())
 			if elidedSize != expectedSize {
 				// The original DELSIZED key was missized. It's unclear what to
 				// do. The user-provided size was wrong, so it's unlikely to be
@@ -1289,7 +1293,7 @@ func (i *Iter) saveValue() {
 	// TODO(jackson): With the introduction of values stored in separate
 	// physical blob files, this should begin to Clone LazyValues that are
 	// stored in blob reference files when non-rewriting blob files.
-	v, callerOwned, err := i.iterKV.V.Value(i.valueBuf[:0])
+	v, callerOwned, err := i.iterKV.Value(i.valueBuf[:0])
 	if err != nil {
 		i.err = err
 		i.value = base.LazyValue{}

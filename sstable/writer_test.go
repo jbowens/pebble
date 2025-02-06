@@ -439,19 +439,20 @@ func TestWriterWithValueBlocks(t *testing.T) {
 
 			var buf bytes.Buffer
 			for kv := iter.First(); kv != nil; kv = iter.Next() {
+				lv := kv.V.LazyValue()
 				if kv.K.Kind() == InternalKeyKindSet {
-					prefix := block.ValuePrefix(kv.V.ValueOrHandle[0])
+					prefix := block.ValuePrefix(lv.ValueOrHandle[0])
 					setWithSamePrefix := prefix.SetHasSamePrefix()
 					if prefix.IsValueHandle() {
 						attribute := prefix.ShortAttribute()
-						vh := valblk.DecodeHandle(kv.V.ValueOrHandle[1:])
+						vh := valblk.DecodeHandle(lv.ValueOrHandle[1:])
 						fmt.Fprintf(&buf, "%s:value-handle len %d block %d offset %d, att %d, same-pre %t\n",
 							kv.K, vh.ValueLen, vh.BlockNum, vh.OffsetInBlock, attribute, setWithSamePrefix)
 					} else {
-						fmt.Fprintf(&buf, "%s:in-place %s, same-pre %t\n", kv.K, kv.V.ValueOrHandle[1:], setWithSamePrefix)
+						fmt.Fprintf(&buf, "%s:in-place %s, same-pre %t\n", kv.K, lv.ValueOrHandle[1:], setWithSamePrefix)
 					}
 				} else {
-					fmt.Fprintf(&buf, "%s:%s\n", kv.K, kv.V.ValueOrHandle)
+					fmt.Fprintf(&buf, "%s:%s\n", kv.K, lv.ValueOrHandle)
 				}
 			}
 			return buf.String()
@@ -482,10 +483,11 @@ func TestWriterWithValueBlocks(t *testing.T) {
 			n := 0
 			var b []byte
 			for kv := iter.First(); kv != nil; kv = iter.Next() {
+				lv := kv.V.LazyValue()
 				var lvClone base.LazyValue
-				lvClone, b = kv.V.Clone(b, &fetchers[n])
-				if kv.V.Fetcher != nil {
-					_, callerOwned, err := kv.V.Value(nil)
+				lvClone, b = lv.Clone(b, &fetchers[n])
+				if lv.Fetcher != nil {
+					_, callerOwned, err := lv.Value(nil)
 					require.False(t, callerOwned)
 					require.NoError(t, err)
 				}

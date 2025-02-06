@@ -26,6 +26,7 @@ func MaybeWrapIfInvariants(iter base.InternalIterator) base.InternalIterator {
 type iter struct {
 	iter        base.InternalIterator
 	lastKV      *base.InternalKV
+	lastLV      base.LazyValue
 	ignoreKinds [base.InternalKeyKindMax + 1]bool
 	err         error
 }
@@ -67,18 +68,28 @@ func (i *iter) update(kv *base.InternalKV) *base.InternalKV {
 		return nil
 	}
 
+	lv := kv.V.LazyValue()
 	i.lastKV = &base.InternalKV{
 		K: kv.K.Clone(),
-		V: base.LazyValue{
-			ValueOrHandle: append(make([]byte, 0, len(kv.V.ValueOrHandle)), kv.V.ValueOrHandle...),
-		},
+		V: i,
 	}
-	if kv.V.Fetcher != nil {
+	i.lastLV = base.LazyValue{
+		ValueOrHandle: append(make([]byte, 0, len(lv.ValueOrHandle)), lv.ValueOrHandle...),
+	}
+	if lv.Fetcher != nil {
 		fetcher := new(base.LazyFetcher)
-		*fetcher = *kv.V.Fetcher
-		i.lastKV.V.Fetcher = fetcher
+		*fetcher = *lv.Fetcher
+		i.lastLV.Fetcher = fetcher
 	}
 	return i.lastKV
+}
+
+func (i *iter) LazyValue() base.LazyValue {
+	return i.lastLV
+}
+
+func (i *iter) InlineLen() uint32 {
+	return uint32(len(i.lastLV.ValueOrHandle))
 }
 
 func (i *iter) trashLastKV() {
@@ -95,13 +106,13 @@ func (i *iter) trashLastKV() {
 		}
 		i.lastKV.K.Trailer = 0xffffffffffffffff
 	}
-	for j := range i.lastKV.V.ValueOrHandle {
-		i.lastKV.V.ValueOrHandle[j] = 0xff
+	for j := range i.lastLV.ValueOrHandle {
+		i.lastLV.ValueOrHandle[j] = 0xff
 	}
-	if i.lastKV.V.Fetcher != nil {
+	if i.lastLV.Fetcher != nil {
 		// Not all the LazyFetcher fields are visible, so we zero out the last
 		// value's Fetcher struct entirely.
-		*i.lastKV.V.Fetcher = base.LazyFetcher{}
+		*i.lastLV.Fetcher = base.LazyFetcher{}
 	}
 }
 

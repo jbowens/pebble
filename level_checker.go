@@ -99,7 +99,7 @@ func (m *simpleMergingIter) init(
 		if l.iterKV != nil {
 			item := simpleMergingIterItem{
 				index: i,
-				value: l.iterKV.V,
+				value: l.iterKV.V.LazyValue(),
 			}
 			item.key = l.iterKV.K.Clone()
 			m.heap.items = append(m.heap.items, item)
@@ -169,7 +169,7 @@ func (m *simpleMergingIter) step() bool {
 			Trailer: l.iterKV.K.Trailer,
 			UserKey: append(item.key.UserKey[:0], l.iterKV.K.UserKey...),
 		}
-		item.value = l.iterKV.V
+		item.value = l.iterKV.V.LazyValue()
 		if m.heap.len() > 1 {
 			m.heap.fix(0)
 		}

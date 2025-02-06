@@ -1711,7 +1711,7 @@ func (i *batchIter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
 }
 
@@ -1739,7 +1739,7 @@ func (i *batchIter) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV 
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
 }
 
@@ -1754,7 +1754,7 @@ func (i *batchIter) First() *base.InternalKV {
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
 }
 
@@ -1769,7 +1769,7 @@ func (i *batchIter) Last() *base.InternalKV {
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
 }
 
@@ -1783,7 +1783,7 @@ func (i *batchIter) Next() *base.InternalKV {
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
 }
 
@@ -1799,7 +1799,7 @@ func (i *batchIter) NextPrefix(succKey []byte) *base.InternalKV {
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
 }
 
@@ -1813,8 +1813,21 @@ func (i *batchIter) Prev() *base.InternalKV {
 		return nil
 	}
 	i.kv.K = *ikey
-	i.kv.V = base.MakeInPlaceValue(i.value())
+	i.kv.V = i
 	return &i.kv
+}
+
+// LazyValue implements base.Valuer.
+func (i *batchIter) LazyValue() base.LazyValue {
+	return base.MakeInPlaceValue(i.value())
+}
+
+// InlineLen returns the length of the inline value at the current position.
+// It's required by base.Valuer.
+func (i *batchIter) InlineLen() uint32 {
+	// TODO(jackson): This duplicates the work of decoding the value from the
+	// batch, and it can be avoided.
+	return uint32(len(i.value()))
 }
 
 func (i *batchIter) value() []byte {
@@ -2312,12 +2325,13 @@ func (i *flushableBatchIter) getKey(index int) InternalKey {
 func (i *flushableBatchIter) getKV(index int) *base.InternalKV {
 	i.kv = base.InternalKV{
 		K: i.getKey(index),
-		V: i.extractValue(),
+		V: i,
 	}
 	return &i.kv
 }
 
-func (i *flushableBatchIter) extractValue() base.LazyValue {
+// LazyValue implements base.Valuer.
+func (i *flushableBatchIter) LazyValue() base.LazyValue {
 	p := i.data[i.offsets[i.index].offset:]
 	if len(p) == 0 {
 		i.err = base.CorruptionErrorf("corrupted batch")
@@ -2342,6 +2356,14 @@ func (i *flushableBatchIter) extractValue() base.LazyValue {
 		}
 	}
 	return base.MakeInPlaceValue(value)
+}
+
+// InlineLen returns the length of the inline value at the current position.
+// It's required by base.Valuer.
+func (i *flushableBatchIter) InlineLen() uint32 {
+	// TODO(jackson): This duplicates the work of decoding the value from the
+	// batch, and it can be avoided.
+	return uint32(len(i.LazyValue().ValueOrHandle))
 }
 
 func (i *flushableBatchIter) Valid() bool {

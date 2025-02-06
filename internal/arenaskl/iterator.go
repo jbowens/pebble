@@ -123,7 +123,7 @@ func (it *Iterator) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV 
 		it.upperNode = it.nd
 		return nil
 	}
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = it
 	return &it.kv
 }
 
@@ -151,7 +151,7 @@ func (it *Iterator) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV 
 		it.lowerNode = it.nd
 		return nil
 	}
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = it
 	return &it.kv
 }
 
@@ -169,7 +169,7 @@ func (it *Iterator) First() *base.InternalKV {
 		it.upperNode = it.nd
 		return nil
 	}
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = it
 	return &it.kv
 }
 
@@ -187,7 +187,7 @@ func (it *Iterator) Last() *base.InternalKV {
 		it.lowerNode = it.nd
 		return nil
 	}
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = it
 	return &it.kv
 }
 
@@ -205,7 +205,7 @@ func (it *Iterator) Next() *base.InternalKV {
 		it.upperNode = it.nd
 		return nil
 	}
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = it
 	return &it.kv
 }
 
@@ -227,8 +227,19 @@ func (it *Iterator) Prev() *base.InternalKV {
 		it.lowerNode = it.nd
 		return nil
 	}
-	it.kv.V = base.MakeInPlaceValue(it.value())
+	it.kv.V = it
 	return &it.kv
+}
+
+// LazyValue implements base.Valuer.
+func (it *Iterator) LazyValue() base.LazyValue {
+	return base.LazyValue{ValueOrHandle: it.value()}
+}
+
+// InlineLen returns the length of the inline value at the current position.
+// It's required by base.Valuer.
+func (it *Iterator) InlineLen() uint32 {
+	return it.nd.valueSize
 }
 
 // value returns the value at the current position.

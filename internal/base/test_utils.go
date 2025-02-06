@@ -76,6 +76,11 @@ func fakeIkey(s string) InternalKey {
 
 // NewFakeIter returns an iterator over the given KVs.
 func NewFakeIter(kvs []InternalKV) *FakeIter {
+	for i := range kvs {
+		if kvs[i].V == nil {
+			kvs[i].V = InPlaceValuer(nil)
+		}
+	}
 	return &FakeIter{
 		kvs:   kvs,
 		index: 0,

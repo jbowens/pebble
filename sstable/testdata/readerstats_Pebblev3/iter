@@ -55,12 +55,12 @@ next
 stats
 ----
 seek-ge e@37: <e@37:47>
-{BlockBytes:328 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:0 ValueBytes:0 PointCount:0 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:4 ValueBytes:18 ValueBytesFetched:5}}
+{BlockBytes:328 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:0 ValueBytes:0 PointCount:0 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:1 ValueBytes:5 ValueBytesFetched:5}}
         next: <e@36:46>
         next: <e@35:45>
         next: <e@34:44>
         next: <e@33:43>
-{BlockBytes:328 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:0 ValueBytes:0 PointCount:0 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:8 ValueBytes:38 ValueBytesFetched:25}}
+{BlockBytes:328 BlockBytesInCache:0 BlockReadDuration:0s KeyBytes:0 ValueBytes:0 PointCount:0 PointsCoveredByRangeTombstones:0 SeparatedPointValue:{Count:5 ValueBytes:25 ValueBytesFetched:25}}
 
 # seek-ge e@26 lands at the restart point e@26.
 iter
