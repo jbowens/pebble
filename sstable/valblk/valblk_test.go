@@ -11,13 +11,14 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/crlib/testutils/leaktest"
+	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/stretchr/testify/require"
 )
 
 func TestHandleEncodeDecode(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	testCases := []Handle{
+	testCases := []base.ValueHandle{
 		{ValueLen: 23, BlockNum: 100003, OffsetInBlock: 2300},
 		{ValueLen: math.MaxUint32 - 1, BlockNum: math.MaxUint32 / 2, OffsetInBlock: math.MaxUint32 - 2},
 	}

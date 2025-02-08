@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/sstable/block"
 )
@@ -58,11 +59,11 @@ func NewWriter(
 	return w
 }
 
-// AddValue adds a value to the writer, returning a Handle referring to the
+// AddValue adds a value to the writer, returning a ValueHandle referring to the
 // stored value.
-func (w *Writer) AddValue(v []byte) (Handle, error) {
+func (w *Writer) AddValue(v []byte) (base.ValueHandle, error) {
 	if invariants.Enabled && len(v) == 0 {
-		return Handle{}, errors.Errorf("cannot write empty value to value block")
+		return base.ValueHandle{}, errors.Errorf("cannot write empty value to value block")
 	}
 	w.numValues++
 	if blockLen := w.buf.Size(); w.flush.ShouldFlush(blockLen, blockLen+len(v)) {
@@ -73,7 +74,7 @@ func (w *Writer) AddValue(v []byte) (Handle, error) {
 			panic("buffer should be empty when starting new block")
 		}
 	}
-	vh := Handle{
+	vh := base.ValueHandle{
 		ValueLen: uint32(len(v)),
 		BlockNum: uint32(len(w.blocks)),
 	}

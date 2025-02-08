@@ -172,18 +172,12 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/sstable/block"
 )
 
-// Handle is stored with a key when the value is in a value block. This
-// handle is the pointer to that value.
-type Handle struct {
-	ValueLen      uint32
-	BlockNum      uint32
-	OffsetInBlock uint32
-}
-
-// HandleMaxLen is the maximum length of a variable-width encoded Handle.
+// HandleMaxLen is the maximum length of a variable-width encoded
+// base.ValueHandle.
 //
 // Handle fields are varint encoded, so maximum 5 bytes each, plus 1 byte for
 // the valuePrefix. This could alternatively be group varint encoded, but
@@ -191,9 +185,9 @@ type Handle struct {
 // (https://github.com/cockroachdb/pebble/pull/1443#issuecomment-1270298802).
 const HandleMaxLen = 5*3 + 1
 
-// EncodeHandle encodes the Handle into dst in a variable-width encoding and
-// returns the number of bytes encoded.
-func EncodeHandle(dst []byte, v Handle) int {
+// EncodeHandle encodes the ValueHandle into dst in a variable-width encoding
+// and returns the number of bytes encoded.
+func EncodeHandle(dst []byte, v base.ValueHandle) int {
 	n := 0
 	n += binary.PutUvarint(dst[n:], uint64(v.ValueLen))
 	n += binary.PutUvarint(dst[n:], uint64(v.BlockNum))
@@ -227,10 +221,10 @@ func DecodeLenFromHandle(src []byte) (uint32, []byte) {
 }
 
 // DecodeRemainingHandle decodes the BlockNum and OffsetInBlock from a
-// variable-width encoded Handle, assuming the ValueLen prefix has already been
+// variable-width encoded ValueHandle, assuming the ValueLen prefix has already been
 // stripped from src.
-func DecodeRemainingHandle(src []byte) Handle {
-	var vh Handle
+func DecodeRemainingHandle(src []byte) base.ValueHandle {
+	var vh base.ValueHandle
 	ptr := unsafe.Pointer(&src[0])
 	// Manually inlined uvarint decoding. Saves ~25% in benchmarks. Unrolling
 	// a loop for i:=0; i<2; i++, saves ~6%.
@@ -271,8 +265,8 @@ func DecodeRemainingHandle(src []byte) Handle {
 	return vh
 }
 
-// DecodeHandle decodes a Handle from a variable-length encoding.
-func DecodeHandle(src []byte) Handle {
+// DecodeHandle decodes a ValueHandle from a variable-length encoding.
+func DecodeHandle(src []byte) base.ValueHandle {
 	valLen, src := DecodeLenFromHandle(src)
 	vh := DecodeRemainingHandle(src)
 	vh.ValueLen = valLen

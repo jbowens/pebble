@@ -635,6 +635,21 @@ type Valuer interface {
 	InlineLen() uint32
 }
 
+type ValueHandle struct {
+	FileNum       FileNum
+	ValueLen      uint32
+	BlockNum      uint32
+	OffsetInBlock uint32
+}
+
+type ValueSource int8
+
+const (
+	ValueInline ValueSource = iota
+	ValueBlock
+	ValueBlob
+)
+
 // InternalKV represents a single internal key-value pair.
 type InternalKV struct {
 	K InternalKey
