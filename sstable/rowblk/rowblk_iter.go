@@ -188,7 +188,7 @@ type Iter struct {
 	// for block iteration for already loaded blocks.
 	firstUserKey      []byte
 	lazyValueHandling struct {
-		getValue       block.GetLazyValueForPrefixAndValueHandler
+		retriever      base.ValueRetriever
 		hasValuePrefix bool
 	}
 	synthSuffixBuf            []byte
@@ -298,11 +298,9 @@ func (i *Iter) SetHasValuePrefix(hasValuePrefix bool) {
 	i.lazyValueHandling.hasValuePrefix = hasValuePrefix
 }
 
-// SetGetLazyValuer sets the value block reader the iterator should use to get
-// lazy values when the value encodes a value prefix.
-func (i *Iter) SetGetLazyValuer(g block.GetLazyValueForPrefixAndValueHandler) {
-	i.lazyValueHandling.getValue = g
-
+// SetValueRetriever sets the value retriever the iterator should use in returned LazyValues.
+func (i *Iter) SetValueRetriever(vr base.ValueRetriever) {
+	i.lazyValueHandling.retriever = vr
 }
 
 // Handle returns the underlying block buffer handle, if the iterator was
@@ -703,7 +701,7 @@ func (i *Iter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV {
 		if !i.lazyValueHandling.hasValuePrefix ||
 			i.ikv.K.Kind() != base.InternalKeyKindSet {
 			i.ikv.V = base.InPlaceValuer(i.val)
-		} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+		} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 			i.ikv.V = base.InPlaceValuer(i.val[1:])
 		} else {
 			i.ikv.V = i
@@ -720,11 +718,19 @@ func (i *Iter) SeekGE(key []byte, flags base.SeekGEFlags) *base.InternalKV {
 }
 
 func (i *Iter) LazyValue() base.LazyValue {
-	return i.lazyValueHandling.getValue.GetLazyValueForPrefixAndValueHandle(i.val)
+	return base.LazyValue{
+		ValueOrHandle: i.val,
+		Retriever:     i.lazyValueHandling.retriever,
+	}
 }
 
-func (i *Iter) InlineLen() uint32 {
-	return uint32(len(i.val))
+func (i *Iter) DescribeValue() (inlineLen, valLen uint32, src base.ValueSource) {
+	lv := i.LazyValue()
+	src = base.ValueInline
+	if lv.Retriever != nil {
+		src = base.ValueBlock
+	}
+	return uint32(len(lv.ValueOrHandle)), uint32(lv.Len()), src
 }
 
 // SeekPrefixGE implements internalIterator.SeekPrefixGE, as documented in the
@@ -997,7 +1003,7 @@ func (i *Iter) SeekLT(key []byte, flags base.SeekLTFlags) *base.InternalKV {
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
 		i.ikv.V = base.InPlaceValuer(i.val)
-	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+	} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
 		i.ikv.V = i
@@ -1026,7 +1032,7 @@ func (i *Iter) First() *base.InternalKV {
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
 		i.ikv.V = base.InPlaceValuer(i.val)
-	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+	} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
 		i.ikv.V = i
@@ -1072,7 +1078,7 @@ func (i *Iter) Last() *base.InternalKV {
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
 		i.ikv.V = base.InPlaceValuer(i.val)
-	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+	} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
 		i.ikv.V = i
@@ -1131,7 +1137,7 @@ start:
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
 		i.ikv.V = base.InPlaceValuer(i.val)
-	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+	} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
 		i.ikv.V = i
@@ -1421,7 +1427,7 @@ func (i *Iter) nextPrefixV3(succKey []byte) *base.InternalKV {
 			}
 			if i.ikv.K.Kind() != base.InternalKeyKindSet {
 				i.ikv.V = base.InPlaceValuer(i.val)
-			} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+			} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 				i.ikv.V = base.InPlaceValuer(i.val[1:])
 			} else {
 				i.ikv.V = i
@@ -1479,7 +1485,7 @@ start:
 		if !i.lazyValueHandling.hasValuePrefix ||
 			i.ikv.K.Kind() != base.InternalKeyKindSet {
 			i.ikv.V = base.InPlaceValuer(i.val)
-		} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+		} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 			i.ikv.V = base.InPlaceValuer(i.val[1:])
 		} else {
 			i.ikv.V = i
@@ -1561,7 +1567,7 @@ start:
 	if !i.lazyValueHandling.hasValuePrefix ||
 		i.ikv.K.Kind() != base.InternalKeyKindSet {
 		i.ikv.V = base.InPlaceValuer(i.val)
-	} else if i.lazyValueHandling.getValue == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
+	} else if i.lazyValueHandling.retriever == nil || !block.ValuePrefix(i.val[0]).IsValueHandle() {
 		i.ikv.V = base.InPlaceValuer(i.val[1:])
 	} else {
 		i.ikv.V = i

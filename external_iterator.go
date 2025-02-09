@@ -175,9 +175,9 @@ func createExternalPointIter(
 			// BlockPropertiesFilterer that includes obsoleteKeyBlockPropertyFilter.
 			transforms := sstable.IterTransforms{SyntheticSeqNum: sstable.SyntheticSeqNum(seqNum)}
 			seqNum--
-			pointIter, err = r.NewPointIter(
+			pointIter, err = r.NewPointIterLimitedValueLifetime(
 				ctx, transforms, it.opts.LowerBound, it.opts.UpperBound, nil, /* BlockPropertiesFilterer */
-				sstable.NeverUseFilterBlock, readEnv, sstable.MakeTrivialReaderProvider(r))
+				sstable.NeverUseFilterBlock, readEnv)
 			if err != nil {
 				return nil, err
 			}

@@ -692,14 +692,6 @@ func NewDataBlockRewriter(keySchema *KeySchema, comparer *base.Comparer) *DataBl
 	}
 }
 
-type assertNoExternalValues struct{}
-
-var _ block.GetLazyValueForPrefixAndValueHandler = assertNoExternalValues{}
-
-func (assertNoExternalValues) GetLazyValueForPrefixAndValueHandle(value []byte) base.LazyValue {
-	panic(errors.AssertionFailedf("pebble: sstable contains values in value blocks"))
-}
-
 // RewriteSuffixes rewrites the input block. It expects the input block to only
 // contain keys with the suffix `from`. It rewrites the block to contain the
 // same keys with the suffix `to`.
@@ -715,7 +707,7 @@ func (rw *DataBlockRewriter) RewriteSuffixes(
 	input []byte, from []byte, to []byte,
 ) (start, end base.InternalKey, rewritten []byte, err error) {
 	if !rw.initialized {
-		rw.iter.InitOnce(rw.KeySchema, rw.comparer, assertNoExternalValues{})
+		rw.iter.InitOnce(rw.KeySchema, rw.comparer, nil)
 		rw.encoder.Init(rw.KeySchema)
 		rw.initialized = true
 	}
@@ -1018,9 +1010,9 @@ type DataBlockIter struct {
 	keySchema *KeySchema
 	suffixCmp base.ComparePointSuffixes
 	split     base.Split
-	// getLazyValuer configures the DataBlockIterConfig to initialize the
-	// DataBlockIter to use the provided handler for retrieving lazy values.
-	getLazyValuer block.GetLazyValueForPrefixAndValueHandler
+	// valueRetriever configures the DataBlockIter use the provided value
+	// retriever for retrieving lazy values.
+	valueRetriever base.ValueRetriever
 
 	// -- Fields that are initialized for each block --
 	// For any changes to these fields, InitHandle should be updated.
@@ -1053,12 +1045,12 @@ type DataBlockIter struct {
 func (i *DataBlockIter) InitOnce(
 	keySchema *KeySchema,
 	comparer *base.Comparer,
-	getLazyValuer block.GetLazyValueForPrefixAndValueHandler,
+	retriever base.ValueRetriever,
 ) {
 	i.keySchema = keySchema
 	i.suffixCmp = comparer.ComparePointSuffixes
 	i.split = comparer.Split
-	i.getLazyValuer = getLazyValuer
+	i.valueRetriever = retriever
 }
 
 // Init initializes the data block iterator, configuring it to read from the
@@ -1344,14 +1336,21 @@ func (i *DataBlockIter) LazyValue() base.LazyValue {
 	// Inline i.d.values.At(row).
 	v := i.d.values.slice(i.d.values.offsets.At2(i.row))
 	if i.d.isValueExternal.At(i.row) {
-		return i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v)
+		return base.LazyValue{
+			ValueOrHandle: v,
+			Retriever:     i.valueRetriever,
+		}
 	}
 	return base.MakeInPlaceValue(v)
 }
 
-func (i *DataBlockIter) InlineLen() uint32 {
-	a, b := i.d.values.offsets.At2(i.row)
-	return b - a
+func (i *DataBlockIter) DescribeValue() (inlineLen, valuLen uint32, src base.ValueSource) {
+	lv := i.LazyValue()
+	src = base.ValueInline
+	if lv.Retriever != nil {
+		src = base.ValueBlock
+	}
+	return uint32(len(lv.ValueOrHandle)), uint32(lv.Len()), src
 }
 
 // NextPrefix moves the iterator to the next row with a different prefix than

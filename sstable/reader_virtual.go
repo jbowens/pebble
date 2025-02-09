@@ -11,7 +11,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/rangekey"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/valblk"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 )
 
 // VirtualReader wraps Reader. Its purpose is to restrict functionality of the
@@ -94,10 +94,10 @@ func MakeVirtualReader(reader *Reader, p VirtualReaderParams) VirtualReader {
 
 // NewCompactionIter is the compaction iterator function for virtual readers.
 func (v *VirtualReader) NewCompactionIter(
-	transforms IterTransforms, env block.ReadEnv, rp valblk.ReaderProvider,
+	transforms IterTransforms, env block.ReadEnv, vr base.ValueRetriever,
 ) (Iterator, error) {
 	return v.reader.newCompactionIter(
-		transforms, env, rp, &v.vState)
+		transforms, env, vr, &v.vState)
 }
 
 // NewPointIter returns an iterator for the point keys in the table.
@@ -116,11 +116,31 @@ func (v *VirtualReader) NewPointIter(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 ) (Iterator, error) {
 	return v.reader.newPointIter(
 		ctx, transforms, lower, upper, filterer, filterBlockSizeLimit,
-		env, rp, &v.vState)
+		env, vr, &v.vState)
+}
+
+func (v *VirtualReader) NewPointIterLimitedValueLifetime(
+	ctx context.Context,
+	transforms IterTransforms,
+	lower, upper []byte,
+	filterer *BlockPropertiesFilterer,
+	filterBlockSizeLimit FilterBlockSizeLimit,
+	env block.ReadEnv,
+) (Iterator, error) {
+	vr := valsep.NewRetriever(MakeTrivialReaderProvider(v.reader), env)
+	it, err := v.reader.newPointIter(
+		ctx, transforms, lower, upper, filterer, filterBlockSizeLimit,
+		env, vr, &v.vState)
+	if err != nil {
+		vr.CloseHook(nil)
+		return nil, err
+	}
+	it.SetCloseHook(vr.CloseHook)
+	return it, nil
 }
 
 // ValidateBlockChecksumsOnBacking will call ValidateBlockChecksumsOnBacking on the underlying reader.

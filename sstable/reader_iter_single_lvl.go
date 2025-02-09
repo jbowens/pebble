@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/valblk"
 )
 
 // singleLevelIterator iterates over an entire table of data. To seek for a given
@@ -64,14 +63,10 @@ type singleLevelIterator[I any, PI indexBlockIterator[I], D any, PD dataBlockIte
 	// dataBH refers to the last data block that the iterator considered
 	// loading. It may not actually have loaded the block, due to an error or
 	// because it was considered irrelevant.
-	dataBH   block.Handle
-	vbReader valblk.Reader
-	// vbRH is the read handle for value blocks, which are in a different
-	// part of the sstable than data blocks.
-	vbRH         objstorage.ReadHandle
-	vbRHPrealloc objstorageprovider.PreallocatedReadHandle
-	err          error
-	closeHook    func(i any)
+	dataBH         block.Handle
+	valueRetriever base.ValueRetriever
+	err            error
+	closeHook      func(i any)
 
 	readBlockEnv block.ReadEnv
 
@@ -210,7 +205,7 @@ func newColumnBlockSingleLevelIterator(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 ) (*singleLevelIteratorColumnBlocks, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -224,13 +219,8 @@ func newColumnBlockSingleLevelIterator(
 		ctx, r, v, transforms, lower, upper, filterer, useFilterBlock,
 		env,
 	)
-	var getLazyValuer block.GetLazyValueForPrefixAndValueHandler
-	if r.Properties.NumValueBlocks > 0 {
-		i.vbReader = valblk.MakeReader(i, rp, r.valueBIH, env.Stats)
-		getLazyValuer = &i.vbReader
-		i.vbRH = r.blockReader.UsePreallocatedReadHandle(objstorage.NoReadBefore, &i.vbRHPrealloc)
-	}
-	i.data.InitOnce(r.keySchema, r.Comparer, getLazyValuer)
+	i.valueRetriever = vr
+	i.data.InitOnce(r.keySchema, r.Comparer, vr)
 	indexH, err := r.readTopLevelIndexBlock(ctx, i.readBlockEnv, i.indexFilterRH)
 	if err == nil {
 		err = i.index.InitHandle(r.Comparer, indexH, transforms)
@@ -258,7 +248,7 @@ func newRowBlockSingleLevelIterator(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 ) (*singleLevelIteratorRowBlocks, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -273,12 +263,9 @@ func newRowBlockSingleLevelIterator(
 		env,
 	)
 	if r.tableFormat >= TableFormatPebblev3 {
-		if r.Properties.NumValueBlocks > 0 {
-			i.vbReader = valblk.MakeReader(i, rp, r.valueBIH, env.Stats)
-			(&i.data).SetGetLazyValuer(&i.vbReader)
-			i.vbRH = r.blockReader.UsePreallocatedReadHandle(objstorage.NoReadBefore, &i.vbRHPrealloc)
-		}
+		i.valueRetriever = vr
 		i.data.SetHasValuePrefix(true)
+		i.data.SetValueRetriever(vr)
 	}
 
 	indexH, err := r.readTopLevelIndexBlock(ctx, i.readBlockEnv, i.indexFilterRH)
@@ -342,9 +329,6 @@ func (i *singleLevelIterator[I, PI, D, PD]) maybeVerifyKey(kv *base.InternalKV) 
 // Currently, it skips readahead ramp-up. It should be called after init is called.
 func (i *singleLevelIterator[I, PI, D, PD]) SetupForCompaction() {
 	i.dataRH.SetupForCompaction()
-	if i.vbRH != nil {
-		i.vbRH.SetupForCompaction()
-	}
 }
 
 const clearLen = unsafe.Offsetof(singleLevelIteratorRowBlocks{}.clearForResetBoundary)
@@ -538,16 +522,6 @@ func (i *singleLevelIterator[I, PI, P, PD]) loadDataBlock(dir int8) loadBlockRes
 	}
 	i.initBounds()
 	return loadBlockOK
-}
-
-// ReadValueBlock implements the valblk.BlockProviderWhenOpen interface for use
-// by the valblk.Reader.
-func (i *singleLevelIterator[I, PI, D, PD]) ReadValueBlock(
-	bh block.Handle, stats *base.InternalIteratorStats,
-) (block.BufferHandle, error) {
-	env := i.readBlockEnv
-	env.Stats = stats
-	return i.reader.readValueBlock(i.ctx, env, i.vbRH, bh)
 }
 
 // resolveMaybeExcluded is invoked when the block-property filterer has found
@@ -1562,11 +1536,6 @@ func (i *singleLevelIterator[I, PI, D, PD]) closeInternal() error {
 	err = firstError(err, i.err)
 	if i.bpfs != nil {
 		releaseBlockPropertiesFilterer(i.bpfs)
-	}
-	i.vbReader.Close()
-	if i.vbRH != nil {
-		err = firstError(err, i.vbRH.Close())
-		i.vbRH = nil
 	}
 	return err
 }

@@ -408,8 +408,8 @@ func testCockroachDataColBlock(t *testing.T, seed uint64, keyCfg keyGenConfig) {
 
 	var decoder colblk.DataBlockDecoder
 	var it colblk.DataBlockIter
-	it.InitOnce(&KeySchema, &Comparer, getLazyValuer(func([]byte) base.LazyValue {
-		return base.LazyValue{ValueOrHandle: []byte("mock external value")}
+	it.InitOnce(&KeySchema, &Comparer, mockRetriever(func([]byte) ([]byte, error) {
+		return []byte("mock external value"), nil
 	}))
 	decoder.Init(&KeySchema, serializedBlock)
 	if err := it.Init(&decoder, block.IterTransforms{}); err != nil {
@@ -468,12 +468,6 @@ func generateDataBlock(
 	}
 	data, _ = w.Finish(w.Rows(), w.Size())
 	return data, keys[:count], values[:count]
-}
-
-type getLazyValuer func([]byte) base.LazyValue
-
-func (g getLazyValuer) GetLazyValueForPrefixAndValueHandle(handle []byte) base.LazyValue {
-	return g(handle)
 }
 
 // keyGenConfig configures the shape of the random keys generated.

@@ -14,9 +14,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/treeprinter"
-	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/valblk"
 )
 
 type twoLevelIterator[I any, PI indexBlockIterator[I], D any, PD dataBlockIterator[D]] struct {
@@ -161,7 +159,7 @@ func newColumnBlockTwoLevelIterator(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 ) (*twoLevelIteratorColumnBlocks, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -173,23 +171,8 @@ func newColumnBlockTwoLevelIterator(
 	i.secondLevel.init(ctx, r, v, transforms, lower, upper, filterer,
 		false, // Disable the use of the filter block in the second level.
 		env)
-	var getLazyValuer block.GetLazyValueForPrefixAndValueHandler
-	if r.Properties.NumValueBlocks > 0 {
-		// NB: we cannot avoid this ~248 byte allocation, since valueBlockReader
-		// can outlive the singleLevelIterator due to be being embedded in a
-		// LazyValue. This consumes ~2% in microbenchmark CPU profiles, but we
-		// should only optimize this if it shows up as significant in end-to-end
-		// CockroachDB benchmarks, since it is tricky to do so. One possibility
-		// is that if many sstable iterators only get positioned at latest
-		// versions of keys, and therefore never expose a LazyValue that is
-		// separated to their callers, they can put this valueBlockReader into a
-		// sync.Pool.
-		i.secondLevel.vbReader = valblk.MakeReader(&i.secondLevel, rp, r.valueBIH, env.Stats)
-		getLazyValuer = &i.secondLevel.vbReader
-		i.secondLevel.vbRH = r.blockReader.UsePreallocatedReadHandle(
-			objstorage.NoReadBefore, &i.secondLevel.vbRHPrealloc)
-	}
-	i.secondLevel.data.InitOnce(r.keySchema, r.Comparer, getLazyValuer)
+	i.secondLevel.valueRetriever = vr
+	i.secondLevel.data.InitOnce(r.keySchema, r.Comparer, vr)
 	i.useFilterBlock = shouldUseFilterBlock(r, filterBlockSizeLimit)
 	topLevelIndexH, err := r.readTopLevelIndexBlock(ctx, i.secondLevel.readBlockEnv, i.secondLevel.indexFilterRH)
 	if err == nil {
@@ -218,7 +201,7 @@ func newRowBlockTwoLevelIterator(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 ) (*twoLevelIteratorRowBlocks, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -231,22 +214,9 @@ func newRowBlockTwoLevelIterator(
 		false, // Disable the use of the filter block in the second level.
 		env)
 	if r.tableFormat >= TableFormatPebblev3 {
-		if r.Properties.NumValueBlocks > 0 {
-			// NB: we cannot avoid this ~248 byte allocation, since valueBlockReader
-			// can outlive the singleLevelIterator due to be being embedded in a
-			// LazyValue. This consumes ~2% in microbenchmark CPU profiles, but we
-			// should only optimize this if it shows up as significant in end-to-end
-			// CockroachDB benchmarks, since it is tricky to do so. One possibility
-			// is that if many sstable iterators only get positioned at latest
-			// versions of keys, and therefore never expose a LazyValue that is
-			// separated to their callers, they can put this valueBlockReader into a
-			// sync.Pool.
-			i.secondLevel.vbReader = valblk.MakeReader(&i.secondLevel, rp, r.valueBIH, env.Stats)
-			i.secondLevel.data.SetGetLazyValuer(&i.secondLevel.vbReader)
-			i.secondLevel.vbRH = r.blockReader.UsePreallocatedReadHandle(
-				objstorage.NoReadBefore, &i.secondLevel.vbRHPrealloc)
-		}
+		i.secondLevel.valueRetriever = vr
 		i.secondLevel.data.SetHasValuePrefix(true)
+		i.secondLevel.data.SetValueRetriever(vr)
 	}
 
 	i.useFilterBlock = shouldUseFilterBlock(r, filterBlockSizeLimit)

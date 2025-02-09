@@ -1376,7 +1376,12 @@ func (m *mergingIter) addItemStats(l *mergingIterLevel) {
 	}
 	m.stats.PointCount++
 	m.stats.KeyBytes += uint64(len(l.iterKV.K.UserKey))
-	m.stats.ValueBytes += uint64(l.iterKV.V.InlineLen())
+	inlineLen, valueLen, src := l.iterKV.V.DescribeValue()
+	m.stats.ValueBytes += uint64(inlineLen)
+	if src != base.ValueInline {
+		m.stats.SeparatedPointValue.Count++
+		m.stats.SeparatedPointValue.ValueBytes += uint64(valueLen)
+	}
 }
 
 var _ internalIterator = &mergingIter{}

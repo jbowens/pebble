@@ -17,6 +17,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/treeprinter"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 )
 
 type internalIterOpts struct {
@@ -26,6 +27,7 @@ type internalIterOpts struct {
 	compaction           bool
 	bufferPool           *block.BufferPool
 	stats                *base.InternalIteratorStats
+	valueRetriever       *valsep.Retriever
 	iterStatsAccumulator block.IterStatsAccumulator
 	boundLimitedFilter   sstable.BoundLimitedBlockPropertyFilter
 }

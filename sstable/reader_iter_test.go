@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/testutils"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/pebble/vfs/errorfs"
 	"github.com/stretchr/testify/require"
@@ -52,6 +53,9 @@ func TestIteratorErrorOnInit(t *testing.T) {
 	toggle.On()
 	defer toggle.Off()
 
+	vr := valsep.NewRetriever(MakeTrivialReaderProvider(r), block.ReadEnv{})
+	defer vr.CloseHook(nil)
+
 	var stats base.InternalIteratorStats
 	for k := 0; k < 20; k++ {
 		if rand.IntN(2) == 0 {
@@ -63,7 +67,7 @@ func TestIteratorErrorOnInit(t *testing.T) {
 				nil /* lower */, nil, /* upper */
 				nil /* filterer */, NeverUseFilterBlock,
 				block.ReadEnv{Stats: &stats, BufferPool: &pool},
-				MakeTrivialReaderProvider(r),
+				vr,
 			)
 			require.Error(t, err)
 		} else {
@@ -75,7 +79,7 @@ func TestIteratorErrorOnInit(t *testing.T) {
 				nil /* lower */, nil, /* upper */
 				nil /* filterer */, NeverUseFilterBlock,
 				block.ReadEnv{Stats: &stats, BufferPool: &pool},
-				MakeTrivialReaderProvider(r),
+				vr,
 			)
 			require.Error(t, err)
 		}

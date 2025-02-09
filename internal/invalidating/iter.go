@@ -76,11 +76,6 @@ func (i *iter) update(kv *base.InternalKV) *base.InternalKV {
 	i.lastLV = base.LazyValue{
 		ValueOrHandle: append(make([]byte, 0, len(lv.ValueOrHandle)), lv.ValueOrHandle...),
 	}
-	if lv.Fetcher != nil {
-		fetcher := new(base.LazyFetcher)
-		*fetcher = *lv.Fetcher
-		i.lastLV.Fetcher = fetcher
-	}
 	return i.lastKV
 }
 
@@ -88,8 +83,9 @@ func (i *iter) LazyValue() base.LazyValue {
 	return i.lastLV
 }
 
-func (i *iter) InlineLen() uint32 {
-	return uint32(len(i.lastLV.ValueOrHandle))
+func (i *iter) DescribeValue() (inlineLen, valLen uint32, src base.ValueSource) {
+	v := uint32(len(i.lastLV.ValueOrHandle))
+	return v, v, base.ValueInline
 }
 
 func (i *iter) trashLastKV() {
@@ -108,11 +104,6 @@ func (i *iter) trashLastKV() {
 	}
 	for j := range i.lastLV.ValueOrHandle {
 		i.lastLV.ValueOrHandle[j] = 0xff
-	}
-	if i.lastLV.Fetcher != nil {
-		// Not all the LazyFetcher fields are visible, so we zero out the last
-		// value's Fetcher struct entirely.
-		*i.lastLV.Fetcher = base.LazyFetcher{}
 	}
 }
 

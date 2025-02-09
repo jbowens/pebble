@@ -23,6 +23,7 @@ import (
 	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/cockroachdb/pebble/sstable/rowblk"
 	"github.com/cockroachdb/pebble/sstable/valblk"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 	"github.com/cockroachdb/pebble/vfs"
 )
 
@@ -102,11 +103,31 @@ func (r *Reader) NewPointIter(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 ) (Iterator, error) {
 	return r.newPointIter(
 		ctx, transforms, lower, upper, filterer, filterBlockSizeLimit,
-		env, rp, nil)
+		env, vr, nil)
+}
+
+func (r *Reader) NewPointIterLimitedValueLifetime(
+	ctx context.Context,
+	transforms IterTransforms,
+	lower, upper []byte,
+	filterer *BlockPropertiesFilterer,
+	filterBlockSizeLimit FilterBlockSizeLimit,
+	env block.ReadEnv,
+) (Iterator, error) {
+	vr := valsep.NewRetriever(MakeTrivialReaderProvider(r), env)
+	it, err := r.newPointIter(
+		ctx, transforms, lower, upper, filterer, filterBlockSizeLimit,
+		env, vr, nil)
+	if err != nil {
+		vr.CloseHook(nil)
+		return nil, err
+	}
+	it.SetCloseHook(vr.CloseHook)
+	return it, nil
 }
 
 // TryAddBlockPropertyFilterForHideObsoletePoints is expected to be called
@@ -132,7 +153,7 @@ func (r *Reader) newPointIter(
 	filterer *BlockPropertiesFilterer,
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
-	rp valblk.ReaderProvider,
+	vr base.ValueRetriever,
 	vState *virtualState,
 ) (Iterator, error) {
 	// NB: pebble.fileCache wraps the returned iterator with one which performs
@@ -144,21 +165,21 @@ func (r *Reader) newPointIter(
 		if r.tableFormat.BlockColumnar() {
 			res, err = newColumnBlockTwoLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
-				env, rp)
+				env, vr)
 		} else {
 			res, err = newRowBlockTwoLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
-				env, rp)
+				env, vr)
 		}
 	} else {
 		if r.tableFormat.BlockColumnar() {
 			res, err = newColumnBlockSingleLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
-				env, rp)
+				env, vr)
 		} else {
 			res, err = newRowBlockSingleLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
-				env, rp)
+				env, vr)
 		}
 	}
 	if err != nil {
@@ -173,27 +194,27 @@ func (r *Reader) newPointIter(
 // simplified version of NewPointIter and should only be used for tests and
 // tooling.
 //
-// NewIter must only be used when the Reader is guaranteed to outlive any
-// LazyValues returned from the iter.
+// NewIter must only be used when the iterator is guaranteed to outlive any
+// LazyValues returned from the iter. Otherwise, use NewPointIter and explicitly
+// pass a ValueRetriever.
 func (r *Reader) NewIter(transforms IterTransforms, lower, upper []byte) (Iterator, error) {
 	// TODO(radu): we should probably not use bloom filters in this case, as there
 	// likely isn't a cache set up.
-	return r.NewPointIter(
-		context.TODO(), transforms, lower, upper, nil, AlwaysUseFilterBlock,
-		block.NoReadEnv, MakeTrivialReaderProvider(r))
+	return r.NewPointIterLimitedValueLifetime(context.TODO(), transforms, lower,
+		upper, nil, AlwaysUseFilterBlock, block.NoReadEnv)
 }
 
 // NewCompactionIter returns an iterator similar to NewIter but it also increments
 // the number of bytes iterated. If an error occurs, NewCompactionIter cleans up
 // after itself and returns a nil iterator.
 func (r *Reader) NewCompactionIter(
-	transforms IterTransforms, env block.ReadEnv, rp valblk.ReaderProvider,
+	transforms IterTransforms, env block.ReadEnv, vr base.ValueRetriever,
 ) (Iterator, error) {
-	return r.newCompactionIter(transforms, env, rp, nil)
+	return r.newCompactionIter(transforms, env, vr, nil)
 }
 
 func (r *Reader) newCompactionIter(
-	transforms IterTransforms, env block.ReadEnv, rp valblk.ReaderProvider, vState *virtualState,
+	transforms IterTransforms, env block.ReadEnv, vr base.ValueRetriever, vState *virtualState,
 ) (Iterator, error) {
 	if vState != nil && vState.isSharedIngested {
 		transforms.HideObsoletePoints = true
@@ -204,7 +225,7 @@ func (r *Reader) newCompactionIter(
 			i, err := newRowBlockTwoLevelIterator(
 				context.Background(),
 				r, vState, transforms, nil /* lower */, nil /* upper */, nil,
-				NeverUseFilterBlock, env, rp)
+				NeverUseFilterBlock, env, vr)
 			if err != nil {
 				return nil, err
 			}
@@ -214,7 +235,7 @@ func (r *Reader) newCompactionIter(
 		i, err := newColumnBlockTwoLevelIterator(
 			context.Background(),
 			r, vState, transforms, nil /* lower */, nil /* upper */, nil,
-			NeverUseFilterBlock, env, rp)
+			NeverUseFilterBlock, env, vr)
 		if err != nil {
 			return nil, err
 		}
@@ -224,7 +245,7 @@ func (r *Reader) newCompactionIter(
 	if !r.tableFormat.BlockColumnar() {
 		i, err := newRowBlockSingleLevelIterator(
 			context.Background(), r, vState, transforms, nil /* lower */, nil, /* upper */
-			nil, NeverUseFilterBlock, env, rp)
+			nil, NeverUseFilterBlock, env, vr)
 		if err != nil {
 			return nil, err
 		}
@@ -233,7 +254,7 @@ func (r *Reader) newCompactionIter(
 	}
 	i, err := newColumnBlockSingleLevelIterator(
 		context.Background(), r, vState, transforms, nil /* lower */, nil, /* upper */
-		nil, NeverUseFilterBlock, env, rp)
+		nil, NeverUseFilterBlock, env, vr)
 	if err != nil {
 		return nil, err
 	}
@@ -375,18 +396,23 @@ func (r *Reader) initKeyspanBlockMetadata(metadata *block.Metadata, data []byte)
 	return nil
 }
 
-// ReadValueBlockExternal implements valblk.ExternalBlockReader, allowing a
-// base.LazyValue to read a value block.
-func (r *Reader) ReadValueBlockExternal(
-	ctx context.Context, bh block.Handle,
-) (block.BufferHandle, error) {
-	return r.readValueBlock(ctx, block.NoReadEnv, noReadHandle, bh)
+func (r *Reader) ValueIndexHandle() valblk.IndexHandle {
+	return r.valueBIH
 }
 
-func (r *Reader) readValueBlock(
+func (r *Reader) InitReadHandle(rh *objstorageprovider.PreallocatedReadHandle) objstorage.ReadHandle {
+	return objstorageprovider.UsePreallocatedReadHandle(r.blockReader.Readable(), objstorage.NoReadBefore, rh)
+}
+
+func (r *Reader) ReadValueIndexBlock(
+	ctx context.Context, env block.ReadEnv, readHandle objstorage.ReadHandle,
+) (block.BufferHandle, error) {
+	return r.blockReader.Read(ctx, env, readHandle, r.valueBIH.Handle, noInitBlockMetadataFn)
+}
+
+func (r *Reader) ReadValueBlock(
 	ctx context.Context, env block.ReadEnv, readHandle objstorage.ReadHandle, bh block.Handle,
 ) (block.BufferHandle, error) {
-	ctx = objiotracing.WithBlockType(ctx, objiotracing.ValueBlock)
 	return r.blockReader.Read(ctx, env, readHandle, bh, noInitBlockMetadataFn)
 }
 
@@ -556,7 +582,7 @@ func (r *Reader) Layout() (*Layout, error) {
 		}
 	}
 	if r.valueBIH.Handle.Length != 0 {
-		vbiH, err := r.readValueBlock(context.Background(), block.NoReadEnv, noReadHandle, r.valueBIH.Handle)
+		vbiH, err := r.ReadValueBlock(context.Background(), block.NoReadEnv, noReadHandle, r.valueBIH.Handle)
 		if err != nil {
 			return nil, err
 		}
@@ -946,27 +972,24 @@ func errCorruptIndexEntry(err error) error {
 	return err
 }
 
-// MakeTrivialReaderProvider creates a valblk.ReaderProvider which always
-// returns the given reader. It should be used when the Reader will outlive the
-// iterator tree.
-func MakeTrivialReaderProvider(r *Reader) valblk.ReaderProvider {
+// MakeTrivialReaderProvider creates a valsep.ReaderProvider which always
+// returns the given reader. It can be used when the LazyValue will NOT outlive
+// the reader.
+func MakeTrivialReaderProvider(r *Reader) valsep.ReaderProvider {
 	return (*trivialReaderProvider)(r)
 }
 
-// trivialReaderProvider implements valblk.ReaderProvider for a Reader that will
+// trivialReaderProvider implements valsep.ReaderProvider for a Reader that will
 // outlive the top-level iterator in the iterator tree.
 //
 // Defining the type in this manner (as opposed to a struct) avoids allocation.
 type trivialReaderProvider Reader
 
-var _ valblk.ReaderProvider = (*trivialReaderProvider)(nil)
+var _ valsep.ReaderProvider = (*trivialReaderProvider)(nil)
 
 // GetReader implements ReaderProvider.
-func (trp *trivialReaderProvider) GetReader(
-	ctx context.Context,
-) (valblk.ExternalBlockReader, error) {
-	return (*Reader)(trp), nil
+func (trp *trivialReaderProvider) GetValueReader(
+	ctx context.Context, it any, fileNum base.DiskFileNum,
+) (r valsep.ValueReader, closeFunc func(any), err error) {
+	return (*Reader)(trp), func(any) {}, nil
 }
-
-// Close implements ReaderProvider.
-func (trp *trivialReaderProvider) Close() {}

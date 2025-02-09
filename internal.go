@@ -64,8 +64,3 @@ type AttributeAndLen = base.AttributeAndLen
 
 // ShortAttribute exports the base.ShortAttribute type.
 type ShortAttribute = base.ShortAttribute
-
-// LazyFetcher exports the base.LazyFetcher type. This export is needed since
-// LazyValue.Clone requires a pointer to a LazyFetcher struct to avoid
-// allocations. No code outside Pebble needs to peer into a LazyFetcher.
-type LazyFetcher = base.LazyFetcher

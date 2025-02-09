@@ -1133,6 +1133,9 @@ func (d *DB) newIter(
 func finishInitializingIter(ctx context.Context, buf *iterAlloc) *Iterator {
 	// Short-hand.
 	dbi := &buf.dbi
+
+	dbi.valueRetriever.Init(dbi.fc, block.NoReadEnv /* TODO */)
+
 	var memtables flushableList
 	if dbi.readState != nil {
 		memtables = dbi.readState.memtables
@@ -1402,7 +1405,8 @@ func (i *Iterator) constructPointIter(
 		return
 	}
 	internalOpts := internalIterOpts{
-		stats: &i.stats.InternalStats,
+		stats:          &i.stats.InternalStats,
+		valueRetriever: &i.valueRetriever,
 	}
 	// If the file cache has a sstable stats collector, ask it for an
 	// accumulator for this iterator's configured category and QoS. All SSTable

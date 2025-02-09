@@ -176,10 +176,10 @@ func TestMergingIterDataDriven(t *testing.T) {
 				}
 			}
 			if kinds.Point() {
-				set.point, err = r.NewPointIter(
+				set.point, err = r.NewPointIterLimitedValueLifetime(
 					context.Background(),
 					sstable.NoTransforms,
-					opts.GetLowerBound(), opts.GetUpperBound(), nil, sstable.AlwaysUseFilterBlock, block.ReadEnv{Stats: iio.stats, IterStats: nil}, sstable.MakeTrivialReaderProvider(r))
+					opts.GetLowerBound(), opts.GetUpperBound(), nil, sstable.AlwaysUseFilterBlock, block.ReadEnv{Stats: iio.stats, IterStats: nil})
 				if err != nil {
 					return iterSet{}, errors.CombineErrors(err, set.CloseAll())
 				}

@@ -8,9 +8,9 @@ import (
 	"context"
 	"math"
 
+	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/valblk"
 )
 
 // CommonReader abstracts functionality over a Reader or a VirtualReader. This
@@ -32,13 +32,13 @@ type CommonReader interface {
 		filterer *BlockPropertiesFilterer,
 		filterBlockSizeLimit FilterBlockSizeLimit,
 		env block.ReadEnv,
-		rp valblk.ReaderProvider,
+		vr base.ValueRetriever,
 	) (Iterator, error)
 
 	NewCompactionIter(
 		transforms IterTransforms,
 		env block.ReadEnv,
-		rp valblk.ReaderProvider,
+		vr base.ValueRetriever,
 	) (Iterator, error)
 
 	EstimateDiskUsage(start, end []byte) (uint64, error)

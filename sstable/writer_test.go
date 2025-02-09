@@ -31,6 +31,7 @@ import (
 	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/cockroachdb/pebble/sstable/rowblk"
 	"github.com/cockroachdb/pebble/sstable/valblk"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
@@ -421,8 +422,8 @@ func TestWriterWithValueBlocks(t *testing.T) {
 				return err.Error()
 			}
 			forceRowIterIgnoreValueBlocks := func(i *singleLevelIteratorRowBlocks) {
-				i.vbReader = valblk.Reader{}
-				i.data.SetGetLazyValuer(nil)
+				i.valueRetriever = nil
+				i.data.SetValueRetriever(nil)
 				i.data.SetHasValuePrefix(false)
 			}
 			switch i := iter.(type) {
@@ -474,23 +475,23 @@ func TestWriterWithValueBlocks(t *testing.T) {
 			return buf.String()
 
 		case "scan-cloned-lazy-values":
-			iter, err := r.NewIter(NoTransforms, nil /* lower */, nil /* upper */)
+			ctx := context.Background()
+			valueRetriever := valsep.NewRetriever(MakeTrivialReaderProvider(r), block.NoReadEnv)
+			iter, err := r.NewPointIter(ctx, NoTransforms,
+				nil /* lower */, nil /* upper */, nil, /* block propertiees filterer */
+				AlwaysUseFilterBlock, block.NoReadEnv, valueRetriever)
 			if err != nil {
 				return err.Error()
 			}
-			var fetchers [100]base.LazyFetcher
 			var values []base.LazyValue
 			n := 0
 			var b []byte
 			for kv := iter.First(); kv != nil; kv = iter.Next() {
 				lv := kv.V.LazyValue()
 				var lvClone base.LazyValue
-				lvClone, b = lv.Clone(b, &fetchers[n])
-				if lv.Fetcher != nil {
-					_, callerOwned, err := lv.Value(nil)
-					require.False(t, callerOwned)
-					require.NoError(t, err)
-				}
+				lvClone, b = lv.Clone(b)
+				_, err := lv.Get(ctx)
+				require.NoError(t, err)
 				n++
 				values = append(values, lvClone)
 			}
@@ -499,19 +500,17 @@ func TestWriterWithValueBlocks(t *testing.T) {
 			var buf bytes.Buffer
 			for i := range values {
 				fmt.Fprintf(&buf, "%d", i)
-				v, callerOwned, err := values[i].Value(nil)
+				v, err := values[i].Get(ctx)
 				require.NoError(t, err)
-				if values[i].Fetcher != nil {
-					require.True(t, callerOwned)
+				if values[i].Retriever != nil {
+					attrs := values[i].Attributes()
 					fmt.Fprintf(&buf, "(lazy: len %d, attr: %d): %s\n",
-						values[i].Len(), values[i].Fetcher.Attribute.ShortAttribute, string(v))
-					v2, callerOwned, err := values[i].Value(nil)
+						attrs.ValueLen, attrs.ShortAttribute, string(v))
+					v2, err := values[i].Get(ctx)
 					require.NoError(t, err)
-					require.True(t, callerOwned)
 					require.Equal(t, &v[0], &v2[0])
 
 				} else {
-					require.False(t, callerOwned)
 					if values[i].Len() > 0 {
 						fmt.Fprintf(&buf, "(in-place: len %d): %s\n", values[i].Len(), string(v))
 					} else {
@@ -519,6 +518,7 @@ func TestWriterWithValueBlocks(t *testing.T) {
 					}
 				}
 			}
+			require.NoError(t, valueRetriever.Close())
 			return buf.String()
 
 		default:

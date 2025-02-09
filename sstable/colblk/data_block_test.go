@@ -6,6 +6,7 @@ package colblk
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -33,8 +34,8 @@ func TestDataBlock(t *testing.T) {
 	rw := NewDataBlockRewriter(&testKeysSchema, testkeys.Comparer.EnsureDefaults())
 	var sizes []int
 	it.InitOnce(&testKeysSchema, testkeys.Comparer,
-		getLazyValuer(func([]byte) base.LazyValue {
-			return base.LazyValue{ValueOrHandle: []byte("mock external value")}
+		mockRetriever(func([]byte) ([]byte, error) {
+			return []byte("mock external value"), nil
 		}))
 
 	datadriven.Walk(t, "testdata/data_block", func(t *testing.T, path string) {
@@ -207,8 +208,12 @@ func randTestKey(rng *rand.Rand, buf []byte, prefixLen int) []byte {
 	return buf
 }
 
-type getLazyValuer func([]byte) base.LazyValue
+type mockRetriever func([]byte) ([]byte, error)
 
-func (g getLazyValuer) GetLazyValueForPrefixAndValueHandle(handle []byte) base.LazyValue {
-	return g(handle)
+func (mockRetriever) DecodeAttributes(handle []byte) base.ValueAttributes {
+	return base.ValueAttributes{ValueLen: len(handle)}
+}
+
+func (r mockRetriever) Retrieve(ctx context.Context, file base.DiskFileNum, handle []byte) (val []byte, err error) {
+	return r(handle)
 }

@@ -14,6 +14,8 @@ import (
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/internal/manifest"
+	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 )
 
 // This file implements DB.CheckLevels() which checks that every entry in the
@@ -362,14 +364,15 @@ func iterateAndCheckTombstones(
 }
 
 type checkConfig struct {
-	logger    Logger
-	comparer  *Comparer
-	readState *readState
-	newIters  tableNewIters
-	seqNum    base.SeqNum
-	stats     *CheckLevelsStats
-	merge     Merge
-	formatKey base.FormatKey
+	logger         Logger
+	comparer       *Comparer
+	readState      *readState
+	newIters       tableNewIters
+	seqNum         base.SeqNum
+	stats          *CheckLevelsStats
+	merge          Merge
+	formatKey      base.FormatKey
+	valueRetriever valsep.Retriever
 }
 
 // cmp is shorthand for comparer.Compare.
@@ -580,10 +583,15 @@ func (d *DB) CheckLevels(stats *CheckLevelsStats) error {
 		merge:     d.merge,
 		formatKey: d.opts.Comparer.FormatKey,
 	}
+	checkConfig.valueRetriever.Init(d.fileCache, block.NoReadEnv)
 	return checkLevelsInternal(checkConfig)
 }
 
 func checkLevelsInternal(c *checkConfig) (err error) {
+	iiopts := internalIterOpts{
+		valueRetriever: &c.valueRetriever,
+	}
+
 	// Phase 1: Use a simpleMergingIter to step through all the points and ensure
 	// that points with the same user key at different levels are not inverted
 	// wrt sequence numbers and the same holds for tombstones that cover points.
@@ -641,7 +649,7 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 		iterOpts := IterOptions{logger: c.logger}
 		li := &levelIter{}
 		li.init(context.Background(), iterOpts, c.comparer, c.newIters, manifestIter,
-			manifest.L0Sublevel(sublevel), internalIterOpts{})
+			manifest.L0Sublevel(sublevel), iiopts)
 		li.initRangeDel(&mlevelAlloc[0])
 		mlevelAlloc[0].iter = li
 		mlevelAlloc = mlevelAlloc[1:]
@@ -654,7 +662,7 @@ func checkLevelsInternal(c *checkConfig) (err error) {
 		iterOpts := IterOptions{logger: c.logger}
 		li := &levelIter{}
 		li.init(context.Background(), iterOpts, c.comparer, c.newIters,
-			current.Levels[level].Iter(), manifest.Level(level), internalIterOpts{})
+			current.Levels[level].Iter(), manifest.Level(level), iiopts)
 		li.initRangeDel(&mlevelAlloc[0])
 		mlevelAlloc[0].iter = li
 		mlevelAlloc = mlevelAlloc[1:]

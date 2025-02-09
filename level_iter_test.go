@@ -183,9 +183,9 @@ func (lt *levelIterTest) newIters(
 	transforms := file.IterTransforms()
 	var set iterSet
 	if kinds.Point() {
-		iter, err := lt.readers[file.FileNum].NewPointIter(
+		iter, err := lt.readers[file.FileNum].NewPointIterLimitedValueLifetime(
 			ctx, transforms,
-			opts.LowerBound, opts.UpperBound, nil, sstable.AlwaysUseFilterBlock, block.ReadEnv{Stats: iio.stats, IterStats: nil}, sstable.MakeTrivialReaderProvider(lt.readers[file.FileNum]))
+			opts.LowerBound, opts.UpperBound, nil, sstable.AlwaysUseFilterBlock, block.ReadEnv{Stats: iio.stats, IterStats: nil})
 		if err != nil {
 			return iterSet{}, errors.CombineErrors(err, set.CloseAll())
 		}

@@ -33,7 +33,7 @@ import (
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/valblk"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/pebble/vfs/errorfs"
 	"github.com/stretchr/testify/require"
@@ -231,11 +231,10 @@ func runVirtualReaderTest(t *testing.T, path string, blockSize, indexBlockSize i
 				return "virtualize must be called before creating compaction iters"
 			}
 
-			var rp valblk.ReaderProvider
 			transforms := IterTransforms{
 				SyntheticPrefixAndSuffix: block.MakeSyntheticPrefixAndSuffix(nil, syntheticSuffix),
 			}
-			iter, err := v.NewCompactionIter(transforms, block.ReadEnv{BufferPool: &bp}, rp)
+			iter, err := v.NewCompactionIter(transforms, block.ReadEnv{BufferPool: &bp}, nil)
 			if err != nil {
 				return err.Error()
 			}
@@ -360,9 +359,9 @@ func runVirtualReaderTest(t *testing.T, path string, blockSize, indexBlockSize i
 			transforms := IterTransforms{
 				SyntheticPrefixAndSuffix: block.MakeSyntheticPrefixAndSuffix(nil, syntheticSuffix),
 			}
-			iter, err := v.NewPointIter(
+			iter, err := v.NewPointIterLimitedValueLifetime(
 				context.Background(), transforms, lower, upper, filterer, NeverUseFilterBlock,
-				block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r))
+				block.ReadEnv{Stats: &stats, IterStats: nil})
 			if err != nil {
 				return err.Error()
 			}
@@ -748,15 +747,15 @@ func runTestReader(t *testing.T, o WriterOptions, dir string, r *Reader, printVa
 						return "table does not intersect BlockPropertyFilter"
 					}
 				}
-				iter, err := r.NewPointIter(
+				readEnv := block.ReadEnv{Stats: &stats, IterStats: nil}
+				iter, err := r.NewPointIterLimitedValueLifetime(
 					context.Background(),
 					transforms,
 					nil, /* lower */
 					nil, /* upper */
 					filterer,
 					AlwaysUseFilterBlock,
-					block.ReadEnv{Stats: &stats, IterStats: nil},
-					MakeTrivialReaderProvider(r),
+					readEnv,
 				)
 				if err != nil {
 					return err.Error()
@@ -895,25 +894,23 @@ func TestCompactionIteratorSetupForCompaction(t *testing.T) {
 		for _, indexBlockSize := range blockSizes {
 			for _, numEntries := range []uint64{0, 1, 1e5} {
 				r := buildTestTableWithProvider(t, provider, numEntries, blockSize, indexBlockSize, block.DefaultCompression, nil)
+
 				var pool block.BufferPool
 				pool.Init(5)
-				citer, err := r.NewCompactionIter(
-					NoTransforms, block.ReadEnv{BufferPool: &pool}, MakeTrivialReaderProvider(r))
+				env := block.ReadEnv{BufferPool: &pool}
+				vr := valsep.NewRetriever(MakeTrivialReaderProvider(r), env)
+
+				citer, err := r.NewCompactionIter(NoTransforms, env, vr)
 				require.NoError(t, err)
 				switch i := citer.(type) {
 				case *singleLevelIteratorRowBlocks:
 					require.True(t, objstorageprovider.TestingCheckMaxReadahead(i.dataRH))
-					// Each key has one version, so no value block, regardless of
-					// sstable version.
-					require.Nil(t, i.vbRH)
 				case *twoLevelIteratorRowBlocks:
 					require.True(t, objstorageprovider.TestingCheckMaxReadahead(i.secondLevel.dataRH))
-					// Each key has one version, so no value block, regardless of
-					// sstable version.
-					require.Nil(t, i.secondLevel.vbRH)
 				default:
 					require.Failf(t, fmt.Sprintf("unknown compaction iterator type: %T", citer), "")
 				}
+				vr.CloseHook(nil)
 				require.NoError(t, citer.Close())
 				require.NoError(t, r.Close())
 				pool.Release()
@@ -955,13 +952,16 @@ func TestReadaheadSetupForV3TablesWithMultipleVersions(t *testing.T) {
 		var pool block.BufferPool
 		pool.Init(5)
 		defer pool.Release()
+
+		vr := valsep.NewRetriever(MakeTrivialReaderProvider(r), block.ReadEnv{BufferPool: &pool})
+		defer vr.CloseHook(nil)
+
 		citer, err := r.NewCompactionIter(
-			NoTransforms, block.ReadEnv{BufferPool: &pool}, MakeTrivialReaderProvider(r))
+			NoTransforms, block.ReadEnv{BufferPool: &pool}, vr)
 		require.NoError(t, err)
 		defer citer.Close()
 		i := citer.(*singleLevelIteratorRowBlocks)
 		require.True(t, objstorageprovider.TestingCheckMaxReadahead(i.dataRH))
-		require.True(t, objstorageprovider.TestingCheckMaxReadahead(i.vbRH))
 	}
 	{
 		iter, err := r.NewIter(NoTransforms, nil, nil)
@@ -969,7 +969,6 @@ func TestReadaheadSetupForV3TablesWithMultipleVersions(t *testing.T) {
 		defer iter.Close()
 		i := iter.(*singleLevelIteratorRowBlocks)
 		require.False(t, objstorageprovider.TestingCheckMaxReadahead(i.dataRH))
-		require.False(t, objstorageprovider.TestingCheckMaxReadahead(i.vbRH))
 	}
 }
 
@@ -1247,19 +1246,22 @@ func TestRandomizedPrefixSuffixRewriter(t *testing.T) {
 		}
 		eReader, err := newReader(f, opts)
 		require.NoError(t, err)
+		vr := valsep.NewRetriever(MakeTrivialReaderProvider(eReader), block.NoReadEnv)
+
 		iter, err := eReader.newPointIter(
 			context.Background(),
 			block.IterTransforms{
 				SyntheticPrefixAndSuffix: block.MakeSyntheticPrefixAndSuffix(syntheticPrefix, syntheticSuffix),
 			},
 			nil, nil, nil,
-			AlwaysUseFilterBlock, block.NoReadEnv,
-			MakeTrivialReaderProvider(eReader), &virtualState{
+			AlwaysUseFilterBlock, block.NoReadEnv, vr,
+			&virtualState{
 				lower: base.MakeInternalKey([]byte("_"), base.SeqNumMax, base.InternalKeyKindSet),
 				upper: base.MakeRangeDeleteSentinelKey([]byte("~~~~~~~~~~~~~~~~")),
 			})
 		require.NoError(t, err)
 		return iter, func() {
+			vr.CloseHook(nil)
 			require.NoError(t, iter.Close())
 			require.NoError(t, eReader.Close())
 		}
@@ -2398,10 +2400,12 @@ func BenchmarkIteratorScanObsolete(b *testing.B) {
 									}
 								}
 								transforms := IterTransforms{HideObsoletePoints: hideObsoletePoints}
-								iter, err := r.NewPointIter(
+								vr := valsep.NewRetriever(MakeTrivialReaderProvider(r), block.NoReadEnv)
+								defer vr.CloseHook(nil)
+
+								iter, err := r.NewPointIterLimitedValueLifetime(
 									context.Background(), transforms, nil, nil, filterer,
-									AlwaysUseFilterBlock, block.NoReadEnv,
-									MakeTrivialReaderProvider(r))
+									AlwaysUseFilterBlock, block.NoReadEnv)
 								require.NoError(b, err)
 								b.ResetTimer()
 								for i := 0; i < b.N; i++ {

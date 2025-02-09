@@ -148,110 +148,42 @@ type AttributeAndLen struct {
 // InternalIterator implementations and in Iterator, but not meant for direct
 // use by users of Pebble.
 type LazyValue struct {
-	// ValueOrHandle represents a value, or a handle to be passed to ValueFetcher.
-	// - Fetcher == nil: ValueOrHandle is a value.
-	// - Fetcher != nil: ValueOrHandle is a handle and Fetcher.Attribute is
-	//   initialized.
-	// The ValueOrHandle exposed by InternalIterator or Iterator may not be stable
-	// if the iterator is stepped. To make it stable, make a copy using Clone.
+	FileNum       DiskFileNum
 	ValueOrHandle []byte
-	// Fetcher provides support for fetching an actually lazy value.
-	Fetcher *LazyFetcher
+	Retriever     ValueRetriever
 }
 
-// LazyFetcher supports fetching a lazy value.
-//
-// Fetcher and Attribute are to be initialized at creation time. The fields
-// are arranged to reduce the sizeof this struct.
-type LazyFetcher struct {
-	// Fetcher, given a handle, returns the value.
-	Fetcher ValueFetcher
-	err     error
-	value   []byte
-	// Attribute includes the short attribute and value length.
-	Attribute   AttributeAndLen
-	fetched     bool
-	callerOwned bool
-}
-
-// ValueFetcher is an interface for fetching a value.
-type ValueFetcher interface {
-	// Fetch returns the value, given the handle. It is acceptable to call the
-	// ValueFetcher.Fetch as long as the DB is open. However, one should assume
-	// there is a fast-path when the iterator tree has not moved off the sstable
-	// iterator that initially provided this LazyValue. Hence, to utilize this
-	// fast-path the caller should try to decide whether it needs the value or
-	// not as soon as possible, with minimal possible stepping of the iterator.
-	//
-	// buf will be used if the fetcher cannot satisfy P2 (see earlier comment).
-	// If the fetcher attempted to use buf *and* len(buf) was insufficient, it
-	// will allocate a new slice for the value. In either case it will set
-	// callerOwned to true.
-	Fetch(
-		ctx context.Context, handle []byte, valLen int32, buf []byte,
-	) (val []byte, callerOwned bool, err error)
-}
-
-// Value returns the underlying value.
-func (lv *LazyValue) Value(buf []byte) (val []byte, callerOwned bool, err error) {
-	if lv.Fetcher == nil {
-		return lv.ValueOrHandle, false, nil
-	}
-	// Do the rest of the work in a separate method to attempt mid-stack
-	// inlining of Value(). Unfortunately, this still does not inline since the
-	// cost of 85 exceeds the budget of 80.
-	//
-	// TODO(sumeer): Packing the return values into a struct{[]byte error bool}
-	// causes it to be below the budget. Consider this if we need to recover
-	// more performance. I suspect that inlining this only matters in
-	// micro-benchmarks, and in actual use cases in CockroachDB it will not
-	// matter because there is substantial work done with a fetched value.
-	return lv.fetchValue(context.TODO(), buf)
-}
-
-// INVARIANT: lv.Fetcher != nil
-func (lv *LazyValue) fetchValue(
-	ctx context.Context, buf []byte,
-) (val []byte, callerOwned bool, err error) {
-	f := lv.Fetcher
-	if !f.fetched {
-		f.fetched = true
-		f.value, f.callerOwned, f.err = f.Fetcher.Fetch(ctx,
-			lv.ValueOrHandle, lv.Fetcher.Attribute.ValueLen, buf)
-	}
-	return f.value, f.callerOwned, f.err
+// MakeInPlaceValue constructs an in-place value.
+func MakeInPlaceValue(val []byte) LazyValue {
+	return LazyValue{ValueOrHandle: val}
 }
 
 // IsInPlaceValue returns true iff the value was stored in-place and does not
 // need to be fetched externally.
-func (lv *LazyValue) IsInPlaceValue() bool {
-	return lv.Fetcher == nil
+func (v *LazyValue) IsInPlaceValue() bool {
+	return v.Retriever == nil
 }
 
 // InPlaceValue returns the value under the assumption that it is in-place.
 // This is for Pebble-internal code.
-func (lv *LazyValue) InPlaceValue() []byte {
-	if invariants.Enabled && lv.Fetcher != nil {
+func (v *LazyValue) InPlaceValue() []byte {
+	if invariants.Enabled && v.Retriever != nil {
 		panic("value must be in-place")
 	}
-	return lv.ValueOrHandle
+	return v.ValueOrHandle
 }
 
 // Len returns the length of the value.
-func (lv *LazyValue) Len() int {
-	if lv.Fetcher == nil {
-		return len(lv.ValueOrHandle)
-	}
-	return int(lv.Fetcher.Attribute.ValueLen)
+func (v *LazyValue) Len() int {
+	attrs := v.Attributes()
+	return attrs.ValueLen
 }
 
 // TryGetShortAttribute returns the ShortAttribute and a bool indicating
 // whether the ShortAttribute was populated.
-func (lv *LazyValue) TryGetShortAttribute() (ShortAttribute, bool) {
-	if lv.Fetcher == nil {
-		return 0, false
-	}
-	return lv.Fetcher.Attribute.ShortAttribute, true
+func (v *LazyValue) TryGetShortAttribute() (ShortAttribute, bool) {
+	attrs := v.Attributes()
+	return attrs.ShortAttribute, attrs.ShortAttributeExists
 }
 
 // Clone creates a stable copy of the LazyValue, by appending bytes to buf.
@@ -274,27 +206,64 @@ func (lv *LazyValue) TryGetShortAttribute() (ShortAttribute, bool) {
 // calling LazyValue.Clone() if LazyValue.Value() has been called, but there
 // is at least one complex caller (pebbleMVCCScanner inside CockroachDB) where
 // it is not easy to prove this invariant.
-func (lv *LazyValue) Clone(buf []byte, fetcher *LazyFetcher) (LazyValue, []byte) {
-	var lvCopy LazyValue
-	if lv.Fetcher != nil {
-		*fetcher = LazyFetcher{
-			Fetcher:   lv.Fetcher.Fetcher,
-			Attribute: lv.Fetcher.Attribute,
-			// Not copying anything that has been extracted.
-		}
-		lvCopy.Fetcher = fetcher
+func (v LazyValue) Clone(buf []byte) (LazyValue, []byte) {
+	if len(v.ValueOrHandle) == 0 {
+		return v, buf
 	}
-	vLen := len(lv.ValueOrHandle)
-	if vLen == 0 {
-		return lvCopy, buf
-	}
+	clone := v
 	bufLen := len(buf)
-	buf = append(buf, lv.ValueOrHandle...)
-	lvCopy.ValueOrHandle = buf[bufLen : bufLen+vLen]
-	return lvCopy, buf
+	buf = append(buf, v.ValueOrHandle...)
+	clone.ValueOrHandle = buf[bufLen : bufLen+len(v.ValueOrHandle)]
+	return clone, buf
 }
 
-// MakeInPlaceValue constructs an in-place value.
-func MakeInPlaceValue(val []byte) LazyValue {
-	return LazyValue{ValueOrHandle: val}
+// Value retrieves the value and returns it as a byte slice. Get may perform I/O
+// to retrieve the value from storage.
+func (v *LazyValue) Value(buf []byte) (val []byte, callerOwned bool, err error) {
+	// TODO(jackson): callerOwned is not used in the current implementation. The
+	// returned value is always pointing into the block cache. If the value is
+	// not inline, the block cache reference is held by the pebble.Iterator's
+	// valsep.Retriever.
+
+	if v.Retriever != nil {
+		val, err = v.Retriever.Retrieve(context.TODO(), v.FileNum, v.ValueOrHandle)
+		if err == nil {
+			v.ValueOrHandle = val
+			v.Retriever = nil
+		}
+		return val, false, err
+	}
+	return v.ValueOrHandle, false, nil
+}
+
+// Get retrieves the value and returns it as a byte slice. Get may perform I/O
+// to retrieve the value from storage.
+func (v *LazyValue) Get(ctx context.Context) (val []byte, err error) {
+	if v.Retriever != nil {
+		val, err := v.Retriever.Retrieve(ctx, v.FileNum, v.ValueOrHandle)
+		if err == nil {
+			v.ValueOrHandle = val
+			v.Retriever = nil
+		}
+		return val, err
+	}
+	return v.ValueOrHandle, nil
+}
+
+type ValueAttributes struct {
+	ValueLen             int
+	ShortAttribute       ShortAttribute
+	ShortAttributeExists bool
+}
+
+func (v *LazyValue) Attributes() ValueAttributes {
+	if v.Retriever == nil {
+		return ValueAttributes{ValueLen: len(v.ValueOrHandle)}
+	}
+	return v.Retriever.DecodeAttributes(v.ValueOrHandle)
+}
+
+type ValueRetriever interface {
+	DecodeAttributes(handle []byte) ValueAttributes
+	Retrieve(ctx context.Context, file DiskFileNum, handle []byte) (val []byte, err error)
 }

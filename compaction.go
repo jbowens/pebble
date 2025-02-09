@@ -27,6 +27,8 @@ import (
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/objiotracing"
 	"github.com/cockroachdb/pebble/objstorage/remote"
 	"github.com/cockroachdb/pebble/sstable"
+	"github.com/cockroachdb/pebble/sstable/block"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 	"github.com/cockroachdb/pebble/vfs"
 )
 
@@ -194,6 +196,7 @@ type compaction struct {
 	// goroutine is still cleaning up (eg, deleting obsolete files).
 	versionEditApplied bool
 	bufferPool         sstable.BufferPool
+	valueRetriever     valsep.Retriever
 
 	// startLevel is the level that is being compacted. Inputs from startLevel
 	// and outputLevel will be merged to produce a set of outputLevel files.
@@ -789,9 +792,10 @@ func (c *compaction) newInputIters(
 			// deletions to compactions are handled below.
 			iters = append(iters, newLevelIter(context.Background(),
 				iterOpts, c.comparer, newIters, level.files.Iter(), l, internalIterOpts{
-					compaction: true,
-					bufferPool: &c.bufferPool,
-					stats:      &c.stats,
+					compaction:     true,
+					bufferPool:     &c.bufferPool,
+					stats:          &c.stats,
+					valueRetriever: &c.valueRetriever,
 				}))
 			// TODO(jackson): Use keyspanimpl.LevelIter to avoid loading all the range
 			// deletions into memory upfront. (See #2015, which reverted this.) There
@@ -2983,6 +2987,10 @@ func (d *DB) compactAndWrite(
 	// translate to 3 MiB per compaction.
 	c.bufferPool.Init(12)
 	defer c.bufferPool.Release()
+	c.valueRetriever.Init(d.fileCache, block.ReadEnv{
+		BufferPool: &c.bufferPool,
+		Stats:      &c.stats,
+	})
 
 	pointIter, rangeDelIter, rangeKeyIter, err := c.newInputIters(d.newIters, d.tableNewRangeKeyIter)
 	defer func() {

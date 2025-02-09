@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/rangekeystack"
 	"github.com/cockroachdb/pebble/internal/treeprinter"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 	"github.com/cockroachdb/redact"
 )
 
@@ -220,7 +221,6 @@ type Iterator struct {
 	value  LazyValue
 	// For use in LazyValue.Clone.
 	valueBuf []byte
-	fetcher  base.LazyFetcher
 	// For use in LazyValue.Value.
 	lazyValueBuf []byte
 	valueCloser  io.Closer
@@ -239,6 +239,7 @@ type Iterator struct {
 	readSampling        readSampling
 	stats               IteratorStats
 	externalIter        *externalIterState
+	valueRetriever      valsep.Retriever
 	// Following fields used when constructing an iterator stack, eg, in Clone
 	// and SetOptions or when re-fragmenting a batch's range keys/range dels.
 	// Non-nil if this Iterator includes a Batch.
@@ -1049,7 +1050,7 @@ func (i *Iterator) findPrevEntry(limit []byte) {
 			// in this one instance; everywhere else (eg. in findNextEntry),
 			// we just point i.value to the unsafe i.iter-owned value buffer.
 			lv := i.iterKV.V.LazyValue()
-			i.value, i.valueBuf = lv.Clone(i.valueBuf[:0], &i.fetcher)
+			i.value, i.valueBuf = lv.Clone(i.valueBuf[:0])
 			i.saveRangeKey()
 			i.iterValidityState = IterValid
 			i.iterKV = i.iter.Prev()

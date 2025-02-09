@@ -353,32 +353,39 @@ func formatColblkDataBlock(
 
 	if fmtKV != nil {
 		var iter colblk.DataBlockIter
-		iter.InitOnce(r.keySchema, r.Comparer, describingLazyValueHandler{})
+		iter.InitOnce(r.keySchema, r.Comparer, describingValueRetriever{})
 		if err := iter.Init(&decoder, block.IterTransforms{}); err != nil {
 			return err
 		}
 		defer iter.Close()
 		for kv := iter.First(); kv != nil; kv = iter.Next() {
 			lv := kv.V.LazyValue()
-			tp.Child(fmtKV(&kv.K, lv.ValueOrHandle))
+			if lv.Retriever == nil {
+				tp.Child(fmtKV(&kv.K, lv.ValueOrHandle))
+			} else {
+				vh := valblk.DecodeHandle(lv.ValueOrHandle[1:])
+				tp.Child(fmtKV(&kv.K, []byte(fmt.Sprintf("value handle %+v", vh))))
+			}
 		}
 	}
 	return nil
 }
 
-// describingLazyValueHandler is a block.GetLazyValueForPrefixAndValueHandler
-// that replaces a value handle with an in-place value describing the handle.
-type describingLazyValueHandler struct{}
+// describingValueRetriever is a base.ValueRetriever implementation that
+// replaces a value handle with an in-place value describing the handle.
+type describingValueRetriever struct{}
 
-// Assert that debugLazyValueHandler implements the
-// block.GetLazyValueForPrefixAndValueHandler interface.
-var _ block.GetLazyValueForPrefixAndValueHandler = describingLazyValueHandler{}
+// Assert that describingValueRetriever implements the base.ValueRetriever
+// interface.
+var _ base.ValueRetriever = describingValueRetriever{}
 
-func (describingLazyValueHandler) GetLazyValueForPrefixAndValueHandle(
-	handle []byte,
-) base.LazyValue {
+func (describingValueRetriever) DecodeAttributes(handle []byte) base.ValueAttributes {
+	return base.ValueAttributes{}
+}
+
+func (describingValueRetriever) Retrieve(ctx context.Context, fileNum base.DiskFileNum, handle []byte) ([]byte, error) {
 	vh := valblk.DecodeHandle(handle[1:])
-	return base.LazyValue{ValueOrHandle: []byte(fmt.Sprintf("value handle %+v", vh))}
+	return []byte(fmt.Sprintf("value handle %+v", vh)), nil
 }
 
 func formatColblkKeyspanBlock(

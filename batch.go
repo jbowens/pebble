@@ -1822,12 +1822,13 @@ func (i *batchIter) LazyValue() base.LazyValue {
 	return base.MakeInPlaceValue(i.value())
 }
 
-// InlineLen returns the length of the inline value at the current position.
+// DescribeValue returns the length of the inline value at the current position.
 // It's required by base.Valuer.
-func (i *batchIter) InlineLen() uint32 {
+func (i *batchIter) DescribeValue() (inlineLen, valueLen uint32, src base.ValueSource) {
 	// TODO(jackson): This duplicates the work of decoding the value from the
 	// batch, and it can be avoided.
-	return uint32(len(i.value()))
+	vLen := uint32(len(i.value()))
+	return vLen, vLen, base.ValueInline
 }
 
 func (i *batchIter) value() []byte {
@@ -2358,12 +2359,13 @@ func (i *flushableBatchIter) LazyValue() base.LazyValue {
 	return base.MakeInPlaceValue(value)
 }
 
-// InlineLen returns the length of the inline value at the current position.
+// DescribeValue returns the length of the inline value at the current position.
 // It's required by base.Valuer.
-func (i *flushableBatchIter) InlineLen() uint32 {
+func (i *flushableBatchIter) DescribeValue() (inlineLen, valueLen uint32, src base.ValueSource) {
 	// TODO(jackson): This duplicates the work of decoding the value from the
 	// batch, and it can be avoided.
-	return uint32(len(i.LazyValue().ValueOrHandle))
+	vLen := uint32(len(i.LazyValue().ValueOrHandle))
+	return vLen, vLen, base.ValueInline
 }
 
 func (i *flushableBatchIter) Valid() bool {

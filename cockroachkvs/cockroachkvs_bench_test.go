@@ -116,10 +116,9 @@ func benchmarkRandSeekInSST(
 
 	// Iterate through the entire table to warm up the cache.
 	var stats base.InternalIteratorStats
-	rp := sstable.MakeTrivialReaderProvider(reader)
-	iter, err := reader.NewPointIter(
+	iter, err := reader.NewPointIterLimitedValueLifetime(
 		ctx, sstable.NoTransforms, nil, nil, nil, sstable.NeverUseFilterBlock,
-		block.ReadEnv{Stats: &stats, IterStats: nil}, rp)
+		block.ReadEnv{Stats: &stats, IterStats: nil})
 	require.NoError(b, err)
 	n := 0
 	for kv := iter.First(); kv != nil; kv = iter.Next() {
@@ -133,9 +132,9 @@ func benchmarkRandSeekInSST(
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := queryKeys[i%numQueryKeys]
-		iter, err := reader.NewPointIter(
+		iter, err := reader.NewPointIterLimitedValueLifetime(
 			ctx, sstable.NoTransforms, nil, nil, nil, sstable.NeverUseFilterBlock,
-			block.ReadEnv{Stats: &stats, IterStats: nil}, rp)
+			block.ReadEnv{Stats: &stats, IterStats: nil})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -319,8 +318,8 @@ func benchmarkCockroachDataBlockIter(
 
 	var decoder colblk.DataBlockDecoder
 	var it colblk.DataBlockIter
-	it.InitOnce(&KeySchema, &Comparer, getLazyValuer(func([]byte) base.LazyValue {
-		return base.LazyValue{ValueOrHandle: []byte("mock external value")}
+	it.InitOnce(&KeySchema, &Comparer, mockRetriever(func([]byte) ([]byte, error) {
+		return []byte("mock external value"), nil
 	}))
 	decoder.Init(&KeySchema, serializedBlock)
 	if err := it.Init(&decoder, transforms); err != nil {
@@ -371,4 +370,14 @@ func benchmarkCockroachDataBlockIter(
 			b.ReportMetric(avgRowSize, "bytes/row")
 		})
 	}
+}
+
+type mockRetriever func([]byte) ([]byte, error)
+
+func (mockRetriever) DecodeAttributes(handle []byte) base.ValueAttributes {
+	return base.ValueAttributes{ValueLen: len(handle)}
+}
+
+func (r mockRetriever) Retrieve(ctx context.Context, file base.DiskFileNum, handle []byte) (val []byte, err error) {
+	return r(handle)
 }

@@ -986,9 +986,9 @@ func TestBlockProperties(t *testing.T) {
 			} else if !ok {
 				return "filter excludes entire table"
 			}
-			iter, err := r.NewPointIter(
+			iter, err := r.NewPointIterLimitedValueLifetime(
 				context.Background(),
-				NoTransforms, lower, upper, filterer, NeverUseFilterBlock, block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r))
+				NoTransforms, lower, upper, filterer, NeverUseFilterBlock, block.ReadEnv{Stats: &stats, IterStats: nil})
 			if err != nil {
 				return err.Error()
 			}
@@ -1069,9 +1069,9 @@ func TestBlockProperties_BoundLimited(t *testing.T) {
 			} else if !ok {
 				return "filter excludes entire table"
 			}
-			iter, err := r.NewPointIter(
+			iter, err := r.NewPointIterLimitedValueLifetime(
 				context.Background(),
-				NoTransforms, lower, upper, filterer, NeverUseFilterBlock, block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r))
+				NoTransforms, lower, upper, filterer, NeverUseFilterBlock, block.ReadEnv{Stats: &stats, IterStats: nil})
 			if err != nil {
 				return err.Error()
 			}

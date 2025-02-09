@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/objiotracing"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/sstable/valblk"
+	"github.com/cockroachdb/pebble/sstable/valsep"
 )
 
 var emptyIter = &errorIter{err: nil}
@@ -103,6 +103,9 @@ type fileCacheHandle struct {
 	iterCount         atomic.Int32
 	sstStatsCollector block.CategoryStatsCollector
 }
+
+// Assert that fileCacheHandle implements the ReaderProvider interface.
+var _ valsep.ReaderProvider = (*fileCacheHandle)(nil)
 
 // newHandle creates a handle for the FileCache which has its own options. Each
 // handle has its own set of files in the cache, separate from those of other
@@ -252,6 +255,19 @@ func (h *fileCacheHandle) withVirtualReader(
 
 func (h *fileCacheHandle) IterCount() int64 {
 	return int64(h.iterCount.Load())
+}
+
+func (h *fileCacheHandle) GetValueReader(ctx context.Context, it any, fileNum base.DiskFileNum) (r valsep.ValueReader, closeFunc func(any), err error) {
+	s := h.fileCache.getShard(fileNum)
+	v := s.findNodeInternal(ctx, fileNum, h)
+	if v.err != nil {
+		return nil, nil, v.err
+	}
+	// TODO(jackson): With the introduction of blob files, v.reader may be a
+	// blob file reader. We may want to change the type of v.reader to be a
+	// valsep.ValueReader since that will become a common interface to all
+	// readers.
+	return v.mustSSTableReader(), v.closeHook, nil
 }
 
 // FileCache is a shareable cache for open files. Open files are exclusively
@@ -550,11 +566,11 @@ func (c *fileCacheShard) newPointIter(
 		iterStatsAccum = handle.SSTStatsCollector().Accumulator(uint64(uintptr(unsafe.Pointer(r))), opts.Category)
 	}
 	if internalOpts.compaction {
-		iter, err = cr.NewCompactionIter(transforms, block.ReadEnv{IterStats: iterStatsAccum, BufferPool: internalOpts.bufferPool}, &v.readerProvider)
+		iter, err = cr.NewCompactionIter(transforms, block.ReadEnv{IterStats: iterStatsAccum, BufferPool: internalOpts.bufferPool}, internalOpts.valueRetriever)
 	} else {
 		iter, err = cr.NewPointIter(
 			ctx, transforms, opts.GetLowerBound(), opts.GetUpperBound(), filterer, filterBlockSizeLimit,
-			block.ReadEnv{Stats: internalOpts.stats, IterStats: iterStatsAccum}, &v.readerProvider)
+			block.ReadEnv{Stats: internalOpts.stats, IterStats: iterStatsAccum}, internalOpts.valueRetriever)
 	}
 	if err != nil {
 		return nil, err
@@ -638,90 +654,6 @@ func newRangeKeyIter(
 		BufferPool: nil,
 	}
 	return cr.NewRawRangeKeyIter(ctx, transforms, readBlockEnv)
-}
-
-// tableCacheShardReaderProvider implements sstable.ReaderProvider for a
-// specific table.
-type tableCacheShardReaderProvider struct {
-	c              *fileCacheShard
-	handle         *fileCacheHandle
-	backingFileNum base.DiskFileNum
-
-	mu struct {
-		sync.Mutex
-		// v is the result of findNode. Whenever it is not null, we hold a refcount
-		// on the fileCacheValue.
-		v *fileCacheValue
-		// refCount is the number of GetReader() calls that have not received a
-		// corresponding Close().
-		refCount int
-	}
-}
-
-var _ valblk.ReaderProvider = &tableCacheShardReaderProvider{}
-
-func (rp *tableCacheShardReaderProvider) init(
-	c *fileCacheShard, handle *fileCacheHandle, backingFileNum base.DiskFileNum,
-) {
-	rp.c = c
-	rp.handle = handle
-	rp.backingFileNum = backingFileNum
-	rp.mu.v = nil
-	rp.mu.refCount = 0
-}
-
-// GetReader implements sstable.ReaderProvider. Note that it is not the
-// responsibility of tableCacheShardReaderProvider to ensure that the file
-// continues to exist. The ReaderProvider is used in iterators where the
-// top-level iterator is pinning the read state and preventing the files from
-// being deleted.
-//
-// The caller must call tableCacheShardReaderProvider.Close.
-//
-// Note that currently the Reader returned here is only used to read value
-// blocks. This reader shouldn't be used for other purposes like reading keys
-// outside of virtual sstable bounds.
-//
-// TODO(bananabrick): We could return a wrapper over the Reader to ensure
-// that the reader isn't used for other purposes.
-func (rp *tableCacheShardReaderProvider) GetReader(
-	ctx context.Context,
-) (valblk.ExternalBlockReader, error) {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-
-	if rp.mu.v != nil {
-		rp.mu.refCount++
-		return rp.mu.v.mustSSTableReader(), nil
-	}
-
-	// Calling findNodeInternal gives us the responsibility of decrementing v's
-	// refCount. Note that if the table is no longer in the cache,
-	// findNodeInternal will need to do IO to initialize a new Reader. We hold
-	// rp.mu during this time so that concurrent GetReader calls block until the
-	// Reader is created.
-	v := rp.c.findNodeInternal(ctx, rp.backingFileNum, rp.handle)
-	if v.err != nil {
-		defer rp.c.unrefValue(v)
-		return nil, v.err
-	}
-	rp.mu.v = v
-	rp.mu.refCount = 1
-	return v.mustSSTableReader(), nil
-}
-
-// Close implements sstable.ReaderProvider.
-func (rp *tableCacheShardReaderProvider) Close() {
-	rp.mu.Lock()
-	defer rp.mu.Unlock()
-	rp.mu.refCount--
-	if rp.mu.refCount <= 0 {
-		if rp.mu.refCount < 0 {
-			panic("pebble: sstable.ReaderProvider misuse")
-		}
-		rp.c.unrefValue(rp.mu.v)
-		rp.mu.v = nil
-	}
 }
 
 // getTableProperties return sst table properties for target file.
@@ -888,7 +820,6 @@ func (c *fileCacheShard) findNodeInternal(
 	v := &fileCacheValue{
 		loaded: make(chan struct{}),
 	}
-	v.readerProvider.init(c, handle, backingFileNum)
 	v.refCount.Store(2)
 	// Cache the closure invoked when an iterator is closed. This avoids an
 	// allocation on every call to newIters.
@@ -1129,13 +1060,6 @@ type fileCacheValue struct {
 	// count drops to zero.
 	refCount atomic.Int32
 	isShared bool
-
-	// readerProvider is embedded here so that we only allocate it once as long as
-	// the table stays in the cache. Its state is not always logically tied to
-	// this specific fileCacheShard - if a table goes out of the cache and then
-	// comes back in, the readerProvider in a now-defunct fileCacheValue can
-	// still be used and will internally refer to the new fileCacheValue.
-	readerProvider tableCacheShardReaderProvider
 }
 
 // mustSSTable retrieves the value's *sstable.Reader. It panics if the cached

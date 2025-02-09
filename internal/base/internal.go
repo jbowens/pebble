@@ -619,10 +619,10 @@ func (v InPlaceValuer) LazyValue() LazyValue {
 	return MakeInPlaceValue(v)
 }
 
-// InlineLen returns the length of the in-place value. It's required to
-// implement the Valuer interface.
-func (v InPlaceValuer) InlineLen() uint32 {
-	return uint32(len(v))
+// DescribeValue describes the value. It's required to implement the Valuer
+// interface.
+func (v InPlaceValuer) DescribeValue() (inlineLen, valLen uint32, src ValueSource) {
+	return uint32(len(v)), uint32(len(v)), ValueInline
 }
 
 // Valuer is a type that can produce a value.
@@ -632,7 +632,7 @@ func (v InPlaceValuer) InlineLen() uint32 {
 // with itself as the Valuer.
 type Valuer interface {
 	LazyValue() LazyValue
-	InlineLen() uint32
+	DescribeValue() (inlineLen, len uint32, src ValueSource)
 }
 
 type ValueHandle struct {

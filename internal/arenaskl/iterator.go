@@ -236,10 +236,8 @@ func (it *Iterator) LazyValue() base.LazyValue {
 	return base.LazyValue{ValueOrHandle: it.value()}
 }
 
-// InlineLen returns the length of the inline value at the current position.
-// It's required by base.Valuer.
-func (it *Iterator) InlineLen() uint32 {
-	return it.nd.valueSize
+func (it *Iterator) DescribeValue() (inlineLen, valLen uint32, src base.ValueSource) {
+	return it.nd.valueSize, it.nd.valueSize, base.ValueInline
 }
 
 // value returns the value at the current position.
