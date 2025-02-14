@@ -598,6 +598,89 @@ func ParseInternalKeyRange(s string) (start, end InternalKey) {
 	return ParseInternalKey(x[0]), ParseInternalKey(x[1])
 }
 
+type InternalValue struct {
+	lazyValue  LazyValue
+	lazyValuer LazyValuer
+}
+
+func MakeDeferredLazyValue(v LazyValuer) InternalValue {
+	return InternalValue{lazyValuer: v}
+}
+
+func MakeLazyValue(v LazyValue) InternalValue {
+	return InternalValue{lazyValue: v}
+}
+
+// MakeInPlaceValue constructs an in-place value.
+func MakeInPlaceValue(val []byte) InternalValue {
+	return InternalValue{lazyValue: LazyValue{ValueOrHandle: val}}
+}
+
+// IsInPlaceValue returns true iff the value was stored in-place and does not
+// need to be fetched externally.
+func (v *InternalValue) IsInPlaceValue() bool {
+	return v.lazyValuer == nil && v.lazyValue.Fetcher == nil
+}
+
+// InPlaceValue returns the value under the assumption that it is in-place.
+// This is for Pebble-internal code.
+func (v *InternalValue) InPlaceValue() []byte {
+	if invariants.Enabled && !v.IsInPlaceValue() {
+		panic("value must be in-place")
+	}
+	return v.lazyValue.ValueOrHandle
+}
+
+//gcassert:inline
+func (v *InternalValue) maybeConstructLazyValue() {
+	if v.lazyValuer != nil {
+		v.lazyValue = v.lazyValuer.LazyValue()
+		v.lazyValuer = nil
+	}
+}
+
+// LazyValue returns the InternalValue as a LazyValue.
+func (v *InternalValue) LazyValue() LazyValue {
+	v.maybeConstructLazyValue()
+	return v.lazyValue
+}
+
+// Len returns the length of the value. This is the length of the logical value
+// (i.e., the length of the byte slice returned by .Value())
+func (v *InternalValue) Len() int {
+	v.maybeConstructLazyValue()
+	return v.lazyValue.Len()
+}
+
+// InternalLen returns the length of the value, if the value is in-place, or the
+// length of the handle describing the location of the value if the value is
+// stored out-of-band.
+func (v *InternalValue) InternalLen() int {
+	v.maybeConstructLazyValue()
+	return len(v.lazyValue.ValueOrHandle)
+}
+
+// Value returns the KV's underlying value.
+func (v *InternalValue) Value(buf []byte) (val []byte, callerOwned bool, err error) {
+	v.maybeConstructLazyValue()
+	return v.lazyValue.Value(buf)
+}
+
+// Clone creates a stable copy of the value, by appending bytes to buf.  The
+// fetcher parameter must be non-nil and may be over-written and used inside the
+// returned InternalValue -- this is needed to avoid an allocation.
+//
+// See LazyValue.Clone for more details.
+func (v *InternalValue) Clone(buf []byte, fetcher *LazyFetcher) (InternalValue, []byte) {
+	v.maybeConstructLazyValue()
+	lv, buf := v.lazyValue.Clone(buf, fetcher)
+	return InternalValue{lazyValue: lv}, buf
+}
+
+type LazyValuer interface {
+	LazyValue() LazyValue
+}
+
 // MakeInternalKV constructs an InternalKV with the provided internal key and
 // value. The value is encoded in-place.
 func MakeInternalKV(k InternalKey, v []byte) InternalKV {
@@ -610,7 +693,7 @@ func MakeInternalKV(k InternalKey, v []byte) InternalKV {
 // InternalKV represents a single internal key-value pair.
 type InternalKV struct {
 	K InternalKey
-	V LazyValue
+	V InternalValue
 }
 
 // Kind returns the KV's internal key kind.
@@ -628,7 +711,17 @@ func (kv *InternalKV) InPlaceValue() []byte {
 	return kv.V.InPlaceValue()
 }
 
-// Value return's the KV's underlying value.
+// LazyValue returns a LazyValue containing the KV's value.
+func (kv *InternalKV) LazyValue() LazyValue {
+	return kv.V.LazyValue()
+}
+
+// ValueLen returns the length of the contained value.
+func (kv *InternalKV) ValueLen() int {
+	return kv.V.Len()
+}
+
+// Value returns the KV's underlying value.
 func (kv *InternalKV) Value(buf []byte) (val []byte, callerOwned bool, err error) {
 	return kv.V.Value(buf)
 }

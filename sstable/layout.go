@@ -359,7 +359,7 @@ func formatColblkDataBlock(
 		}
 		defer iter.Close()
 		for kv := iter.First(); kv != nil; kv = iter.Next() {
-			tp.Child(fmtKV(&kv.K, kv.V.ValueOrHandle))
+			tp.Child(fmtKV(&kv.K, kv.V.LazyValue().ValueOrHandle))
 		}
 	}
 	return nil

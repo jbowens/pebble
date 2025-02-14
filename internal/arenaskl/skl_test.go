@@ -104,8 +104,8 @@ func TestFull(t *testing.T) {
 	require.Equal(t, ErrArenaFull, err)
 }
 
-func mustGetValue(t *testing.T, lv base.LazyValue) []byte {
-	v, _, err := lv.Value(nil)
+func mustGetValue(t *testing.T, kv *base.InternalKV) []byte {
+	v, _, err := kv.Value(nil)
 	require.NoError(t, err)
 	return v
 }
@@ -134,17 +134,17 @@ func TestBasic(t *testing.T) {
 			kv = it.SeekGE(makeKey("key1"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "key1", kv.K.UserKey)
-			require.EqualValues(t, makeValue(1), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(1), mustGetValue(t, kv))
 
 			kv = it.SeekGE(makeKey("key2"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "key2", kv.K.UserKey)
-			require.EqualValues(t, makeValue(2), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(2), mustGetValue(t, kv))
 
 			kv = it.SeekGE(makeKey("key3"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "key3", kv.K.UserKey)
-			require.EqualValues(t, makeValue(3), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(3), mustGetValue(t, kv))
 
 			key := makeIkey("a")
 			key.SetSeqNum(1)
@@ -273,7 +273,7 @@ func TestConcurrentOneKey(t *testing.T) {
 					require.True(t, bytes.Equal(key, kv.K.UserKey))
 
 					sawValue.Add(1)
-					v, err := strconv.Atoi(string(mustGetValue(t, kv.V)[1:]))
+					v, err := strconv.Atoi(string(mustGetValue(t, kv)[1:]))
 					require.NoError(t, err)
 					require.True(t, 0 <= v && v < n)
 				}()
@@ -303,7 +303,7 @@ func TestSkiplistAdd(t *testing.T) {
 			kv := it.SeekGE([]byte{}, base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, []byte{}, kv.K.UserKey)
-			require.EqualValues(t, []byte{}, mustGetValue(t, kv.V))
+			require.EqualValues(t, []byte{}, mustGetValue(t, kv))
 
 			l = NewSkiplist(newArena(arenaSize), bytes.Compare)
 			it = l.NewIter(nil, nil)
@@ -319,7 +319,7 @@ func TestSkiplistAdd(t *testing.T) {
 			kv = it.SeekGE([]byte{}, base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, []byte{}, kv.K.UserKey)
-			require.EqualValues(t, []byte{}, mustGetValue(t, kv.V))
+			require.EqualValues(t, []byte{}, mustGetValue(t, kv))
 
 			// Add to empty list.
 			err = add(makeIntKey(2), makeValue(2))
@@ -327,7 +327,7 @@ func TestSkiplistAdd(t *testing.T) {
 			kv = it.SeekGE(makeKey("00002"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "00002", kv.K.UserKey)
-			require.EqualValues(t, makeValue(2), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(2), mustGetValue(t, kv))
 
 			// Add first element in non-empty list.
 			err = add(makeIntKey(1), makeValue(1))
@@ -335,7 +335,7 @@ func TestSkiplistAdd(t *testing.T) {
 			kv = it.SeekGE(makeKey("00001"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "00001", kv.K.UserKey)
-			require.EqualValues(t, makeValue(1), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(1), mustGetValue(t, kv))
 
 			// Add last element in non-empty list.
 			err = add(makeIntKey(4), makeValue(4))
@@ -343,7 +343,7 @@ func TestSkiplistAdd(t *testing.T) {
 			kv = it.SeekGE(makeKey("00004"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "00004", kv.K.UserKey)
-			require.EqualValues(t, makeValue(4), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(4), mustGetValue(t, kv))
 
 			// Add element in middle of list.
 			err = add(makeIntKey(3), makeValue(3))
@@ -351,7 +351,7 @@ func TestSkiplistAdd(t *testing.T) {
 			kv = it.SeekGE(makeKey("00003"), base.SeekGEFlagsNone)
 			require.NotNil(t, kv)
 			require.EqualValues(t, "00003", kv.K.UserKey)
-			require.EqualValues(t, makeValue(3), mustGetValue(t, kv.V))
+			require.EqualValues(t, makeValue(3), mustGetValue(t, kv))
 
 			// Try to add element that already exists.
 			err = add(makeIntKey(2), nil)
@@ -430,7 +430,7 @@ func TestIteratorNext(t *testing.T) {
 	for i := 0; i < n; i++ {
 		require.NotNil(t, kv)
 		require.EqualValues(t, makeIntKey(i), kv.K)
-		require.EqualValues(t, makeValue(i), mustGetValue(t, kv.V))
+		require.EqualValues(t, makeValue(i), mustGetValue(t, kv))
 		kv = it.Next()
 	}
 	require.Nil(t, kv)
@@ -452,7 +452,7 @@ func TestIteratorPrev(t *testing.T) {
 	for i := n - 1; i >= 0; i-- {
 		require.NotNil(t, kv)
 		require.EqualValues(t, makeIntKey(i), kv.K)
-		require.EqualValues(t, makeValue(i), mustGetValue(t, kv.V))
+		require.EqualValues(t, makeValue(i), mustGetValue(t, kv))
 		kv = it.Prev()
 	}
 	require.Nil(t, kv)
@@ -462,7 +462,7 @@ func mustSeekGEKV(t *testing.T, it *Iterator, seekKey []byte, flags base.SeekGEF
 	kv := it.SeekGE(seekKey, flags)
 	require.NotNil(t, kv)
 	require.EqualValues(t, k, string(kv.K.UserKey))
-	gotV := mustGetValue(t, kv.V)
+	gotV := mustGetValue(t, kv)
 	require.EqualValues(t, v, string(gotV))
 }
 
@@ -472,7 +472,7 @@ func mustSeekPrefixGEKV(
 	kv := it.SeekPrefixGE(seekKey, seekKey, flags)
 	require.NotNil(t, kv)
 	require.EqualValues(t, k, string(kv.K.UserKey))
-	gotV := mustGetValue(t, kv.V)
+	gotV := mustGetValue(t, kv)
 	require.EqualValues(t, v, string(gotV))
 }
 
@@ -560,22 +560,22 @@ func TestIteratorSeekLT(t *testing.T) {
 	kv := it.SeekLT(makeKey("01001"), base.SeekLTFlagsNone)
 	require.NotNil(t, kv)
 	require.EqualValues(t, "01000", kv.K.UserKey)
-	require.EqualValues(t, "v01000", mustGetValue(t, kv.V))
+	require.EqualValues(t, "v01000", mustGetValue(t, kv))
 
 	kv = it.SeekLT(makeKey("01005"), base.SeekLTFlagsNone)
 	require.NotNil(t, kv)
 	require.EqualValues(t, "01000", kv.K.UserKey)
-	require.EqualValues(t, "v01000", mustGetValue(t, kv.V))
+	require.EqualValues(t, "v01000", mustGetValue(t, kv))
 
 	kv = it.SeekLT(makeKey("01991"), base.SeekLTFlagsNone)
 	require.NotNil(t, kv)
 	require.EqualValues(t, "01990", kv.K.UserKey)
-	require.EqualValues(t, "v01990", mustGetValue(t, kv.V))
+	require.EqualValues(t, "v01990", mustGetValue(t, kv))
 
 	kv = it.SeekLT(makeKey("99999"), base.SeekLTFlagsNone)
 	require.NotNil(t, kv)
 	require.EqualValues(t, "01990", kv.K.UserKey)
-	require.EqualValues(t, "v01990", mustGetValue(t, kv.V))
+	require.EqualValues(t, "v01990", mustGetValue(t, kv))
 
 	// Test seek for empty key.
 	ins.Add(l, base.InternalKey{}, nil)
@@ -649,7 +649,7 @@ func TestIteratorBounds(t *testing.T) {
 	kv := it.SeekLT(key(4), base.SeekLTFlagsNone)
 	require.NotNil(t, kv)
 	require.EqualValues(t, "00003", kv.K.UserKey)
-	require.EqualValues(t, "v00003", mustGetValue(t, kv.V))
+	require.EqualValues(t, "v00003", mustGetValue(t, kv))
 
 	// Prev into the lower bound fails.
 	require.Nil(t, it.Prev())

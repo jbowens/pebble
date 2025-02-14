@@ -762,12 +762,12 @@ func (rw *DataBlockRewriter) RewriteSuffixes(
 
 	// Rewrite each key-value pair one-by-one.
 	for i, kv := 0, rw.iter.First(); kv != nil; i, kv = i+1, rw.iter.Next() {
-		value := kv.V.ValueOrHandle
+		value := kv.V.LazyValue().ValueOrHandle
 		valuePrefix := block.InPlaceValuePrefix(false /* setHasSamePrefix (unused) */)
 		isValueExternal := rw.decoder.isValueExternal.At(i)
 		if isValueExternal {
-			valuePrefix = block.ValuePrefix(kv.V.ValueOrHandle[0])
-			value = kv.V.ValueOrHandle[1:]
+			valuePrefix = block.ValuePrefix(value[0])
+			value = value[1:]
 		}
 		kcmp := rw.encoder.KeyWriter.ComparePrev(kv.K.UserKey)
 		if !bytes.Equal(kv.K.UserKey[kcmp.PrefixLen:], from) {
@@ -1337,7 +1337,7 @@ func (i *DataBlockIter) Next() *base.InternalKV {
 	// Inline i.d.values.At(row).
 	v := i.d.values.slice(i.d.values.offsets.At2(i.row))
 	if i.d.isValueExternal.At(i.row) {
-		i.kv.V = i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v)
+		i.kv.V = base.MakeLazyValue(i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v))
 	} else {
 		i.kv.V = base.MakeInPlaceValue(v)
 	}
@@ -1506,7 +1506,7 @@ func (i *DataBlockIter) decodeRow() *base.InternalKV {
 		startOffset := i.d.values.offsets.At(i.row)
 		v := unsafe.Slice((*byte)(i.d.values.ptr(startOffset)), i.d.values.offsets.At(i.row+1)-startOffset)
 		if i.d.isValueExternal.At(i.row) {
-			i.kv.V = i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v)
+			i.kv.V = base.MakeLazyValue(i.getLazyValuer.GetLazyValueForPrefixAndValueHandle(v))
 		} else {
 			i.kv.V = base.MakeInPlaceValue(v)
 		}
