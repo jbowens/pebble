@@ -129,10 +129,7 @@ func (r *Reader) GetInternalValueForPrefixAndValueHandle(handle []byte) base.Int
 		r.stats.SeparatedPointValue.Count++
 		r.stats.SeparatedPointValue.ValueBytes += uint64(valLen)
 	}
-	return base.MakeLazyValue(base.LazyValue{
-		ValueOrHandle: h,
-		Fetcher:       lazyFetcher,
-	})
+	return base.MakeLazyValue(h, lazyFetcher)
 }
 
 // Close closes the Reader.

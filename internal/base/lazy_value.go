@@ -256,6 +256,10 @@ func (lv *LazyValue) TryGetShortAttribute() (ShortAttribute, bool) {
 // is at least one complex caller (pebbleMVCCScanner inside CockroachDB) where
 // it is not easy to prove this invariant.
 func (lv *LazyValue) Clone(buf []byte, fetcher *LazyFetcher) (LazyValue, []byte) {
+	return cloneValueFetcher(*lv, buf, fetcher)
+}
+
+func cloneValueFetcher(lv LazyValue, buf []byte, fetcher *LazyFetcher) (LazyValue, []byte) {
 	var lvCopy LazyValue
 	if lv.Fetcher != nil {
 		*fetcher = LazyFetcher{

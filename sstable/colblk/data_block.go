@@ -764,7 +764,7 @@ func (rw *DataBlockRewriter) RewriteSuffixes(
 
 	// Rewrite each key-value pair one-by-one.
 	for i, kv := 0, rw.iter.First(); kv != nil; i, kv = i+1, rw.iter.Next() {
-		value := kv.V.LazyValue().ValueOrHandle
+		value := kv.V.ValueOrHandle()
 		valuePrefix := block.InPlaceValuePrefix(false /* setHasSamePrefix (unused) */)
 		isValueExternal := rw.decoder.isValueExternal.At(i)
 		if isValueExternal {
@@ -1019,9 +1019,10 @@ type DataBlockIter struct {
 	keySchema *KeySchema
 	suffixCmp base.ComparePointSuffixes
 	split     base.Split
-	// getLazyValuer configures the DataBlockIterConfig to initialize the
-	// DataBlockIter to use the provided handler for retrieving lazy values.
-	getLazyValuer block.GetInternalValueForPrefixAndValueHandler
+	// getInternalValue configures the DataBlockIterConfig to initialize the
+	// DataBlockIter to use the provided handler for retrieving InternalValues
+	// for values stored out-of-band.
+	getInternalValue block.GetInternalValueForPrefixAndValueHandler
 
 	// -- Fields that are initialized for each block --
 	// For any changes to these fields, InitHandle should be updated.
@@ -1054,12 +1055,12 @@ type DataBlockIter struct {
 func (i *DataBlockIter) InitOnce(
 	keySchema *KeySchema,
 	comparer *base.Comparer,
-	getLazyValuer block.GetInternalValueForPrefixAndValueHandler,
+	getInternalValue block.GetInternalValueForPrefixAndValueHandler,
 ) {
 	i.keySchema = keySchema
 	i.suffixCmp = comparer.ComparePointSuffixes
 	i.split = comparer.Split
-	i.getLazyValuer = getLazyValuer
+	i.getInternalValue = getInternalValue
 }
 
 // Init initializes the data block iterator, configuring it to read from the
@@ -1339,7 +1340,7 @@ func (i *DataBlockIter) Next() *base.InternalKV {
 	// Inline i.d.values.At(row).
 	v := i.d.values.slice(i.d.values.offsets.At2(i.row))
 	if i.d.isValueExternal.At(i.row) {
-		i.kv.V = i.getLazyValuer.GetInternalValueForPrefixAndValueHandle(v)
+		i.kv.V = i.getInternalValue.GetInternalValueForPrefixAndValueHandle(v)
 	} else {
 		i.kv.V = base.MakeInPlaceValue(v)
 	}
@@ -1508,7 +1509,7 @@ func (i *DataBlockIter) decodeRow() *base.InternalKV {
 		startOffset := i.d.values.offsets.At(i.row)
 		v := unsafe.Slice((*byte)(i.d.values.ptr(startOffset)), i.d.values.offsets.At(i.row+1)-startOffset)
 		if i.d.isValueExternal.At(i.row) {
-			i.kv.V = i.getLazyValuer.GetInternalValueForPrefixAndValueHandle(v)
+			i.kv.V = i.getInternalValue.GetInternalValueForPrefixAndValueHandle(v)
 		} else {
 			i.kv.V = base.MakeInPlaceValue(v)
 		}

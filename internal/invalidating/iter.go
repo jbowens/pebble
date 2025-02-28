@@ -79,7 +79,7 @@ func (i *iter) update(kv *base.InternalKV) *base.InternalKV {
 	}
 	i.lastKV = &base.InternalKV{
 		K: kv.K.Clone(),
-		V: base.MakeLazyValue(copiedLV),
+		V: base.MakeLazyValue(copiedLV.ValueOrHandle, copiedLV.Fetcher),
 	}
 	return i.lastKV
 }

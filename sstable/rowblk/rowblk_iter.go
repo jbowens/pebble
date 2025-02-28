@@ -1658,8 +1658,7 @@ func (i *Iter) Describe(tp treeprinter.Node, fmtKV DescribeKV) {
 		enc.KeyUnshared, ptr = decodeVarint(ptr)
 		enc.ValueLen, _ = decodeVarint(ptr)
 		buf.Reset()
-		lv := kv.V.LazyValue()
-		fmtKV(&buf, &kv.K, lv.ValueOrHandle, enc)
+		fmtKV(&buf, &kv.K, kv.V.ValueOrHandle(), enc)
 		tp.Child(buf.String())
 	}
 	// Format the restart points.
