@@ -65,7 +65,7 @@ func (v *InternalValue) Len() int {
 	if v.fetcher == nil {
 		return len(v.valueOrHandle)
 	}
-	return int(v.fetcher.Attribute.ValueLen)
+	return int(v.fetcher.Metadata.ValueLen)
 
 }
 
@@ -91,7 +91,7 @@ func (v *InternalValue) fetchExternalValue(buf []byte) (val []byte, callerOwned 
 	if !v.fetcher.fetched {
 		v.fetcher.fetched = true
 		v.fetcher.value, v.fetcher.callerOwned, v.fetcher.err = v.fetcher.Fetcher.Fetch(
-			context.TODO(), v.valueOrHandle, v.fetcher.Attribute.ValueLen, buf)
+			context.TODO(), v.valueOrHandle, v.fetcher.Metadata.FileNum, v.fetcher.Metadata.ValueLen, buf)
 	}
 	return v.fetcher.value, v.fetcher.callerOwned, v.fetcher.err
 }

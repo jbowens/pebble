@@ -60,7 +60,7 @@ type topLevelIterator = base.TopLevelIterator
 var ErrCorruption = base.ErrCorruption
 
 // AttributeAndLen exports the base.AttributeAndLen type.
-type AttributeAndLen = base.AttributeAndLen
+type AttributeAndLen = base.InlineMetadata
 
 // ShortAttribute exports the base.ShortAttribute type.
 type ShortAttribute = base.ShortAttribute

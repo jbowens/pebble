@@ -444,7 +444,7 @@ func formatRowblkDataBlock(
 		if fmtRecord != nil {
 			if r.tableFormat < TableFormatPebblev3 || key.Kind() != InternalKeyKindSet {
 				fmt.Fprintf(w, "\n         %s", fmtRecord(key, value))
-			} else if !block.ValuePrefix(value[0]).IsValueHandle() {
+			} else if !block.ValuePrefix(value[0]).IsValueBlockHandle() {
 				fmt.Fprintf(w, "\n         %s", fmtRecord(key, value[1:]))
 			} else {
 				vh := valblk.DecodeHandle(value[1:])

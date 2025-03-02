@@ -37,11 +37,13 @@ const MaxShortAttribute = 7
 type ShortAttributeExtractor func(
 	key []byte, keyPrefixLen int, value []byte) (ShortAttribute, error)
 
-// AttributeAndLen represents the pair of value length and the short
-// attribute.
-type AttributeAndLen struct {
-	ValueLen       int32
+// InlineMetadata holds value metadata stored inline alongside the key. It
+// includes the pair of value length and the short attribute. If the value is
+// stored in an external blob file, it includes the file number.
+type InlineMetadata struct {
+	ValueLen       uint32
 	ShortAttribute ShortAttribute
+	FileNum        DiskFileNum
 }
 
 // LazyValue represents a value that may not already have been extracted.
@@ -164,8 +166,9 @@ type LazyFetcher struct {
 	Fetcher ValueFetcher
 	err     error
 	value   []byte
-	// Attribute includes the short attribute and value length.
-	Attribute   AttributeAndLen
+	// Metadata includes the short attribute and value length (and the file
+	// number for blob values).
+	Metadata    InlineMetadata
 	fetched     bool
 	callerOwned bool
 }
@@ -184,7 +187,7 @@ type ValueFetcher interface {
 	// will allocate a new slice for the value. In either case it will set
 	// callerOwned to true.
 	Fetch(
-		ctx context.Context, handle []byte, valLen int32, buf []byte,
+		ctx context.Context, handle []byte, fileNum DiskFileNum, valLen uint32, buf []byte,
 	) (val []byte, callerOwned bool, err error)
 }
 
@@ -213,7 +216,7 @@ func (lv *LazyValue) fetchValue(
 	if !f.fetched {
 		f.fetched = true
 		f.value, f.callerOwned, f.err = f.Fetcher.Fetch(ctx,
-			lv.ValueOrHandle, lv.Fetcher.Attribute.ValueLen, buf)
+			lv.ValueOrHandle, lv.Fetcher.Metadata.FileNum, lv.Fetcher.Metadata.ValueLen, buf)
 	}
 	return f.value, f.callerOwned, f.err
 }
@@ -223,7 +226,7 @@ func (lv *LazyValue) Len() int {
 	if lv.Fetcher == nil {
 		return len(lv.ValueOrHandle)
 	}
-	return int(lv.Fetcher.Attribute.ValueLen)
+	return int(lv.Fetcher.Metadata.ValueLen)
 }
 
 // TryGetShortAttribute returns the ShortAttribute and a bool indicating
@@ -232,7 +235,7 @@ func (lv *LazyValue) TryGetShortAttribute() (ShortAttribute, bool) {
 	if lv.Fetcher == nil {
 		return 0, false
 	}
-	return lv.Fetcher.Attribute.ShortAttribute, true
+	return lv.Fetcher.Metadata.ShortAttribute, true
 }
 
 // Clone creates a stable copy of the LazyValue, by appending bytes to buf.
@@ -263,8 +266,8 @@ func cloneValueFetcher(lv LazyValue, buf []byte, fetcher *LazyFetcher) (LazyValu
 	var lvCopy LazyValue
 	if lv.Fetcher != nil {
 		*fetcher = LazyFetcher{
-			Fetcher:   lv.Fetcher.Fetcher,
-			Attribute: lv.Fetcher.Attribute,
+			Fetcher:  lv.Fetcher.Fetcher,
+			Metadata: lv.Fetcher.Metadata,
 			// Not copying anything that has been extracted.
 		}
 		lvCopy.Fetcher = fetcher

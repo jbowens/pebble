@@ -443,7 +443,7 @@ func TestWriterWithValueBlocks(t *testing.T) {
 				if kv.K.Kind() == InternalKeyKindSet {
 					prefix := block.ValuePrefix(lv.ValueOrHandle[0])
 					setWithSamePrefix := prefix.SetHasSamePrefix()
-					if prefix.IsValueHandle() {
+					if prefix.IsValueBlockHandle() {
 						attribute := prefix.ShortAttribute()
 						vh := valblk.DecodeHandle(lv.ValueOrHandle[1:])
 						fmt.Fprintf(&buf, "%s:value-handle len %d block %d offset %d, att %d, same-pre %t\n",
@@ -504,7 +504,7 @@ func TestWriterWithValueBlocks(t *testing.T) {
 				if values[i].Fetcher != nil {
 					require.True(t, callerOwned)
 					fmt.Fprintf(&buf, "(lazy: len %d, attr: %d): %s\n",
-						values[i].Len(), values[i].Fetcher.Attribute.ShortAttribute, string(v))
+						values[i].Len(), values[i].Fetcher.Metadata.ShortAttribute, string(v))
 					v2, callerOwned, err := values[i].Value(nil)
 					require.NoError(t, err)
 					require.True(t, callerOwned)

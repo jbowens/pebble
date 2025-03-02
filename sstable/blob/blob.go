@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"sync"
+	"unsafe"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
@@ -68,6 +69,49 @@ type Handle struct {
 	BlockNum      uint32
 	OffsetInBlock uint32
 	ValueLen      uint32
+}
+
+// An InlineHandle holds the data of a blob value handle as it is stored
+// alongside the key. The actual file number of the blob is not stored, and
+// instead an offset into the sstable's BlobReferences array is stored. A user
+// needs the sstable's TableMetadata to convert the InlineHandle into a Handle.
+type InlineHandle struct {
+	FileOffset    uint32
+	BlockNum      uint32
+	OffsetInBlock uint32
+	ValueLen      uint32
+}
+
+// DecodeInlineHandle decodes an InlineHandle from its variable-length encoding.
+func DecodeInlineHandle(src []byte) InlineHandle {
+	var vh InlineHandle
+
+	// Decode the file offset.
+	ptr := unsafe.Pointer(&src[0])
+	if a := *((*uint8)(ptr)); a < 128 {
+		vh.FileOffset = uint32(a)
+		src = src[1:]
+	} else if a, b := a&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 1))); b < 128 {
+		vh.FileOffset = uint32(b)<<7 | uint32(a)
+		src = src[2:]
+	} else if b, c := b&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 2))); c < 128 {
+		vh.FileOffset = uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		src = src[3:]
+	} else if c, d := c&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 3))); d < 128 {
+		vh.FileOffset = uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		src = src[4:]
+	} else {
+		d, e := d&0x7f, *((*uint8)(unsafe.Pointer(uintptr(ptr) + 4)))
+		vh.FileOffset = uint32(e)<<28 | uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		src = src[5:]
+	}
+
+	valLen, src := valblk.DecodeLenFromHandle(src)
+	vblkh := valblk.DecodeRemainingHandle(src)
+	vh.ValueLen = valLen
+	vh.BlockNum = vblkh.BlockNum
+	vh.OffsetInBlock = vblkh.OffsetInBlock
+	return vh
 }
 
 // String implements the fmt.Stringer interface.
