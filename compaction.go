@@ -2932,13 +2932,13 @@ func (d *DB) runCompaction(
 	if result.Err != nil {
 		// Delete any created tables.
 		obsoleteFiles := manifest.ObsoleteFiles{
-			FileBackings: make([]*fileBacking, 0, len(result.Tables)),
+			FileBackings: make([]*fileBacking, 0, len(result.Outputs)),
 		}
 		d.mu.Lock()
-		for i := range result.Tables {
+		for i := range result.Outputs {
 			backing := &fileBacking{
-				DiskFileNum: result.Tables[i].ObjMeta.DiskFileNum,
-				Size:        result.Tables[i].WriterMeta.Size,
+				DiskFileNum: result.Outputs[i].ObjMeta.DiskFileNum,
+				Size:        result.Outputs[i].WriterMeta.Size,
 			}
 			obsoleteFiles.AddBacking(backing)
 			// Add this file to zombie tables as well, as the versionSet
@@ -3051,11 +3051,11 @@ func (d *DB) compactAndWrite(
 		}
 		// Create a new table.
 		writerOpts := d.opts.MakeWriterOptions(c.outputLevel.level, tableFormat)
-		objMeta, tw, cpuWorkHandle, err := d.newCompactionOutput(jobID, c, writerOpts)
+		output, cpuWorkHandle, err := d.newCompactionOutput(jobID, c, writerOpts)
 		if err != nil {
 			return runner.Finish().WithError(err)
 		}
-		runner.WriteTable(objMeta, tw)
+		runner.WriteTable(output)
 		d.opts.Experimental.CPUWorkPermissionGranter.CPUWorkDone(cpuWorkHandle)
 	}
 	result = runner.Finish()
@@ -3105,9 +3105,9 @@ func (c *compaction) makeVersionEdit(result compact.Result) (*versionEdit, error
 	}
 
 	inputLargestSeqNumAbsolute := c.inputLargestSeqNumAbsolute()
-	ve.NewTables = make([]newTableEntry, len(result.Tables))
-	for i := range result.Tables {
-		t := &result.Tables[i]
+	ve.NewTables = make([]newTableEntry, len(result.Outputs))
+	for i := range result.Outputs {
+		t := &result.Outputs[i]
 
 		fileMeta := &tableMetadata{
 			FileNum:        base.PhysicalTableFileNum(t.ObjMeta.DiskFileNum),
@@ -3179,7 +3179,7 @@ func (c *compaction) makeVersionEdit(result compact.Result) (*versionEdit, error
 // compaction or flush.
 func (d *DB) newCompactionOutput(
 	jobID JobID, c *compaction, writerOpts sstable.WriterOptions,
-) (objstorage.ObjectMetadata, sstable.RawWriter, CPUWorkHandle, error) {
+) (*compact.PendingOutput, CPUWorkHandle, error) {
 	diskFileNum := d.mu.versions.getNextDiskFileNum()
 
 	var writeCategory vfs.DiskWriteCategory
@@ -3218,7 +3218,7 @@ func (d *DB) newCompactionOutput(
 	}
 	writable, objMeta, err := d.objProvider.Create(ctx, base.FileTypeTable, diskFileNum, createOpts)
 	if err != nil {
-		return objstorage.ObjectMetadata{}, nil, nil, err
+		return nil, nil, err
 	}
 
 	if c.kind != compactionKindFlush {
@@ -3253,7 +3253,8 @@ func (d *DB) newCompactionOutput(
 	// TODO(jackson): Make the compaction body generic over the RawWriter type,
 	// so that we don't need to pay the cost of dynamic dispatch?
 	tw := sstable.NewRawWriter(writable, writerOpts)
-	return objMeta, tw, cpuWorkHandle, nil
+	pendingOutput := compact.NewTableOutput(objMeta, tw)
+	return pendingOutput, cpuWorkHandle, nil
 }
 
 // validateVersionEdit validates that start and end keys across new and deleted

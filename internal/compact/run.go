@@ -22,22 +22,22 @@ type Result struct {
 	// Err is the result of the compaction. On success, Err is nil and Tables
 	// stores the output tables. On failure, Err is set and Tables stores the
 	// tables created so far (and which need to be cleaned up).
-	Err    error
-	Tables []OutputTable
-	Stats  Stats
+	Err     error
+	Outputs []Output
+	Stats   Stats
 }
 
 // WithError returns a modified Result which has the Err field set.
 func (r Result) WithError(err error) Result {
 	return Result{
-		Err:    errors.CombineErrors(r.Err, err),
-		Tables: r.Tables,
-		Stats:  r.Stats,
+		Err:     errors.CombineErrors(r.Err, err),
+		Outputs: r.Outputs,
+		Stats:   r.Stats,
 	}
 }
 
-// OutputTable contains metadata about a table that was created during a compaction.
-type OutputTable struct {
+// Output contains metadata about a table that was created during a compaction.
+type Output struct {
 	CreationTime time.Time
 	// ObjMeta is metadata for the object backing the table.
 	ObjMeta objstorage.ObjectMetadata
@@ -104,7 +104,8 @@ type Runner struct {
 	cfg  RunnerConfig
 	iter *Iter
 
-	tables []OutputTable
+	outputs       []Output
+	pendingOutput *PendingOutput
 	// Stores any error encountered.
 	err error
 	// Last key/value returned by the compaction iterator.
@@ -139,35 +140,26 @@ func (r *Runner) MoreDataToWrite() bool {
 // Result.Tables. Should only be called if MoreDataToWrite() returned true.
 //
 // WriteTable always closes the Writer.
-func (r *Runner) WriteTable(objMeta objstorage.ObjectMetadata, tw sstable.RawWriter) {
+func (r *Runner) WriteTable(po *PendingOutput) {
 	if r.err != nil {
 		panic("error already encountered")
 	}
-	r.tables = append(r.tables, OutputTable{
-		CreationTime: time.Now(),
-		ObjMeta:      objMeta,
-	})
-	splitKey, err := r.writeKeysToTable(tw)
-	err = errors.CombineErrors(err, tw.Close())
+	r.pendingOutput = po
+	splitKey, err := r.writeKeysToTable(po)
+
+	output, closeErr := po.Close(r.cmp, r.cfg.CompactionBounds, splitKey)
+	err = errors.CombineErrors(err, closeErr)
 	if err != nil {
 		r.err = err
 		r.kv = nil
 		return
 	}
-	writerMeta, err := tw.Metadata()
-	if err != nil {
-		r.err = err
-		return
-	}
-	if err := r.validateWriterMeta(writerMeta, splitKey); err != nil {
-		r.err = err
-		return
-	}
-	r.tables[len(r.tables)-1].WriterMeta = *writerMeta
-	r.stats.CumulativeWrittenSize += writerMeta.Size
+	r.outputs = append(r.outputs, output)
+	r.pendingOutput = nil
+	r.stats.CumulativeWrittenSize += output.WriterMeta.Size
 }
 
-func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ error) {
+func (r *Runner) writeKeysToTable(o *PendingOutput) (splitKey []byte, _ error) {
 	const updateSlotEveryNKeys = 1024
 	firstKey := base.MinUserKey(r.cmp, spanStartOrNil(&r.lastRangeDelSpan), spanStartOrNil(&r.lastRangeKeySpan))
 	if r.kv != nil && firstKey == nil {
@@ -181,7 +173,7 @@ func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ erro
 		r.cfg.TargetOutputFileSize, r.cfg.Grandparents.Iter(), r.iter.Frontiers(),
 	)
 	equalPrev := func(k []byte) bool {
-		return tw.ComparePrev(k) == 0
+		return o.TableWriter.ComparePrev(k) == 0
 	}
 	var pinnedKeySize, pinnedValueSize, pinnedCount uint64
 	var iteratedKeys uint64
@@ -189,9 +181,9 @@ func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ erro
 	for ; kv != nil; kv = r.iter.Next() {
 		iteratedKeys++
 		if iteratedKeys%updateSlotEveryNKeys == 0 {
-			r.cfg.Slot.UpdateMetrics(r.cfg.IteratorStats.BlockBytes, r.stats.CumulativeWrittenSize+tw.EstimatedSize())
+			r.cfg.Slot.UpdateMetrics(r.cfg.IteratorStats.BlockBytes, r.stats.CumulativeWrittenSize+o.EstimatedSize())
 		}
-		if splitter.ShouldSplitBefore(kv.K.UserKey, tw.EstimatedSize(), equalPrev) {
+		if splitter.ShouldSplitBefore(kv.K.UserKey, o.EstimatedSize(), equalPrev) {
 			break
 		}
 
@@ -199,7 +191,7 @@ func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ erro
 		case base.InternalKeyKindRangeDelete:
 			// The previous span (if any) must end at or before this key, since the
 			// spans we receive are non-overlapping.
-			if err := tw.EncodeSpan(r.lastRangeDelSpan); r.err != nil {
+			if err := o.TableWriter.EncodeSpan(r.lastRangeDelSpan); err != nil {
 				return nil, err
 			}
 			r.lastRangeDelSpan.CopyFrom(r.iter.Span())
@@ -208,7 +200,7 @@ func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ erro
 		case base.InternalKeyKindRangeKeySet, base.InternalKeyKindRangeKeyUnset, base.InternalKeyKindRangeKeyDelete:
 			// The previous span (if any) must end at or before this key, since the
 			// spans we receive are non-overlapping.
-			if err := tw.EncodeSpan(r.lastRangeKeySpan); err != nil {
+			if err := o.TableWriter.EncodeSpan(r.lastRangeKeySpan); err != nil {
 				return nil, err
 			}
 			r.lastRangeKeySpan.CopyFrom(r.iter.Span())
@@ -218,7 +210,7 @@ func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ erro
 		if err != nil {
 			return nil, err
 		}
-		if err := tw.AddWithForceObsolete(kv.K, v, r.iter.ForceObsoleteDueToRangeDel()); err != nil {
+		if err := o.TableWriter.AddWithForceObsolete(kv.K, v, r.iter.ForceObsoleteDueToRangeDel()); err != nil {
 			return nil, err
 		}
 		if r.iter.SnapshotPinned() {
@@ -232,17 +224,17 @@ func (r *Runner) writeKeysToTable(tw sstable.RawWriter) (splitKey []byte, _ erro
 	}
 	r.kv = kv
 	splitKey = splitter.SplitKey()
-	if err := SplitAndEncodeSpan(r.cmp, &r.lastRangeDelSpan, splitKey, tw); err != nil {
+	if err := SplitAndEncodeSpan(r.cmp, &r.lastRangeDelSpan, splitKey, o.TableWriter); err != nil {
 		return nil, err
 	}
-	if err := SplitAndEncodeSpan(r.cmp, &r.lastRangeKeySpan, splitKey, tw); err != nil {
+	if err := SplitAndEncodeSpan(r.cmp, &r.lastRangeKeySpan, splitKey, o.TableWriter); err != nil {
 		return nil, err
 	}
 	// Set internal sstable properties.
-	tw.SetSnapshotPinnedProperties(pinnedCount, pinnedKeySize, pinnedValueSize)
+	o.TableWriter.SetSnapshotPinnedProperties(pinnedCount, pinnedKeySize, pinnedValueSize)
 	r.stats.CumulativePinnedKeys += pinnedCount
 	r.stats.CumulativePinnedSize += pinnedKeySize + pinnedValueSize
-	r.cfg.Slot.UpdateMetrics(r.cfg.IteratorStats.BlockBytes, r.stats.CumulativeWrittenSize+tw.EstimatedSize())
+	r.cfg.Slot.UpdateMetrics(r.cfg.IteratorStats.BlockBytes, r.stats.CumulativeWrittenSize+o.EstimatedSize())
 	return splitKey, nil
 }
 
@@ -253,10 +245,21 @@ func (r *Runner) Finish() Result {
 	// The compaction iterator keeps track of a count of the number of DELSIZED
 	// keys that encoded an incorrect size.
 	r.stats.CountMissizedDels = r.iter.Stats().CountMissizedDels
+
+	// If there's a pending output, ensure we include it in Result.Outputs so
+	// that it's cleaned up in case of an error.
+	if r.pendingOutput != nil {
+		output, err := r.pendingOutput.Close(r.cmp, r.cfg.CompactionBounds, nil)
+		if err != nil {
+			r.err = errors.CombineErrors(r.err, err)
+		}
+		r.outputs = append(r.outputs, output)
+	}
+
 	return Result{
-		Err:    r.err,
-		Tables: r.tables,
-		Stats:  r.stats,
+		Err:     r.err,
+		Outputs: r.outputs,
+		Stats:   r.stats,
 	}
 }
 
@@ -304,43 +307,6 @@ func (r *Runner) TableSplitLimit(startKey []byte) []byte {
 	}
 
 	return limitKey
-}
-
-// validateWriterMeta runs some sanity cehcks on the WriterMetadata on an output
-// table that was just finished. splitKey is the key where the table must have
-// ended (or nil).
-func (r *Runner) validateWriterMeta(meta *sstable.WriterMetadata, splitKey []byte) error {
-	if !meta.HasPointKeys && !meta.HasRangeDelKeys && !meta.HasRangeKeys {
-		return base.AssertionFailedf("output table has no keys")
-	}
-
-	var err error
-	checkBounds := func(smallest, largest base.InternalKey, description string) {
-		bounds := base.UserKeyBoundsFromInternal(smallest, largest)
-		if !r.cfg.CompactionBounds.ContainsBounds(r.cmp, &bounds) {
-			err = errors.CombineErrors(err, base.AssertionFailedf(
-				"output table %s bounds %s extend beyond compaction bounds %s",
-				description, bounds, r.cfg.CompactionBounds,
-			))
-		}
-		if splitKey != nil && bounds.End.IsUpperBoundFor(r.cmp, splitKey) {
-			err = errors.CombineErrors(err, base.AssertionFailedf(
-				"output table %s bounds %s extend beyond split key %s",
-				description, bounds, splitKey,
-			))
-		}
-	}
-
-	if meta.HasPointKeys {
-		checkBounds(meta.SmallestPoint, meta.LargestPoint, "point key")
-	}
-	if meta.HasRangeDelKeys {
-		checkBounds(meta.SmallestRangeDel, meta.LargestRangeDel, "range del")
-	}
-	if meta.HasRangeKeys {
-		checkBounds(meta.SmallestRangeKey, meta.LargestRangeKey, "range key")
-	}
-	return err
 }
 
 func spanStartOrNil(s *keyspan.Span) []byte {
