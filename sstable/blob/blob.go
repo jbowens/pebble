@@ -21,6 +21,9 @@ import (
 
 var (
 	errClosed = errors.New("blob: writer closed")
+	// ErrEmpty is returned by FileWriter.Close if no values were written to the
+	// blob file.
+	ErrEmpty = errors.New("blob: empty file")
 )
 
 // FileFormat identifies the format of a blob file.
@@ -158,6 +161,16 @@ func (w *FileWriter) AddValue(v []byte) Handle {
 	}
 }
 
+// EstimatedSize returns an estimate of the disk space consumed by the blob file
+// if it were closed now.
+func (w *FileWriter) EstimatedSize() uint64 {
+	sz := w.stats.FileLen                                    // Completed blocks
+	sz += uint64(w.b.Size()) + block.TrailerLen              // Pending uncompressed block
+	sz += uint64(w.stats.BlockCount+1)*12 + block.TrailerLen // Index block (assuming worst case of 4 bytes per block)
+	sz += fileFooterLength                                   // Footer
+	return sz
+}
+
 func (w *FileWriter) flush() {
 	pb, bh := w.b.CompressAndChecksum()
 	compressedLen := uint64(pb.LengthWithoutTrailer())
@@ -186,7 +199,8 @@ func (w *FileWriter) drainWriteQueue() {
 	}
 }
 
-// Close finishes writing the blob file.
+// Close finishes writing the blob file. If no blob values were written, it
+// returns ErrEmpty.
 func (w *FileWriter) Close() (FileWriterStats, error) {
 	if w.w == nil {
 		return FileWriterStats{}, w.err
@@ -218,7 +232,7 @@ func (w *FileWriter) Close() (FileWriterStats, error) {
 			stats.BlockCount, len(w.blockOffsets)))
 	}
 	if stats.BlockCount == 0 {
-		panic(errors.AssertionFailedf("no blocks written"))
+		return FileWriterStats{}, ErrEmpty
 	}
 
 	// Write the index block.
