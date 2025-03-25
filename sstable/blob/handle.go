@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"unsafe"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/sstable/valblk"
 	"github.com/cockroachdb/redact"
@@ -101,9 +102,9 @@ func (h InlineHandle) Encode(b []byte) int {
 	return n
 }
 
-// DecodeInlineHandlePrefix decodes the blob reference index and value length
+// DecodeInlineHandlePreface decodes the blob reference index and value length
 // from the beginning of a variable-width encoded InlineHandle.
-func DecodeInlineHandlePrefix(src []byte) (InlineHandlePreface, []byte) {
+func DecodeInlineHandlePreface(src []byte) (InlineHandlePreface, []byte) {
 	ptr := unsafe.Pointer(&src[0])
 	var refIdx uint32
 	if a := *((*uint8)(ptr)); a < 128 {
@@ -158,4 +159,21 @@ func DecodeHandleSuffix(src []byte) HandleSuffix {
 		BlockNum:      h.BlockNum,
 		OffsetInBlock: h.OffsetInBlock,
 	}
+}
+
+// HandleFromInternalValue returns the handle and attribute from an
+// InternalValue representing a value referenced by a blob handle.
+// HandleFromInternalValue panics if !v.IsBlobValueHandle().
+func HandleFromInternalValue(v base.InternalValue) (Handle, base.ShortAttribute, error) {
+	if !v.IsBlobValueHandle() {
+		panic(errors.AssertionFailedf("expected blob value handle, got %s", v))
+	}
+	lv := v.LazyValue()
+	suffix := DecodeHandleSuffix(lv.ValueOrHandle)
+	return Handle{
+		FileNum:       lv.Fetcher.BlobFileNum,
+		ValueLen:      lv.Fetcher.Attribute.ValueLen,
+		BlockNum:      suffix.BlockNum,
+		OffsetInBlock: suffix.OffsetInBlock,
+	}, lv.Fetcher.Attribute.ShortAttribute, nil
 }

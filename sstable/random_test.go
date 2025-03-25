@@ -105,6 +105,7 @@ func runErrorInjectionTest(t *testing.T, seed int64) {
 	if rng.IntN(2) == 1 {
 		filterBlockSizeLimit = NeverUseFilterBlock
 	}
+
 	it, err := r.NewPointIter(
 		context.Background(),
 		NoTransforms,
@@ -113,6 +114,7 @@ func runErrorInjectionTest(t *testing.T, seed int64) {
 		filterBlockSizeLimit,
 		block.ReadEnv{Stats: &stats, IterStats: nil},
 		MakeTrivialReaderProvider(r),
+		base.NoBlobFetches,
 	)
 	require.NoError(t, err)
 	defer it.Close()

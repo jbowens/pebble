@@ -360,7 +360,7 @@ func ingestLoad1(
 	maybeSetStatsFromProperties(meta.PhysicalMeta(), &r.Properties)
 
 	{
-		iter, err := r.NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */)
+		iter, err := r.NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */, base.NoBlobFetches)
 		if err != nil {
 			return nil, keyspan.Span{}, err
 		}

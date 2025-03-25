@@ -85,6 +85,12 @@ type ReaderOptions struct {
 	// User properties specified in this map will not be added to sst.Properties.UserProperties.
 	DeniedUserProperties map[string]struct{}
 
+	// BlobReferences is used when a sstable contains references to external
+	// blob files in order to construct InternalValues that map to the
+	// appropriate files. The blob value handles encode a reference index into a
+	// slice of BlobReferences.
+	BlobReferences BlobReferences
+
 	// Comparer defines a total ordering over the space of []byte keys: a 'less
 	// than' relationship. The same comparison algorithm must be used for reads
 	// and writes over the lifetime of the DB.
@@ -108,6 +114,16 @@ type ReaderOptions struct {
 
 	// FilterMetricsTracker is optionally used to track filter metrics.
 	FilterMetricsTracker *FilterMetricsTracker
+}
+
+// BlobReferences provides a mapping from an index to a file number for a
+// sstable's blob references. In practice, this is implemented by
+// manifest.BlobReferences.
+type BlobReferences interface {
+	// FileNumByIndex returns the FileNum for the i-th BlobReference.
+	FileNumByIndex(i int) base.DiskFileNum
+	// IndexByFileNum returns the index for the given FileNum.
+	IndexByFileNum(base.DiskFileNum) int
 }
 
 func (o ReaderOptions) ensureDefaults() ReaderOptions {

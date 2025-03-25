@@ -29,6 +29,8 @@ import (
 // Input sstables must only contain keys with the zero sequence number and must
 // not contain references to values in external blob files.
 //
+// Input sstables must not contain blob value handles.
+//
 // Iterators constructed through NewExternalIter do not support all iterator
 // options, including block-property and table filters. NewExternalIter errors
 // if an incompatible option is set.
@@ -178,7 +180,7 @@ func createExternalPointIter(
 			seqNum--
 			pointIter, err = r.NewPointIter(
 				ctx, transforms, it.opts.LowerBound, it.opts.UpperBound, nil, /* BlockPropertiesFilterer */
-				sstable.NeverUseFilterBlock, readEnv, sstable.MakeTrivialReaderProvider(r))
+				sstable.NeverUseFilterBlock, readEnv, sstable.MakeTrivialReaderProvider(r), base.NoBlobFetches)
 			if err == nil {
 				rangeDelIter, err = r.NewRawRangeDelIter(ctx, sstable.FragmentIterTransforms{
 					SyntheticSeqNum: sstable.SyntheticSeqNum(seqNum),

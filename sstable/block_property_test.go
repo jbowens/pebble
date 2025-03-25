@@ -988,7 +988,9 @@ func TestBlockProperties(t *testing.T) {
 			}
 			iter, err := r.NewPointIter(
 				context.Background(),
-				NoTransforms, lower, upper, filterer, NeverUseFilterBlock, block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r))
+				NoTransforms, lower, upper, filterer, NeverUseFilterBlock,
+				block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r),
+				base.NoBlobFetches)
 			if err != nil {
 				return err.Error()
 			}
@@ -1071,7 +1073,9 @@ func TestBlockProperties_BoundLimited(t *testing.T) {
 			}
 			iter, err := r.NewPointIter(
 				context.Background(),
-				NoTransforms, lower, upper, filterer, NeverUseFilterBlock, block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r))
+				NoTransforms, lower, upper, filterer, NeverUseFilterBlock,
+				block.ReadEnv{Stats: &stats, IterStats: nil}, MakeTrivialReaderProvider(r),
+				base.NoBlobFetches)
 			if err != nil {
 				return err.Error()
 			}

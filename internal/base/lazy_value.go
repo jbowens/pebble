@@ -4,7 +4,11 @@
 
 package base
 
-import "context"
+import (
+	"context"
+
+	"github.com/cockroachdb/errors"
+)
 
 // A value can have user-defined attributes that are a function of the value
 // byte slice. For now, we only support "short attributes", which can be
@@ -277,4 +281,35 @@ func (lv *LazyValue) Clone(buf []byte, fetcher *LazyFetcher) (LazyValue, []byte)
 	buf = append(buf, lv.ValueOrHandle...)
 	lvCopy.ValueOrHandle = buf[bufLen : bufLen+vLen]
 	return lvCopy, buf
+}
+
+// BlobFetcherTODO is a ValueFetcher that returns an error.
+//
+// It's used when we're temporarily unable to read blob values in a codepath but
+// intend to return to update the code with a new ValueFetcher implementation.
+var BlobFetcherTODO = &ErrValueFetcher{
+	Err: errors.AssertionFailedf("unimplemented blob value fetcher"),
+}
+
+// NoBlobFetches is a ValueFetcher that returns an error. It's intended to be
+// used in situations where sstables should not encode a blob value, or the
+// caller should not fetch the handle's value.
+var NoBlobFetches = &ErrValueFetcher{
+	Err: errors.AssertionFailedf("unexpected blob value"),
+}
+
+// ErrValueFetcher is a ValueFetcher that returns an error.
+type ErrValueFetcher struct {
+	Err error
+}
+
+// Assert that *ErrorValueFetcher implements base.ValueFetcher.
+var _ ValueFetcher = (*ErrValueFetcher)(nil)
+
+// Fetch implements base.ValueFetcher.
+func (e *ErrValueFetcher) Fetch(
+	_ context.Context, _ []byte, blobFileNum DiskFileNum, valLen uint32, _ []byte,
+) (val []byte, callerOwned bool, err error) {
+	err = errors.Wrapf(e.Err, "fetching %d-byte value from %s", valLen, blobFileNum)
+	return nil, false, err
 }

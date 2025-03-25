@@ -178,9 +178,10 @@ func TestMergingIterDataDriven(t *testing.T) {
 			}
 			if kinds.Point() {
 				set.point, err = r.NewPointIter(
-					context.Background(),
-					sstable.NoTransforms,
-					opts.GetLowerBound(), opts.GetUpperBound(), nil, sstable.AlwaysUseFilterBlock, iio.readEnv, sstable.MakeTrivialReaderProvider(r))
+					context.Background(), sstable.NoTransforms,
+					opts.GetLowerBound(), opts.GetUpperBound(),
+					nil, sstable.AlwaysUseFilterBlock, iio.readEnv,
+					sstable.MakeTrivialReaderProvider(r), iio.blobValueFetcher)
 				if err != nil {
 					return iterSet{}, errors.CombineErrors(err, set.CloseAll())
 				}
@@ -414,7 +415,7 @@ func BenchmarkMergingIterSeekGE(b *testing.B) {
 							iters := make([]internalIterator, len(readers))
 							for i := range readers {
 								var err error
-								iters[i], err = readers[i].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */)
+								iters[i], err = readers[i].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */, base.NoBlobFetches)
 								require.NoError(b, err)
 							}
 							var stats base.InternalIteratorStats
@@ -447,7 +448,7 @@ func BenchmarkMergingIterNext(b *testing.B) {
 							iters := make([]internalIterator, len(readers))
 							for i := range readers {
 								var err error
-								iters[i], err = readers[i].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */)
+								iters[i], err = readers[i].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */, base.NoBlobFetches)
 								require.NoError(b, err)
 							}
 							var stats base.InternalIteratorStats
@@ -483,7 +484,7 @@ func BenchmarkMergingIterPrev(b *testing.B) {
 							iters := make([]internalIterator, len(readers))
 							for i := range readers {
 								var err error
-								iters[i], err = readers[i].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */)
+								iters[i], err = readers[i].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */, base.NoBlobFetches)
 								require.NoError(b, err)
 							}
 							var stats base.InternalIteratorStats
@@ -646,7 +647,7 @@ func buildLevelsForMergingIterSeqSeek(
 	for i := range readers {
 		meta := make([]*tableMetadata, len(readers[i]))
 		for j := range readers[i] {
-			iter, err := readers[i][j].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */)
+			iter, err := readers[i][j].NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */, base.NoBlobFetches)
 			require.NoError(b, err)
 			smallest := iter.First()
 			meta[j] = &tableMetadata{}
@@ -672,7 +673,7 @@ func buildMergingIter(readers [][]*sstable.Reader, levelSlices []manifest.LevelS
 			_ context.Context, file *manifest.TableMetadata, opts *IterOptions, iio internalIterOpts, _ iterKinds,
 		) (iterSet, error) {
 			iter, err := readers[levelIndex][file.FileNum].NewIter(
-				sstable.NoTransforms, opts.LowerBound, opts.UpperBound)
+				sstable.NoTransforms, opts.LowerBound, opts.UpperBound, base.NoBlobFetches)
 			if err != nil {
 				return iterSet{}, err
 			}

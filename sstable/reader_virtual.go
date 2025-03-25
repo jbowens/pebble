@@ -96,10 +96,13 @@ func MakeVirtualReader(reader *Reader, p VirtualReaderParams) VirtualReader {
 
 // NewCompactionIter is the compaction iterator function for virtual readers.
 func (v *VirtualReader) NewCompactionIter(
-	transforms IterTransforms, env block.ReadEnv, rp valblk.ReaderProvider,
+	transforms IterTransforms,
+	env block.ReadEnv,
+	rp valblk.ReaderProvider,
+	blobValueFetcher base.ValueFetcher,
 ) (Iterator, error) {
 	return v.reader.newCompactionIter(
-		transforms, env, rp, &v.vState)
+		transforms, env, rp, &v.vState, blobValueFetcher)
 }
 
 // NewPointIter returns an iterator for the point keys in the table.
@@ -119,10 +122,11 @@ func (v *VirtualReader) NewPointIter(
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
 	rp valblk.ReaderProvider,
+	blobValueFetcher base.ValueFetcher,
 ) (Iterator, error) {
 	return v.reader.newPointIter(
 		ctx, transforms, lower, upper, filterer, filterBlockSizeLimit,
-		env, rp, &v.vState)
+		env, rp, &v.vState, blobValueFetcher)
 }
 
 // ValidateBlockChecksumsOnBacking will call ValidateBlockChecksumsOnBacking on the underlying reader.

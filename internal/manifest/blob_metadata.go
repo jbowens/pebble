@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/humanize"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/strparse"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/redact"
 )
 
@@ -31,6 +32,27 @@ type BlobReference struct {
 	// the version edit is accumulated into a bulk version edit, the metadata
 	// is populated.
 	Metadata *BlobFileMetadata
+}
+
+// BlobReferences is a slice of BlobReferences.
+type BlobReferences []BlobReference
+
+// Assert that BlobReferences implements sstable.BlobReferences.
+var _ sstable.BlobReferences = BlobReferences{}
+
+// FileNumByIndex returns the FileNum for the i-th BlobReference.
+func (br BlobReferences) FileNumByIndex(i int) base.DiskFileNum {
+	return br[i].FileNum
+}
+
+// IndexByFileNum returns the index for the given FileNum.
+func (br BlobReferences) IndexByFileNum(fileNum base.DiskFileNum) int {
+	for i, ref := range br {
+		if ref.FileNum == fileNum {
+			return i
+		}
+	}
+	panic(errors.AssertionFailedf("pebble: blob reference for file num %d not found", fileNum))
 }
 
 // BlobFileMetadata is metadata describing a blob value file.

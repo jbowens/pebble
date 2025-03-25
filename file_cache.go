@@ -677,11 +677,13 @@ func (h *fileCacheHandle) newPointIter(
 		internalOpts.readEnv.IterStats = handle.SSTStatsCollector().Accumulator(uint64(uintptr(unsafe.Pointer(r))), opts.Category)
 	}
 	if internalOpts.compaction {
-		iter, err = cr.NewCompactionIter(transforms, internalOpts.readEnv, &v.readerProvider)
+		iter, err = cr.NewCompactionIter(transforms, internalOpts.readEnv,
+			&v.readerProvider, internalOpts.blobValueFetcher)
 	} else {
 		iter, err = cr.NewPointIter(
 			ctx, transforms, opts.GetLowerBound(), opts.GetUpperBound(), filterer,
-			filterBlockSizeLimit, internalOpts.readEnv, &v.readerProvider)
+			filterBlockSizeLimit, internalOpts.readEnv, &v.readerProvider,
+			internalOpts.blobValueFetcher)
 	}
 	if err != nil {
 		return nil, err

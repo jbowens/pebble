@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/bytealloc"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/objstorage"
+	"github.com/cockroachdb/pebble/sstable/blob"
 	"github.com/cockroachdb/pebble/sstable/block"
 )
 
@@ -316,7 +317,7 @@ func RewriteKeySuffixesViaWriter(
 			w.Close()
 		}
 	}()
-	i, err := r.NewIter(NoTransforms, nil, nil)
+	i, err := r.NewIter(NoTransforms, nil, nil, base.NoBlobFetches)
 	if err != nil {
 		return nil, err
 	}
@@ -336,15 +337,40 @@ func RewriteKeySuffixesViaWriter(
 		scratch.UserKey = append(scratch.UserKey, to...)
 		scratch.Trailer = kv.K.Trailer
 
-		val, _, err := kv.Value(nil)
-		if err != nil {
-			return nil, err
-		}
 		if invariants.Enabled && invariants.Sometimes(10) {
 			r.Comparer.ValidateKey.MustValidate(scratch.UserKey)
 		}
-		if err := w.Add(scratch, val, false); err != nil {
-			return nil, err
+
+		// Blob value handles point to files outside of the sstable and can be
+		// copied verbatim.
+		if kv.V.IsBlobValueHandle() {
+			// TODO(jackson): Avoid the decoding and then re-encoding of the
+			// blob value handle.
+			handle, attr, err := blob.HandleFromInternalValue(kv.V)
+			if err != nil {
+				return nil, err
+			}
+			inlineHandle := blob.InlineHandle{
+				InlineHandlePreface: blob.InlineHandlePreface{
+					ReferenceIndex: uint32(r.blobReferences.IndexByFileNum(handle.FileNum)),
+					ValueLen:       handle.ValueLen,
+				},
+				HandleSuffix: blob.HandleSuffix{
+					BlockNum:      handle.BlockNum,
+					OffsetInBlock: handle.OffsetInBlock,
+				},
+			}
+			if err := w.AddWithBlobHandle(scratch, inlineHandle, attr, false); err != nil {
+				return nil, err
+			}
+		} else {
+			val, _, err := kv.Value(nil)
+			if err != nil {
+				return nil, err
+			}
+			if err := w.Add(scratch, val, false); err != nil {
+				return nil, err
+			}
 		}
 		kv = i.Next()
 	}

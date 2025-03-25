@@ -47,7 +47,8 @@ type Reader struct {
 	filterMetricsTracker *FilterMetricsTracker
 	Comparer             *base.Comparer
 
-	tableFilter *tableFilterReader
+	blobReferences BlobReferences
+	tableFilter    *tableFilterReader
 
 	err error
 
@@ -90,10 +91,11 @@ func (r *Reader) NewPointIter(
 	filterBlockSizeLimit FilterBlockSizeLimit,
 	env block.ReadEnv,
 	rp valblk.ReaderProvider,
+	blobValueFetcher base.ValueFetcher,
 ) (Iterator, error) {
 	return r.newPointIter(
 		ctx, transforms, lower, upper, filterer, filterBlockSizeLimit,
-		env, rp, nil)
+		env, rp, nil, blobValueFetcher)
 }
 
 // TryAddBlockPropertyFilterForHideObsoletePoints is expected to be called
@@ -121,6 +123,7 @@ func (r *Reader) newPointIter(
 	env block.ReadEnv,
 	rp valblk.ReaderProvider,
 	vState *virtualState,
+	blobValueFetcher base.ValueFetcher,
 ) (Iterator, error) {
 	// NB: pebble.fileCache wraps the returned iterator with one which performs
 	// reference counting on the Reader, preventing the Reader from being closed
@@ -131,7 +134,7 @@ func (r *Reader) newPointIter(
 		if r.tableFormat.BlockColumnar() {
 			res, err = newColumnBlockTwoLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
-				env, rp)
+				env, rp, blobValueFetcher)
 		} else {
 			res, err = newRowBlockTwoLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
@@ -141,7 +144,7 @@ func (r *Reader) newPointIter(
 		if r.tableFormat.BlockColumnar() {
 			res, err = newColumnBlockSingleLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
-				env, rp)
+				env, rp, blobValueFetcher)
 		} else {
 			res, err = newRowBlockSingleLevelIterator(
 				ctx, r, vState, transforms, lower, upper, filterer, filterBlockSizeLimit,
@@ -162,25 +165,34 @@ func (r *Reader) newPointIter(
 //
 // NewIter must only be used when the Reader is guaranteed to outlive any
 // LazyValues returned from the iter.
-func (r *Reader) NewIter(transforms IterTransforms, lower, upper []byte) (Iterator, error) {
+func (r *Reader) NewIter(
+	transforms IterTransforms, lower, upper []byte, blobValueFetcher base.ValueFetcher,
+) (Iterator, error) {
 	// TODO(radu): we should probably not use bloom filters in this case, as there
 	// likely isn't a cache set up.
 	return r.NewPointIter(
 		context.TODO(), transforms, lower, upper, nil, AlwaysUseFilterBlock,
-		block.NoReadEnv, MakeTrivialReaderProvider(r))
+		block.NoReadEnv, MakeTrivialReaderProvider(r), blobValueFetcher)
 }
 
 // NewCompactionIter returns an iterator similar to NewIter but it also increments
 // the number of bytes iterated. If an error occurs, NewCompactionIter cleans up
 // after itself and returns a nil iterator.
 func (r *Reader) NewCompactionIter(
-	transforms IterTransforms, env block.ReadEnv, rp valblk.ReaderProvider,
+	transforms IterTransforms,
+	env block.ReadEnv,
+	rp valblk.ReaderProvider,
+	blobValueFetcher base.ValueFetcher,
 ) (Iterator, error) {
-	return r.newCompactionIter(transforms, env, rp, nil)
+	return r.newCompactionIter(transforms, env, rp, nil, blobValueFetcher)
 }
 
 func (r *Reader) newCompactionIter(
-	transforms IterTransforms, env block.ReadEnv, rp valblk.ReaderProvider, vState *virtualState,
+	transforms IterTransforms,
+	env block.ReadEnv,
+	rp valblk.ReaderProvider,
+	vState *virtualState,
+	blobValueFetcher base.ValueFetcher,
 ) (Iterator, error) {
 	if vState != nil && vState.isSharedIngested {
 		transforms.HideObsoletePoints = true
@@ -201,7 +213,7 @@ func (r *Reader) newCompactionIter(
 		i, err := newColumnBlockTwoLevelIterator(
 			context.Background(),
 			r, vState, transforms, nil /* lower */, nil /* upper */, nil,
-			NeverUseFilterBlock, env, rp)
+			NeverUseFilterBlock, env, rp, blobValueFetcher)
 		if err != nil {
 			return nil, err
 		}
@@ -220,7 +232,7 @@ func (r *Reader) newCompactionIter(
 	}
 	i, err := newColumnBlockSingleLevelIterator(
 		context.Background(), r, vState, transforms, nil /* lower */, nil, /* upper */
-		nil, NeverUseFilterBlock, env, rp)
+		nil, NeverUseFilterBlock, env, rp, blobValueFetcher)
 	if err != nil {
 		return nil, err
 	}
@@ -853,6 +865,8 @@ func NewReader(ctx context.Context, f objstorage.Readable, o ReaderOptions) (*Re
 				errors.Safe(r.blockReader.FileNum()), errors.Safe(r.Properties.MergerName))
 		}
 	}
+
+	r.blobReferences = o.BlobReferences
 
 	if r.tableFormat.BlockColumnar() {
 		if ks, ok := o.KeySchemas[r.Properties.KeySchemaName]; ok {

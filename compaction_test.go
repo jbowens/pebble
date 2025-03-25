@@ -602,7 +602,7 @@ func TestCompaction(t *testing.T) {
 					return "", "", errors.WithStack(err)
 				}
 				defer r.Close()
-				iter, err := r.NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */)
+				iter, err := r.NewIter(sstable.NoTransforms, nil /* lower */, nil /* upper */, base.NoBlobFetches)
 				if err != nil {
 					return "", "", errors.WithStack(err)
 				}

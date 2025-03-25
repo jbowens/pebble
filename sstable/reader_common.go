@@ -8,6 +8,7 @@ import (
 	"context"
 	"math"
 
+	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
 	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/cockroachdb/pebble/sstable/valblk"
@@ -33,12 +34,14 @@ type CommonReader interface {
 		filterBlockSizeLimit FilterBlockSizeLimit,
 		env block.ReadEnv,
 		rp valblk.ReaderProvider,
+		blobValueFetcher base.ValueFetcher,
 	) (Iterator, error)
 
 	NewCompactionIter(
 		transforms IterTransforms,
 		env block.ReadEnv,
 		rp valblk.ReaderProvider,
+		blobValueFetcher base.ValueFetcher,
 	) (Iterator, error)
 
 	EstimateDiskUsage(start, end []byte) (uint64, error)
