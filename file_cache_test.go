@@ -394,7 +394,7 @@ func TestVirtualReadsWiring(t *testing.T) {
 
 	// Write the version edit.
 	fileMetrics := func(ve *versionEdit) map[int]*LevelMetrics {
-		metrics := newFileMetrics(ve.NewTables)
+		metrics := newLevelTableMetrics(ve.NewTables)
 		for de, f := range ve.DeletedTables {
 			lm := metrics[de.Level]
 			if lm == nil {

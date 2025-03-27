@@ -939,6 +939,7 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 
 	var mem *memTable
 	var start, end *base.InternalKey
+	var bv testutils.BlobValues
 	ve := &versionEdit{}
 	level := -1
 
@@ -948,8 +949,16 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 		}
 
 		toFlush := flushableList{{
-			flushable: mem,
-			flushed:   make(chan struct{}),
+			// We wrap the memtable iterators using BlobValues.WrapIterator. If
+			// the test defines any values that look like debug blob handles,
+			// they'll be replaced by InternalValues backed by the BlobValues.
+			flushable: &flushableWrapIters{
+				flushable: mem,
+				fn: func(i base.InternalIterator) base.InternalIterator {
+					return bv.WrapIterator(i)
+				},
+			},
+			flushed: make(chan struct{}),
 		}}
 		c, err := newFlush(d.opts, d.mu.versions.currentVersion(),
 			d.mu.versions.picker.getBaseLevel(), toFlush, time.Now())
@@ -969,6 +978,7 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 			return err
 		}
 		largestSeqNum := d.mu.versions.logSeqNum.Load()
+		ve.NewBlobFiles = append(ve.NewBlobFiles, newVE.NewBlobFiles...)
 		for _, f := range newVE.NewTables {
 			if start != nil {
 				f.Meta.SmallestPointKey = *start
@@ -1145,7 +1155,7 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 	if len(ve.NewTables) > 0 {
 		jobID := d.newJobIDLocked()
 		d.mu.versions.logLock()
-		if err := d.mu.versions.logAndApply(jobID, ve, newFileMetrics(ve.NewTables), false, func() []compactionInfo {
+		if err := d.mu.versions.logAndApply(jobID, ve, newLevelTableMetrics(ve.NewTables), false, func() []compactionInfo {
 			return nil
 		}); err != nil {
 			return nil, err
@@ -1155,6 +1165,19 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 	}
 
 	return d, nil
+}
+
+type flushableWrapIters struct {
+	flushable
+	fn func(base.InternalIterator) base.InternalIterator
+}
+
+func (f *flushableWrapIters) newIter(o *IterOptions) internalIterator {
+	return f.fn(f.flushable.newIter(o))
+}
+
+func (f *flushableWrapIters) newFlushIter(o *IterOptions) internalIterator {
+	return f.fn(f.flushable.newFlushIter(o))
 }
 
 func runTableStatsCmd(td *datadriven.TestData, d *DB) string {
@@ -1599,6 +1622,14 @@ func parseDBOptionsArgs(opts *Options, args []datadriven.CmdArg) error {
 				}
 				opts.Levels[i].TargetFileSize = size
 			}
+		case "value-separation":
+			on := cmdArg.Vals[0] == "on"
+			opts.Experimental.ValueSeparationPolicy.Enabled = func() bool { return on }
+			minSize, err := strconv.Atoi(cmdArg.Vals[1])
+			if err != nil {
+				return err
+			}
+			opts.Experimental.ValueSeparationPolicy.MinimumSize = minSize
 		case "wal-failover":
 			if v := cmdArg.Vals[0]; v == "off" || v == "disabled" {
 				opts.WALFailover = nil

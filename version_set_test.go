@@ -109,7 +109,7 @@ func TestVersionSet(t *testing.T) {
 				createFile(ve.CreatedBackingTables[i].DiskFileNum)
 			}
 
-			fileMetrics := newFileMetrics(ve.NewTables)
+			fileMetrics := newLevelTableMetrics(ve.NewTables)
 			for de, f := range ve.DeletedTables {
 				lm := fileMetrics[de.Level]
 				if lm == nil {

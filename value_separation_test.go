@@ -94,7 +94,7 @@ func TestValueSeparationPolicy(t *testing.T) {
 							return objStore.Create(ctx, base.FileTypeBlob, fn, objstorage.CreateOptions{})
 						},
 					}
-					d.MaybeScanArgs(t, "minimum-size", &newSep.minimumSize)
+					d.MaybeScanArgs(t, "minimum-size", &newSep.policy.MinimumSize)
 					if cmdArg, ok := d.Arg("required-in-place"); ok {
 						cmdArg.ExpectNumVals(t, 2)
 						newSep.requiredInPlaceValueBound = UserKeyPrefixBound{

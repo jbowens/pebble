@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/pebble/objstorage/remote"
 	"github.com/cockroachdb/pebble/rangekey"
 	"github.com/cockroachdb/pebble/sstable"
+	"github.com/cockroachdb/pebble/sstable/blob"
 	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/cockroachdb/pebble/sstable/colblk"
 	"github.com/cockroachdb/pebble/vfs"
@@ -739,6 +740,10 @@ type Options struct {
 		CompactionScheduler CompactionScheduler
 
 		UserKeyCategories UserKeyCategories
+
+		// ValueSeparationPolicy controls the policy for separating values into
+		// external blob files.
+		ValueSeparationPolicy ValueSeparationPolicy
 	}
 
 	// Filters is a map from filter policy name to filter policy. It is used for
@@ -1095,6 +1100,24 @@ type Options struct {
 	}
 }
 
+// ValueSeparationPolicy controls the policy for separating values into
+// external blob files.
+type ValueSeparationPolicy struct {
+	// Enabled controls whether value separation is enabled.
+	Enabled func() bool
+	// MinimumSize imposes a lower bound on the size of values that can be
+	// separated into a blob file. Values smaller than this are always written
+	// to the sstable (but may still be written to a value block within the
+	// sstable).
+	MinimumSize int
+	// MaxBlobReferenceDepth limits the number of potentially overlapping (in
+	// the keyspace) blob files that can be referenced by a single sstable. If a
+	// compaction may produce an output sstable referencing more than this many
+	// overlapping blob files, the compaction will instead rewrite referenced
+	// values into new blob files.
+	MaxBlobReferenceDepth int
+}
+
 // WALFailoverOptions configures the WAL failover mechanics to use during
 // transient write unavailability on the primary WAL volume.
 type WALFailoverOptions struct {
@@ -1272,6 +1295,15 @@ func (o *Options) EnsureDefaults() {
 	if o.Experimental.MultiLevelCompactionHeuristic == nil {
 		o.Experimental.MultiLevelCompactionHeuristic = WriteAmpHeuristic{}
 	}
+	if o.Experimental.CompactionScheduler == nil {
+		o.Experimental.CompactionScheduler = newConcurrencyLimitScheduler(defaultTimeSource{})
+	}
+	if o.Experimental.ValueSeparationPolicy.Enabled == nil {
+		o.Experimental.ValueSeparationPolicy.Enabled = func() bool { return false }
+	}
+	if o.Experimental.ValueSeparationPolicy.MinimumSize <= 0 {
+		o.Experimental.ValueSeparationPolicy.MinimumSize = 1024
+	}
 
 	o.initMaps()
 }
@@ -1439,6 +1471,12 @@ func (o *Options) String() string {
 		fmt.Fprintf(&buf, "  unhealthy_sampling_interval=%s\n", o.WALFailover.FailoverOptions.UnhealthySamplingInterval)
 		fmt.Fprintf(&buf, "  unhealthy_operation_latency_threshold=%s\n", unhealthyThreshold)
 		fmt.Fprintf(&buf, "  elevated_write_stall_threshold_lag=%s\n", o.WALFailover.FailoverOptions.ElevatedWriteStallThresholdLag)
+	}
+
+	if o.Experimental.ValueSeparationPolicy.Enabled != nil && o.Experimental.ValueSeparationPolicy.Enabled() {
+		fmt.Fprintln(&buf)
+		fmt.Fprintln(&buf, "[Value Separation]")
+		fmt.Fprintf(&buf, "  minimum_size=%d\n", o.Experimental.ValueSeparationPolicy.MinimumSize)
 	}
 
 	for i := range o.Levels {
@@ -1858,6 +1896,19 @@ func (o *Options) Parse(s string, hooks *ParseHooks) error {
 			}
 			return err
 
+		case section == "Value Separation":
+			var err error
+			switch key {
+			case "minimum_size":
+				o.Experimental.ValueSeparationPolicy.MinimumSize, err = strconv.Atoi(value)
+			default:
+				if hooks != nil && hooks.SkipUnknown != nil && hooks.SkipUnknown(section+"."+key, value) {
+					return nil
+				}
+				return errors.Errorf("pebble: unknown option: %s.%s", errors.Safe(section), errors.Safe(key))
+			}
+			return err
+
 		case strings.HasPrefix(section, "Level "):
 			var index int
 			if n, err := fmt.Sscanf(section, `Level "%d"`, &index); err != nil {
@@ -2015,6 +2066,12 @@ func (o *Options) Validate() error {
 		fmt.Fprintf(&buf, "FormatMajorVersion (%d) when CreateOnShared is set must be at least %d\n",
 			o.FormatMajorVersion, FormatMinForSharedObjects)
 	}
+	if o.Experimental.ValueSeparationPolicy.Enabled != nil && o.Experimental.ValueSeparationPolicy.Enabled() {
+		if o.Experimental.ValueSeparationPolicy.MinimumSize <= 0 {
+			fmt.Fprintf(&buf, "ValueSeparationPolicy.MinimumSize (%d) must be > 0\n",
+				o.Experimental.ValueSeparationPolicy.MinimumSize)
+		}
+	}
 	if len(o.KeySchemas) > 0 {
 		if o.KeySchema == "" {
 			fmt.Fprintf(&buf, "KeySchemas is set but KeySchema is not\n")
@@ -2042,6 +2099,22 @@ func (o *Options) MakeReaderOptions() sstable.ReaderOptions {
 		readerOpts.Merger = o.Merger
 	}
 	return readerOpts
+}
+
+// MakeBlobWriterOptions constructs blob.FileWriterOptions from the corresponding
+// options in the receiver.
+func (o *Options) MakeBlobWriterOptions(level int) blob.FileWriterOptions {
+	lo := o.Level(level)
+	return blob.FileWriterOptions{
+		Compression:  resolveDefaultCompression(lo.Compression()),
+		ChecksumType: block.ChecksumTypeCRC32c,
+		FlushGovernor: block.MakeFlushGovernor(
+			lo.BlockSize,
+			lo.BlockSizeThreshold,
+			base.SizeClassAwareBlockSizeThreshold,
+			o.AllocatorSizeClasses,
+		),
+	}
 }
 
 // MakeWriterOptions constructs sstable.WriterOptions for the specified level

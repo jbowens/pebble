@@ -2381,10 +2381,15 @@ func (d *DB) handleCompactFailure(err error) {
 func (d *DB) cleanupVersionEdit(ve *versionEdit) {
 	obsoleteFiles := manifest.ObsoleteFiles{
 		FileBackings: make([]*fileBacking, 0, len(ve.NewTables)),
+		BlobFiles:    make([]*manifest.BlobFileMetadata, 0, len(ve.NewBlobFiles)),
 	}
 	deletedFiles := make(map[base.FileNum]struct{})
 	for key := range ve.DeletedTables {
 		deletedFiles[key.FileNum] = struct{}{}
+	}
+	for i := range ve.NewBlobFiles {
+		// TODO(jackson): Record zombie blobs.
+		obsoleteFiles.AddBlob(ve.NewBlobFiles[i])
 	}
 	for i := range ve.NewTables {
 		if ve.NewTables[i].Meta.Virtual {
@@ -3006,16 +3011,25 @@ func (d *DB) runCompaction(
 	d.mu.Unlock()
 	defer d.mu.Lock()
 
-	result := d.compactAndWrite(jobID, c, snapshots, tableFormat)
+	// Determine whether we should separate values into blob files.
+	valueSeparation, outputBlobReferenceDepth := d.determineCompactionValueSeparation(jobID, c, tableFormat)
+
+	result := d.compactAndWrite(jobID, c, snapshots, tableFormat, valueSeparation)
+
 	if result.Err == nil {
-		ve, result.Err = c.makeVersionEdit(result)
+		ve, result.Err = c.makeVersionEdit(result, outputBlobReferenceDepth)
 	}
 	if result.Err != nil {
 		// Delete any created tables.
 		obsoleteFiles := manifest.ObsoleteFiles{
 			FileBackings: make([]*fileBacking, 0, len(result.Tables)),
+			BlobFiles:    make([]*manifest.BlobFileMetadata, 0, len(result.Blobs)),
 		}
 		d.mu.Lock()
+		for i := range result.Blobs {
+			obsoleteFiles.AddBlob(result.Blobs[i].Metadata)
+			// TODO(jackson): Record zombie blobs.
+		}
 		for i := range result.Tables {
 			backing := &fileBacking{
 				DiskFileNum: result.Tables[i].ObjMeta.DiskFileNum,
@@ -3045,7 +3059,11 @@ func (d *DB) runCompaction(
 // compactAndWrite runs the data part of a compaction, where we set up a
 // compaction iterator and use it to write output tables.
 func (d *DB) compactAndWrite(
-	jobID JobID, c *compaction, snapshots compact.Snapshots, tableFormat sstable.TableFormat,
+	jobID JobID,
+	c *compaction,
+	snapshots compact.Snapshots,
+	tableFormat sstable.TableFormat,
+	valueSeparation compact.ValueSeparation,
 ) (result compact.Result) {
 	// Compactions use a pool of buffers to read blocks, avoiding polluting the
 	// block cache with blocks that will not be read again. We initialize the
@@ -3126,6 +3144,7 @@ func (d *DB) compactAndWrite(
 		MaxGrandparentOverlapBytes: c.maxOverlapBytes,
 		TargetOutputFileSize:       c.maxOutputFileSize,
 		GrantHandle:                c.grantHandle,
+		ValueSeparation:            valueSeparation,
 	}
 	runner := compact.NewRunner(runnerCfg, iter)
 	for runner.MoreDataToWrite() {
@@ -3149,7 +3168,9 @@ func (d *DB) compactAndWrite(
 
 // makeVersionEdit creates the version edit for a compaction, based on the
 // tables in compact.Result.
-func (c *compaction) makeVersionEdit(result compact.Result) (*versionEdit, error) {
+func (c *compaction) makeVersionEdit(
+	result compact.Result, outputBlobReferenceDepth int,
+) (*versionEdit, error) {
 	ve := &versionEdit{
 		DeletedTables: map[deletedFileEntry]*tableMetadata{},
 	}
@@ -3186,6 +3207,12 @@ func (c *compaction) makeVersionEdit(result compact.Result) (*versionEdit, error
 		outputMetrics.MultiLevel.BytesRead = outputMetrics.BytesRead
 	}
 
+	// Add any newly constructed blob files to the version edit.
+	ve.NewBlobFiles = make([]*manifest.BlobFileMetadata, len(result.Blobs))
+	for i := range result.Blobs {
+		ve.NewBlobFiles[i] = result.Blobs[i].Metadata
+	}
+
 	inputLargestSeqNumAbsolute := c.inputLargestSeqNumAbsolute()
 	ve.NewTables = make([]newTableEntry, len(result.Tables))
 	for i := range result.Tables {
@@ -3197,6 +3224,11 @@ func (c *compaction) makeVersionEdit(result compact.Result) (*versionEdit, error
 			Size:           t.WriterMeta.Size,
 			SmallestSeqNum: t.WriterMeta.SmallestSeqNum,
 			LargestSeqNum:  t.WriterMeta.LargestSeqNum,
+			BlobReferences: t.BlobReferences,
+			// Assign every output table the shared, compaction-wide
+			// outputBlobReferenceDepth, unless the table references fewer
+			// unique blob files.
+			BlobReferenceDepth: min(outputBlobReferenceDepth, len(t.BlobReferences)),
 		}
 		if c.flushing == nil {
 			// Set the file's LargestSeqNumAbsolute to be the maximum value of any
@@ -3281,10 +3313,6 @@ func (d *DB) newCompactionOutputTable(
 	tw := sstable.NewRawWriter(writable, writerOpts)
 	return objMeta, tw, nil
 }
-
-// Allow the newCompactionOutputBlob method to be unused for now.
-// TODO(jackson): Hook this up.
-var _ = (*DB).newCompactionOutputBlob
 
 // newCompactionOutputBlob creates an object for a new blob produced by a
 // compaction or flush.

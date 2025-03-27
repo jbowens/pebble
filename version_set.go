@@ -1134,7 +1134,7 @@ func findCurrentManifest(
 	return marker, manifestNum, true, nil
 }
 
-func newFileMetrics(newFiles []manifest.NewTableEntry) map[int]*LevelMetrics {
+func newLevelTableMetrics(newFiles []manifest.NewTableEntry) map[int]*LevelMetrics {
 	m := map[int]*LevelMetrics{}
 	for _, nf := range newFiles {
 		lm := m[nf.Level]

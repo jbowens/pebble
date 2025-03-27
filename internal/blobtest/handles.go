@@ -7,12 +7,14 @@
 package blobtest
 
 import (
+	"bytes"
 	"context"
 	"math/rand/v2"
 	"strings"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/itertest"
 	"github.com/cockroachdb/pebble/internal/strparse"
 	"github.com/cockroachdb/pebble/internal/testutils"
 	"github.com/cockroachdb/pebble/sstable/blob"
@@ -190,6 +192,25 @@ func (bv *Values) ParseInlineHandle(
 			OffsetInBlock: fullHandle.OffsetInBlock,
 		},
 	}, nil
+}
+
+// WrapIterator wraps the provided iterator, replacing any in-place values that
+// look like debug blob value handles to be synthesized blob InternalValues that
+// use the BlobValues to fetch the value.
+func (bv *BlobValues) WrapIterator(ii base.InternalIterator) base.InternalIterator {
+	return itertest.Map(ii, func(kv *base.InternalKV) *base.InternalKV {
+		if kv == nil {
+			return nil
+		}
+		if kv.V.IsInPlaceValue() && bytes.HasPrefix(kv.V.InPlaceValue(), []byte("blob{")) {
+			handle, err := bv.ParseInternalValue(string(kv.V.InPlaceValue()))
+			if err != nil {
+				panic(err)
+			}
+			kv.V = handle
+		}
+		return kv
+	})
 }
 
 // errFromPanic can be used in a recover block to convert panics into errors.
