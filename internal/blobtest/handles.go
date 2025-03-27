@@ -7,16 +7,18 @@
 package blobtest
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"math/rand/v2"
+	"slices"
 	"strings"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
-	"github.com/cockroachdb/pebble/internal/itertest"
+	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/strparse"
 	"github.com/cockroachdb/pebble/internal/testutils"
+	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/sstable/blob"
 )
 
@@ -55,10 +57,14 @@ func (bv *Values) Fetch(
 	// If there was not an explicitly specified value, generate a random one
 	// deterministically from the file number, block number and offset in block.
 	if len(value) == 0 {
-		rng := rand.New(rand.NewPCG((uint64(decodedHandle.FileNum)<<32)|uint64(decodedHandle.BlockNum), uint64(decodedHandle.OffsetInBlock)))
-		return testutils.RandBytes(rng, int(decodedHandle.ValueLen)), false, nil
+		return deriveValueFromHandle(decodedHandle), false, nil
 	}
 	return []byte(value), false, nil
+}
+
+func deriveValueFromHandle(handle blob.Handle) []byte {
+	rng := rand.New(rand.NewPCG((uint64(handle.FileNum)<<32)|uint64(handle.BlockNum), uint64(handle.OffsetInBlock)))
+	return testutils.RandBytes(rng, int(handle.ValueLen))
 }
 
 // ParseInternalValue parses a debug blob handle from the string, returning the
@@ -194,23 +200,44 @@ func (bv *Values) ParseInlineHandle(
 	}, nil
 }
 
-// WrapIterator wraps the provided iterator, replacing any in-place values that
-// look like debug blob value handles to be synthesized blob InternalValues that
-// use the BlobValues to fetch the value.
-func (bv *BlobValues) WrapIterator(ii base.InternalIterator) base.InternalIterator {
-	return itertest.Map(ii, func(kv *base.InternalKV) *base.InternalKV {
-		if kv == nil {
-			return nil
-		}
-		if kv.V.IsInPlaceValue() && bytes.HasPrefix(kv.V.InPlaceValue(), []byte("blob{")) {
-			handle, err := bv.ParseInternalValue(string(kv.V.InPlaceValue()))
-			if err != nil {
-				panic(err)
+func (bv *Values) WriteBlobFiles(
+	newBlobObject func(fileNum base.DiskFileNum) (objstorage.Writable, error),
+	writerOpts blob.FileWriterOptions,
+	metas map[base.DiskFileNum]*manifest.BlobFileMetadata,
+) error {
+	// Organize the handles by file number.
+	files := make(map[base.DiskFileNum][]blob.Handle)
+	for handle := range bv.trackedHandles {
+		files[handle.FileNum] = append(files[handle.FileNum], handle)
+	}
+
+	for fileNum, handles := range files {
+		slices.SortFunc(handles, func(a, b blob.Handle) int {
+			if v := cmp.Compare(a.BlockNum, b.BlockNum); v != 0 {
+				return v
 			}
-			kv.V = handle
+			return cmp.Compare(a.OffsetInBlock, b.OffsetInBlock)
+		})
+		writable, err := newBlobObject(fileNum)
+		if err != nil {
+			return err
 		}
-		return kv
-	})
+		writer := blob.NewFileWriter(fileNum, writable, writerOpts)
+		for _, handle := range handles {
+			if value, ok := bv.trackedHandles[handle]; ok {
+				writer.AddValue([]byte(value))
+			} else {
+				writer.AddValue(deriveValueFromHandle(handle))
+			}
+		}
+		stats, err := writer.Close()
+		if err != nil {
+			return err
+		}
+		metas[fileNum].Size = stats.FileLen
+		metas[fileNum].ValueSize = stats.UncompressedValueBytes
+	}
+	return nil
 }
 
 // errFromPanic can be used in a recover block to convert panics into errors.

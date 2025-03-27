@@ -211,7 +211,9 @@ type compaction struct {
 	bufferPool         sstable.BufferPool
 	// valueFetcher is used to fetch values from blob files. It's propagated
 	// down the iterator tree through the internal iterator options.
-	valueFetcher blob.ValueFetcher
+	valueFetcher                     blob.ValueFetcher
+	overrideValueSeparator           compact.ValueSeparation
+	overrideOutputBlobReferenceDepth int
 
 	// startLevel is the level that is being compacted. Inputs from startLevel
 	// and outputLevel will be merged to produce a set of outputLevel files.
@@ -3011,8 +3013,14 @@ func (d *DB) runCompaction(
 	d.mu.Unlock()
 	defer d.mu.Lock()
 
-	// Determine whether we should separate values into blob files.
-	valueSeparation, outputBlobReferenceDepth := d.determineCompactionValueSeparation(jobID, c, tableFormat)
+	// Determine whether we should separate values into blob files. If the
+	// compaction already has a compact.ValueSeparation use it. This is used by
+	// tests.
+	valueSeparation := c.overrideValueSeparator
+	outputBlobReferenceDepth := c.overrideOutputBlobReferenceDepth
+	if valueSeparation == nil {
+		valueSeparation, outputBlobReferenceDepth = d.determineCompactionValueSeparation(jobID, c, tableFormat)
+	}
 
 	result := d.compactAndWrite(jobID, c, snapshots, tableFormat, valueSeparation)
 

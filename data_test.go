@@ -10,6 +10,7 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"regexp"
@@ -28,10 +29,12 @@ import (
 	"github.com/cockroachdb/pebble/internal/blobtest"
 	"github.com/cockroachdb/pebble/internal/humanize"
 	"github.com/cockroachdb/pebble/internal/keyspan"
+	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/rangekey"
 	"github.com/cockroachdb/pebble/internal/sstableinternal"
 	"github.com/cockroachdb/pebble/internal/strparse"
 	"github.com/cockroachdb/pebble/internal/testkeys"
+	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/objstorage/remote"
 	"github.com/cockroachdb/pebble/sstable"
@@ -937,9 +940,13 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 	}
 	d.mu.versions.dynamicBaseLevel = false
 
+	valueSeparator := &defineDBValueSeparator{
+		pbr:   &preserveBlobReferences{},
+		metas: make(map[base.DiskFileNum]*manifest.BlobFileMetadata),
+	}
+
 	var mem *memTable
 	var start, end *base.InternalKey
-	var bv testutils.BlobValues
 	ve := &versionEdit{}
 	level := -1
 
@@ -949,22 +956,19 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 		}
 
 		toFlush := flushableList{{
-			// We wrap the memtable iterators using BlobValues.WrapIterator. If
-			// the test defines any values that look like debug blob handles,
-			// they'll be replaced by InternalValues backed by the BlobValues.
-			flushable: &flushableWrapIters{
-				flushable: mem,
-				fn: func(i base.InternalIterator) base.InternalIterator {
-					return bv.WrapIterator(i)
-				},
-			},
-			flushed: make(chan struct{}),
+			flushable: mem,
+			flushed:   make(chan struct{}),
 		}}
 		c, err := newFlush(d.opts, d.mu.versions.currentVersion(),
 			d.mu.versions.picker.getBaseLevel(), toFlush, time.Now())
 		if err != nil {
 			return err
 		}
+		// Override the value separator so that we can write arbitrary blob
+		// references, and then construct the requisite blob files after all the
+		// defined tables have been written.
+		c.overrideValueSeparator = valueSeparator
+		c.overrideOutputBlobReferenceDepth = 1
 		// NB: define allows the test to exactly specify which keys go
 		// into which sstables. If the test has a small target file
 		// size to test grandparent limits, etc, the maxOutputFileSize
@@ -1131,6 +1135,16 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 				var value []byte
 				if key.Kind() != base.InternalKeyKindDelete && key.Kind() != base.InternalKeyKindSingleDelete {
 					valueStr := p.Next()
+					// If the value looks like a blob reference, read until the closing brace.
+					if valueStr == "blob" && p.Peek() == "{" {
+						tok := p.Next()
+						valueStr += " " + tok
+						for !p.Done() && tok != "}" {
+							tok = p.Next()
+							valueStr += " " + tok
+						}
+					}
+
 					value = []byte(valueStr)
 					var randBytes int
 					if n, err := fmt.Sscanf(valueStr, "<rand-bytes=%d>", &randBytes); err == nil && n == 1 {
@@ -1153,6 +1167,16 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 	}
 
 	if len(ve.NewTables) > 0 {
+		// Collect any blob files created.
+		err := valueSeparator.bv.WriteBlobFiles(func(fileNum base.DiskFileNum) (objstorage.Writable, error) {
+			writable, _, err := d.objProvider.Create(context.Background(), base.FileTypeBlob, fileNum, objstorage.CreateOptions{})
+			return writable, err
+		}, d.opts.MakeBlobWriterOptions(0), valueSeparator.metas)
+		if err != nil {
+			return nil, err
+		}
+		ve.NewBlobFiles = slices.Collect(maps.Values(valueSeparator.metas))
+
 		jobID := d.newJobIDLocked()
 		d.mu.versions.logLock()
 		if err := d.mu.versions.logAndApply(jobID, ve, newLevelTableMetrics(ve.NewTables), false, func() []compactionInfo {
@@ -1165,19 +1189,6 @@ func runDBDefineCmdReuseFS(td *datadriven.TestData, opts *Options) (*DB, error) 
 	}
 
 	return d, nil
-}
-
-type flushableWrapIters struct {
-	flushable
-	fn func(base.InternalIterator) base.InternalIterator
-}
-
-func (f *flushableWrapIters) newIter(o *IterOptions) internalIterator {
-	return f.fn(f.flushable.newIter(o))
-}
-
-func (f *flushableWrapIters) newFlushIter(o *IterOptions) internalIterator {
-	return f.fn(f.flushable.newFlushIter(o))
 }
 
 func runTableStatsCmd(td *datadriven.TestData, d *DB) string {

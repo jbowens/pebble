@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/crlib/crstrings"
 	"github.com/cockroachdb/datadriven"
@@ -177,4 +178,65 @@ func (w *loggingRawWriter) AddWithBlobHandle(
 ) error {
 	fmt.Fprintf(w.w, "RawWriter.AddWithBlobHandle(%q, %q, %x, %t)\n", key, h, attr, forceObsolete)
 	return w.RawWriter.AddWithBlobHandle(key, h, attr, forceObsolete)
+}
+
+// defineDBValueSeparator is a compact.ValueSeparation implementation used by
+// datadriven tests when defining a database state. It is a wrapper around
+// preserveBlobReferences that also parses blob references from values.
+type defineDBValueSeparator struct {
+	bv    blobtest.Values
+	metas map[base.DiskFileNum]*manifest.BlobFileMetadata
+	pbr   *preserveBlobReferences
+	kv    base.InternalKV
+}
+
+// Assert that *defineDBValueSeparator implements the compact.ValueSeparation interface.
+var _ compact.ValueSeparation = (*defineDBValueSeparator)(nil)
+
+// EstimatedFileSize returns an estimate of the disk space consumed by the current
+// blob file if it were closed now.
+func (vs *defineDBValueSeparator) EstimatedFileSize() uint64 {
+	return vs.pbr.EstimatedFileSize()
+}
+
+// EstimatedReferenceSize returns an estimate of the disk space consumed by the
+// current output sstable's blob references so far.
+func (vs *defineDBValueSeparator) EstimatedReferenceSize() uint64 {
+	return vs.pbr.EstimatedReferenceSize()
+}
+
+// Add adds the provided key-value pair to the sstable, possibly separating the
+// value into a blob file.
+func (vs *defineDBValueSeparator) Add(
+	tw sstable.RawWriter, kv *base.InternalKV, forceObsolete bool,
+) error {
+	// In runDBDefineCmdReuseFS all values are in-place.
+	v := kv.V.InPlaceValue()
+	if !bytes.HasPrefix(v, []byte("blob")) {
+		return tw.Add(kv.K, v, forceObsolete)
+	}
+
+	// This looks like a blob reference.
+	iv, err := vs.bv.ParseInternalValue(string(v))
+	if err != nil {
+		return err
+	}
+	lv := iv.LazyValue()
+	fileNum := lv.Fetcher.BlobFileNum
+	if _, ok := vs.metas[fileNum]; !ok {
+		vs.metas[fileNum] = &manifest.BlobFileMetadata{
+			FileNum:      fileNum,
+			CreationTime: uint64(time.Now().Unix()),
+		}
+		vs.pbr.inputBlobMetadatas = append(vs.pbr.inputBlobMetadatas, vs.metas[fileNum])
+	}
+
+	vs.kv.K = kv.K
+	vs.kv.V = iv
+	return vs.pbr.Add(tw, &vs.kv, forceObsolete)
+}
+
+// FinishOutput implements compact.ValueSeparation.
+func (d *defineDBValueSeparator) FinishOutput() (compact.ValueSeparationMetadata, error) {
+	return d.pbr.FinishOutput()
 }

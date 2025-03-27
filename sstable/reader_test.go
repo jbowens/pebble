@@ -2586,7 +2586,7 @@ func TestReaderReportsCorruption(t *testing.T) {
 			return errors.Wrap(err, "error passed through ReportCorruptionFn")
 		},
 	}
-	iter, err := r.NewPointIter(context.Background(), NoTransforms, nil, nil, nil, 0, env, nil)
+	iter, err := r.NewPointIter(context.Background(), NoTransforms, nil, nil, nil, 0, env, nil, base.NoBlobFetches)
 	require.NoError(t, err)
 	defer iter.Close()
 	kv := iter.First()
