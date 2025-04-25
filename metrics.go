@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/pebble/internal/humanize"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/manual"
+	"github.com/cockroachdb/pebble/internal/whiteboard"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/sharedcache"
 	"github.com/cockroachdb/pebble/record"
 	"github.com/cockroachdb/pebble/sstable"
@@ -564,81 +565,17 @@ func (m *Metrics) RemoteTablesTotal() (count uint64, size uint64) {
 //	Ingestions: 27  as flushable: 36 (34B in 35 tables)
 //	Cgo memory usage: 15KB  block cache: 9.0KB (data: 4.0KB, maps: 2.0KB, entries: 3.0KB)  memtables: 5.0KB
 func (m *Metrics) String() string {
-	return redact.StringWithoutMarkers(m)
-}
-
-var _ redact.SafeFormatter = &Metrics{}
-
-// SafeFormat implements redact.SafeFormatter.
-func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
-	// NB: Pebble does not make any assumptions as to which Go primitive types
-	// have been registered as safe with redact.RegisterSafeType and does not
-	// register any types itself. Some of the calls to `redact.Safe`, etc are
-	// superfluous in the context of CockroachDB, which registers all the Go
-	// numeric types as safe.
-
-	multiExists := m.Compact.MultiLevelCount > 0
-	appendIfMulti := func(line redact.SafeString) {
-		if multiExists {
-			w.SafeString(line)
-		}
-	}
-	newline := func() {
-		w.SafeString("\n")
-	}
-
-	w.SafeString("      |                             |                |       |   ingested   |     moved    |    written   |       |    amp")
-	appendIfMulti("   |     multilevel")
-	newline()
-	w.SafeString("level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w")
-	appendIfMulti("  |    top   in  read")
-	newline()
-	w.SafeString("------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------")
-	appendIfMulti("-+------------------")
-	newline()
-
-	// formatRow prints out a row of the table.
-	formatRow := func(m *LevelMetrics) {
-		score := m.Score
-		if score == 0 {
-			// Format a zero level score as a dash.
-			score = math.NaN()
-		}
-		w.Printf("| %5s %6s %6s %7s | %4s %4s %4s | %5s | %5s %6s | %5s %6s | %5s %6s | %5s | %3d %4s",
-			humanize.Count.Int64(m.TablesCount),
-			humanize.Bytes.Int64(m.TablesSize),
-			humanize.Bytes.Uint64(m.Additional.ValueBlocksSize),
-			humanize.Count.Uint64(m.VirtualTablesCount),
-			humanizeFloat(score, 4),
-			humanizeFloat(m.UncompensatedScore, 4),
-			humanizeFloat(m.CompensatedScore, 4),
-			humanize.Bytes.Uint64(m.BytesIn),
-			humanize.Count.Uint64(m.TablesIngested),
-			humanize.Bytes.Uint64(m.BytesIngested),
-			humanize.Count.Uint64(m.TablesMoved),
-			humanize.Bytes.Uint64(m.BytesMoved),
-			humanize.Count.Uint64(m.TablesFlushed+m.TablesCompacted),
-			humanize.Bytes.Uint64(m.BytesFlushed+m.BytesCompacted),
-			humanize.Bytes.Uint64(m.BytesRead),
-			redact.Safe(m.Sublevels),
-			humanizeFloat(m.WriteAmp(), 4),
-		)
-
-		if multiExists {
-			w.Printf(" | %5s %5s %5s",
-				humanize.Bytes.Uint64(m.MultiLevel.BytesInTop),
-				humanize.Bytes.Uint64(m.MultiLevel.BytesIn),
-				humanize.Bytes.Uint64(m.MultiLevel.BytesRead))
-		}
-		newline()
-	}
+	wb := whiteboard.Make(160, 32)
+	wb.At(0, 0).WriteString("      |                             |                |       |   ingested   |     moved    |    written   |       |    amp")
+	wb.At(0, 1).WriteString("level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w")
+	wb.At(0, 2).WriteString("------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------")
 
 	var total LevelMetrics
 	for level := 0; level < numLevels; level++ {
-		l := &m.Levels[level]
+		w := wb.At(0, level+3)
 		w.Printf("%5d ", redact.Safe(level))
-		formatRow(l)
-		total.Add(l)
+		writeLevelMetrics(w.Offset(6, 0), &m.Levels[level])
+		total.Add(&m.Levels[level])
 	}
 	// Compute total bytes-in as the bytes written to the WAL + bytes ingested.
 	total.BytesIn = m.WAL.BytesWritten + total.BytesIngested
@@ -649,36 +586,52 @@ func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
 	total.Score = math.NaN()
 	total.CompensatedScore = math.NaN()
 	total.UncompensatedScore = math.NaN()
-	w.SafeString("total ")
-	formatRow(&total)
+	totalLine := wb.NewLine()
+	totalLine.WriteString("total ")
+	writeLevelMetrics(totalLine.Offset(6, 0), &total)
 
-	w.SafeString("----------------------------------------------------------------------------------------------------------------------------")
-	appendIfMulti("--------------------")
-	newline()
-	w.Printf("WAL: %d files (%s)  in: %s  written: %s (%.0f%% overhead)",
-		redact.Safe(m.WAL.Files),
-		humanize.Bytes.Uint64(m.WAL.Size),
-		humanize.Bytes.Uint64(m.WAL.BytesIn),
-		humanize.Bytes.Uint64(m.WAL.BytesWritten),
-		redact.Safe(percent(int64(m.WAL.BytesWritten)-int64(m.WAL.BytesIn), int64(m.WAL.BytesIn))))
-	failoverStats := m.WAL.Failover
-	failoverStats.FailoverWriteAndSyncLatency = nil
-	if failoverStats == (wal.FailoverStats{}) {
-		w.Printf("\n")
-	} else {
-		w.Printf(" failover: (switches: %d, primary: %s, secondary: %s)\n", m.WAL.Failover.DirSwitchCount,
-			m.WAL.Failover.PrimaryWriteDuration.String(), m.WAL.Failover.SecondaryWriteDuration.String())
+	wb.NewLine().WriteString("----------------------------------------------------------------------------------------------------------------------------")
+
+	if m.Compact.MultiLevelCount > 0 {
+		wb.At(124, 0).WriteString(" |     multilevel")
+		wb.At(124, 1).WriteString(" |    top   in  read")
+		wb.At(124, 2).WriteString("-+------------------")
+		for level := range m.Levels {
+			wb.At(124, level+3).Printf(" | %5s %5s %5s",
+				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesInTop),
+				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesIn),
+				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesRead))
+		}
+		wb.At(124, 10).Printf(" | %5s %5s %5s",
+			humanize.Bytes.Uint64(total.MultiLevel.BytesInTop),
+			humanize.Bytes.Uint64(total.MultiLevel.BytesIn),
+			humanize.Bytes.Uint64(total.MultiLevel.BytesRead))
+		wb.At(124, 11).WriteString("--------------------")
 	}
 
-	w.Printf("Flushes: %d\n", redact.Safe(m.Flush.Count))
+	{
+		w := wb.NewLine()
+		w.Printf("WAL: %d files (%s)  in: %s  written: %s (%.0f%% overhead)",
+			redact.Safe(m.WAL.Files),
+			humanize.Bytes.Uint64(m.WAL.Size),
+			humanize.Bytes.Uint64(m.WAL.BytesIn),
+			humanize.Bytes.Uint64(m.WAL.BytesWritten),
+			redact.Safe(percent(int64(m.WAL.BytesWritten)-int64(m.WAL.BytesIn), int64(m.WAL.BytesIn))))
+		failoverStats := m.WAL.Failover
+		failoverStats.FailoverWriteAndSyncLatency = nil
+		if failoverStats != (wal.FailoverStats{}) {
+			w.Printf(" failover: (switches: %d, primary: %s, secondary: %s)", m.WAL.Failover.DirSwitchCount,
+				m.WAL.Failover.PrimaryWriteDuration.String(), m.WAL.Failover.SecondaryWriteDuration.String())
+		}
+	}
 
-	w.Printf("Compactions: %d  estimated debt: %s  in progress: %d (%s)\n",
+	wb.NewLine().Printf("Flushes: %d", redact.Safe(m.Flush.Count))
+	wb.NewLine().Printf("Compactions: %d  estimated debt: %s  in progress: %d (%s)",
 		redact.Safe(m.Compact.Count),
 		humanize.Bytes.Uint64(m.Compact.EstimatedDebt),
 		redact.Safe(m.Compact.NumInProgress),
 		humanize.Bytes.Int64(m.Compact.InProgressBytes))
-
-	w.Printf("             default: %d  delete: %d  elision: %d  move: %d  read: %d  tombstone-density: %d  rewrite: %d  copy: %d  multi-level: %d\n",
+	wb.NewLine().Printf("             default: %d  delete: %d  elision: %d  move: %d  read: %d  tombstone-density: %d  rewrite: %d  copy: %d  multi-level: %d",
 		redact.Safe(m.Compact.DefaultCount),
 		redact.Safe(m.Compact.DeleteOnlyCount),
 		redact.Safe(m.Compact.ElisionOnlyCount),
@@ -688,55 +641,56 @@ func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
 		redact.Safe(m.Compact.RewriteCount),
 		redact.Safe(m.Compact.CopyCount),
 		redact.Safe(m.Compact.MultiLevelCount))
-
-	w.Printf("MemTables: %d (%s)  zombie: %d (%s)\n",
+	wb.NewLine().Printf("MemTables: %d (%s)  zombie: %d (%s)",
 		redact.Safe(m.MemTable.Count),
 		humanize.Bytes.Uint64(m.MemTable.Size),
 		redact.Safe(m.MemTable.ZombieCount),
 		humanize.Bytes.Uint64(m.MemTable.ZombieSize))
-
-	w.Printf("Zombie tables: %d (%s, local: %s)\n",
+	wb.NewLine().Printf("Zombie tables: %d (%s, local: %s)",
 		redact.Safe(m.Table.ZombieCount),
 		humanize.Bytes.Uint64(m.Table.ZombieSize),
 		humanize.Bytes.Uint64(m.Table.Local.ZombieSize))
-
-	w.Printf("Backing tables: %d (%s)\n",
+	wb.NewLine().Printf("Backing tables: %d (%s)",
 		redact.Safe(m.Table.BackingTableCount),
 		humanize.Bytes.Uint64(m.Table.BackingTableSize))
-	w.Printf("Virtual tables: %d (%s)\n",
+	wb.NewLine().Printf("Virtual tables: %d (%s)",
 		redact.Safe(m.NumVirtual()),
 		humanize.Bytes.Uint64(m.VirtualSize()))
-	w.Printf("Local tables size: %s\n", humanize.Bytes.Uint64(m.Table.Local.LiveSize))
-	w.SafeString("Compression types:")
-	if count := m.Table.CompressedCountSnappy; count > 0 {
-		w.Printf(" snappy: %d", redact.Safe(count))
+	wb.NewLine().Printf("Local tables size: %s", humanize.Bytes.Uint64(m.Table.Local.LiveSize))
+	{
+		w := wb.NewLine()
+		w = w.Printf("Compression types:")
+		if count := m.Table.CompressedCountSnappy; count > 0 {
+			w = w.Printf(" snappy: %d", redact.Safe(count))
+		}
+		if count := m.Table.CompressedCountZstd; count > 0 {
+			w = w.Printf(" zstd: %d", redact.Safe(count))
+		}
+		if count := m.Table.CompressedCountMinlz; count > 0 {
+			w = w.Printf(" minlz: %d", redact.Safe(count))
+		}
+		if count := m.Table.CompressedCountNone; count > 0 {
+			w = w.Printf(" none: %d", redact.Safe(count))
+		}
+		if count := m.Table.CompressedCountUnknown; count > 0 {
+			_ = w.Printf(" unknown: %d", redact.Safe(count))
+		}
 	}
-	if count := m.Table.CompressedCountZstd; count > 0 {
-		w.Printf(" zstd: %d", redact.Safe(count))
-	}
-	if count := m.Table.CompressedCountMinlz; count > 0 {
-		w.Printf(" minlz: %d", redact.Safe(count))
-	}
-	if count := m.Table.CompressedCountNone; count > 0 {
-		w.Printf(" none: %d", redact.Safe(count))
-	}
-	if count := m.Table.CompressedCountUnknown; count > 0 {
-		w.Printf(" unknown: %d", redact.Safe(count))
-	}
-	w.Printf("\n")
 
-	w.Printf("Table stats: ")
-	if !m.Table.InitialStatsCollectionComplete {
-		w.Printf("initial load in progress")
-	} else if m.Table.PendingStatsCollectionCount == 0 {
-		w.Printf("all loaded")
-	} else {
-		w.Printf("%s", humanize.Count.Int64(m.Table.PendingStatsCollectionCount))
+	{
+		w := wb.NewLine()
+		w = w.Printf("Table stats: ")
+		if !m.Table.InitialStatsCollectionComplete {
+			w.Printf("initial load in progress")
+		} else if m.Table.PendingStatsCollectionCount == 0 {
+			w.Printf("all loaded")
+		} else {
+			w.Printf("%s pending", humanize.Count.Int64(m.Table.PendingStatsCollectionCount))
+		}
 	}
-	w.Printf("\n")
 
 	formatCacheMetrics := func(m *CacheMetrics, name redact.SafeString) {
-		w.Printf("%s: %s entries (%s)  hit rate: %.1f%%\n",
+		wb.NewLine().Printf("%s: %s entries (%s)  hit rate: %.1f%%",
 			name,
 			humanize.Count.Int64(m.Count),
 			humanize.Bytes.Int64(m.Size),
@@ -745,30 +699,29 @@ func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
 	formatCacheMetrics(&m.BlockCache, "Block cache")
 	formatCacheMetrics(&m.FileCache, "Table cache")
 
-	formatSharedCacheMetrics := func(w redact.SafePrinter, m *SecondaryCacheMetrics, name redact.SafeString) {
-		w.Printf("%s: %s entries (%s)  hit rate: %.1f%%\n",
+	formatSharedCacheMetrics := func(w whiteboard.Pos, m *SecondaryCacheMetrics, name redact.SafeString) {
+		w.Printf("%s: %s entries (%s)  hit rate: %.1f%%",
 			name,
 			humanize.Count.Int64(m.Count),
 			humanize.Bytes.Int64(m.Size),
 			redact.Safe(hitRate(m.ReadsWithFullHit, m.ReadsWithPartialHit+m.ReadsWithNoHit)))
 	}
 	if m.SecondaryCacheMetrics.Size > 0 || m.SecondaryCacheMetrics.ReadsWithFullHit > 0 {
-		formatSharedCacheMetrics(w, &m.SecondaryCacheMetrics, "Secondary cache")
+		formatSharedCacheMetrics(wb.NewLine(), &m.SecondaryCacheMetrics, "Secondary cache")
 	}
 
-	w.Printf("Range key sets: %s  Tombstones: %s  Total missized tombstones encountered: %s\n",
+	wb.NewLine().Printf("Range key sets: %s  Tombstones: %s  Total missized tombstones encountered: %s",
 		humanize.Count.Uint64(m.Keys.RangeKeySetsCount),
 		humanize.Count.Uint64(m.Keys.TombstoneCount),
 		humanize.Count.Uint64(m.Keys.MissizedTombstonesCount),
 	)
-
-	w.Printf("Snapshots: %d  earliest seq num: %d\n",
+	wb.NewLine().Printf("Snapshots: %d  earliest seq num: %d",
 		redact.Safe(m.Snapshots.Count),
 		redact.Safe(m.Snapshots.EarliestSeqNum))
 
-	w.Printf("Table iters: %d\n", redact.Safe(m.TableIters))
-	w.Printf("Filter utility: %.1f%%\n", redact.Safe(hitRate(m.Filter.Hits, m.Filter.Misses)))
-	w.Printf("Ingestions: %d  as flushable: %d (%s in %d tables)\n",
+	wb.NewLine().Printf("Table iters: %d", redact.Safe(m.TableIters))
+	wb.NewLine().Printf("Filter utility: %.1f%%", redact.Safe(hitRate(m.Filter.Hits, m.Filter.Misses)))
+	wb.NewLine().Printf("Ingestions: %d  as flushable: %d (%s in %d tables)",
 		redact.Safe(m.Ingest.Count),
 		redact.Safe(m.Flush.AsIngestCount),
 		humanize.Bytes.Uint64(m.Flush.AsIngestBytes),
@@ -781,14 +734,48 @@ func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
 	inUse := func(purpose manual.Purpose) uint64 {
 		return m.manualMemory[purpose].InUseBytes
 	}
-	w.Printf("Cgo memory usage: %s  block cache: %s (data: %s, maps: %s, entries: %s)  memtables: %s\n",
+	wb.NewLine().Printf("Cgo memory usage: %s  block cache: %s (data: %s, maps: %s, entries: %s)  memtables: %s",
 		humanize.Bytes.Uint64(inUseTotal),
 		humanize.Bytes.Uint64(inUse(manual.BlockCacheData)+inUse(manual.BlockCacheMap)+inUse(manual.BlockCacheEntry)),
 		humanize.Bytes.Uint64(inUse(manual.BlockCacheData)),
 		humanize.Bytes.Uint64(inUse(manual.BlockCacheMap)),
 		humanize.Bytes.Uint64(inUse(manual.BlockCacheEntry)),
-		humanize.Bytes.Uint64(inUse(manual.MemTable)),
+		humanize.Bytes.Uint64(inUse(manual.MemTable)))
+	return wb.String()
+}
+
+func writeLevelMetrics(wb whiteboard.Pos, m *LevelMetrics) {
+	score := m.Score
+	if score == 0 {
+		// Format a zero level score as a dash.
+		score = math.NaN()
+	}
+	wb.Printf("| %5s %6s %6s %7s | %4s %4s %4s | %5s | %5s %6s | %5s %6s | %5s %6s | %5s | %3d %4s",
+		humanize.Count.Int64(m.TablesCount),
+		humanize.Bytes.Int64(m.TablesSize),
+		humanize.Bytes.Uint64(m.Additional.ValueBlocksSize),
+		humanize.Count.Uint64(m.VirtualTablesCount),
+		humanizeFloat(score, 4),
+		humanizeFloat(m.UncompensatedScore, 4),
+		humanizeFloat(m.CompensatedScore, 4),
+		humanize.Bytes.Uint64(m.BytesIn),
+		humanize.Count.Uint64(m.TablesIngested),
+		humanize.Bytes.Uint64(m.BytesIngested),
+		humanize.Count.Uint64(m.TablesMoved),
+		humanize.Bytes.Uint64(m.BytesMoved),
+		humanize.Count.Uint64(m.TablesFlushed+m.TablesCompacted),
+		humanize.Bytes.Uint64(m.BytesFlushed+m.BytesCompacted),
+		humanize.Bytes.Uint64(m.BytesRead),
+		redact.Safe(m.Sublevels),
+		humanizeFloat(m.WriteAmp(), 4),
 	)
+}
+
+var _ redact.SafeFormatter = &Metrics{}
+
+// SafeFormat implements redact.SafeFormatter.
+func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
+	w.SafeString(redact.SafeString(m.String()))
 }
 
 func hitRate(hits, misses int64) float64 {

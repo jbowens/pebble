@@ -362,7 +362,7 @@ func TestMetrics(t *testing.T) {
 			var buf strings.Builder
 			fmt.Fprintf(&buf, "%s", m.StringForTests())
 			if len(m.CategoryStats) > 0 {
-				fmt.Fprintf(&buf, "Iter category stats:\n")
+				fmt.Fprintf(&buf, "\nIter category stats:\n")
 				for _, stats := range m.CategoryStats {
 					fmt.Fprintf(&buf, "%20s, %11s: %+v\n", stats.Category,
 						redact.StringWithoutMarkers(stats.Category.QoSLevel()), stats.CategoryStats)

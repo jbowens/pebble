@@ -22,7 +22,7 @@ Backing tables: 1 (2.0MB)
 Virtual tables: 2807 (2.8KB)
 Local tables size: 28B
 Compression types:
-Table stats: 31
+Table stats: 31 pending
 Block cache: 2 entries (1B)  hit rate: 42.9%
 Table cache: 18 entries (17B)  hit rate: 48.7%
 Range key sets: 123  Tombstones: 456  Total missized tombstones encountered: 789
