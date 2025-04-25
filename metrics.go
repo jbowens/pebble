@@ -565,10 +565,39 @@ func (m *Metrics) RemoteTablesTotal() (count uint64, size uint64) {
 //	Ingestions: 27  as flushable: 36 (34B in 35 tables)
 //	Cgo memory usage: 15KB  block cache: 9.0KB (data: 4.0KB, maps: 2.0KB, entries: 3.0KB)  memtables: 5.0KB
 func (m *Metrics) String() string {
-	wb := whiteboard.Make(160, 32)
+	const multilevelIndex = 124
+
+	wb := whiteboard.Make(multilevelIndex, 32)
 	wb.At(0, 0).WriteString("      |                             |                |       |   ingested   |     moved    |    written   |       |    amp")
 	wb.At(0, 1).WriteString("level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w")
 	wb.At(0, 2).WriteString("------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------")
+
+	writeLevelMetrics := func(wb whiteboard.Pos, m *LevelMetrics) {
+		score := m.Score
+		if score == 0 {
+			// Format a zero level score as a dash.
+			score = math.NaN()
+		}
+		wb.Printf("| %5s %6s %6s %7s | %4s %4s %4s | %5s | %5s %6s | %5s %6s | %5s %6s | %5s | %3d %4s",
+			humanize.Count.Int64(m.TablesCount),
+			humanize.Bytes.Int64(m.TablesSize),
+			humanize.Bytes.Uint64(m.Additional.ValueBlocksSize),
+			humanize.Count.Uint64(m.VirtualTablesCount),
+			humanizeFloat(score, 4),
+			humanizeFloat(m.UncompensatedScore, 4),
+			humanizeFloat(m.CompensatedScore, 4),
+			humanize.Bytes.Uint64(m.BytesIn),
+			humanize.Count.Uint64(m.TablesIngested),
+			humanize.Bytes.Uint64(m.BytesIngested),
+			humanize.Count.Uint64(m.TablesMoved),
+			humanize.Bytes.Uint64(m.BytesMoved),
+			humanize.Count.Uint64(m.TablesFlushed+m.TablesCompacted),
+			humanize.Bytes.Uint64(m.BytesFlushed+m.BytesCompacted),
+			humanize.Bytes.Uint64(m.BytesRead),
+			redact.Safe(m.Sublevels),
+			humanizeFloat(m.WriteAmp(), 4),
+		)
+	}
 
 	var total LevelMetrics
 	for level := 0; level < numLevels; level++ {
@@ -593,20 +622,20 @@ func (m *Metrics) String() string {
 	wb.NewLine().WriteString("----------------------------------------------------------------------------------------------------------------------------")
 
 	if m.Compact.MultiLevelCount > 0 {
-		wb.At(124, 0).WriteString(" |     multilevel")
-		wb.At(124, 1).WriteString(" |    top   in  read")
-		wb.At(124, 2).WriteString("-+------------------")
+		wb.At(multilevelIndex, 0).WriteString(" |     multilevel")
+		wb.At(multilevelIndex, 1).WriteString(" |    top   in  read")
+		wb.At(multilevelIndex, 2).WriteString("-+------------------")
 		for level := range m.Levels {
-			wb.At(124, level+3).Printf(" | %5s %5s %5s",
+			wb.At(multilevelIndex, level+3).Printf(" | %5s %5s %5s",
 				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesInTop),
 				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesIn),
 				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesRead))
 		}
-		wb.At(124, 10).Printf(" | %5s %5s %5s",
+		wb.At(multilevelIndex, 10).Printf(" | %5s %5s %5s",
 			humanize.Bytes.Uint64(total.MultiLevel.BytesInTop),
 			humanize.Bytes.Uint64(total.MultiLevel.BytesIn),
 			humanize.Bytes.Uint64(total.MultiLevel.BytesRead))
-		wb.At(124, 11).WriteString("--------------------")
+		wb.At(multilevelIndex, 11).WriteString("--------------------")
 	}
 
 	{
@@ -742,33 +771,6 @@ func (m *Metrics) String() string {
 		humanize.Bytes.Uint64(inUse(manual.BlockCacheEntry)),
 		humanize.Bytes.Uint64(inUse(manual.MemTable)))
 	return wb.String()
-}
-
-func writeLevelMetrics(wb whiteboard.Pos, m *LevelMetrics) {
-	score := m.Score
-	if score == 0 {
-		// Format a zero level score as a dash.
-		score = math.NaN()
-	}
-	wb.Printf("| %5s %6s %6s %7s | %4s %4s %4s | %5s | %5s %6s | %5s %6s | %5s %6s | %5s | %3d %4s",
-		humanize.Count.Int64(m.TablesCount),
-		humanize.Bytes.Int64(m.TablesSize),
-		humanize.Bytes.Uint64(m.Additional.ValueBlocksSize),
-		humanize.Count.Uint64(m.VirtualTablesCount),
-		humanizeFloat(score, 4),
-		humanizeFloat(m.UncompensatedScore, 4),
-		humanizeFloat(m.CompensatedScore, 4),
-		humanize.Bytes.Uint64(m.BytesIn),
-		humanize.Count.Uint64(m.TablesIngested),
-		humanize.Bytes.Uint64(m.BytesIngested),
-		humanize.Count.Uint64(m.TablesMoved),
-		humanize.Bytes.Uint64(m.BytesMoved),
-		humanize.Count.Uint64(m.TablesFlushed+m.TablesCompacted),
-		humanize.Bytes.Uint64(m.BytesFlushed+m.BytesCompacted),
-		humanize.Bytes.Uint64(m.BytesRead),
-		redact.Safe(m.Sublevels),
-		humanizeFloat(m.WriteAmp(), 4),
-	)
 }
 
 var _ redact.SafeFormatter = &Metrics{}

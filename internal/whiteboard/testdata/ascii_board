@@ -1,0 +1,60 @@
+make w=8 h=8
+----
+
+write
+1  0  hello
+1  1  world
+----
+ hello
+ world
+
+write
+0 0 .
+6 1 !
+----
+.hello
+ world!
+
+write
+24 0 1234567890
+----
+.hello                  1234567890
+ world!
+
+write
+0 9 boop!
+----
+----
+.hello                  1234567890
+ world!
+
+
+
+
+
+
+
+boop!
+----
+----
+
+make w=1 h=1
+----
+
+write
+1 1 X
+2 0 O
+0 0 X
+2 2 O
+----
+X O
+ X
+  O
+
+write
+2 1 X
+0 1 O
+----
+X O
+OXX
+  O

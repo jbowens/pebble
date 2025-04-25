@@ -500,7 +500,7 @@ func (d *dbT) runLSM(cmd *cobra.Command, args []string) {
 
 	fmt.Fprintf(stdout, "%s", db.Metrics())
 	if d.lsmURL {
-		fmt.Fprintf(stdout, "\nLSM viewer: %s\n", db.LSMViewURL())
+		fmt.Fprintf(stdout, "\n\nLSM viewer: %s\n", db.LSMViewURL())
 	}
 }
 
