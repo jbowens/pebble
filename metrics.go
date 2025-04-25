@@ -126,6 +126,7 @@ type LevelMetrics struct {
 
 // Add updates the counter metrics for the level.
 func (m *LevelMetrics) Add(u *LevelMetrics) {
+	m.Sublevels += u.Sublevels
 	m.TablesCount += u.TablesCount
 	m.VirtualTablesCount += u.VirtualTablesCount
 	m.VirtualTablesSize += u.VirtualTablesSize
@@ -499,7 +500,6 @@ func (m *Metrics) Total() LevelMetrics {
 	for level := 0; level < numLevels; level++ {
 		l := &m.Levels[level]
 		total.Add(l)
-		total.Sublevels += l.Sublevels
 	}
 	// Compute total bytes-in as the bytes written to the WAL + bytes ingested.
 	total.BytesIn = m.WAL.BytesWritten + total.BytesIngested
@@ -639,7 +639,6 @@ func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
 		w.Printf("%5d ", redact.Safe(level))
 		formatRow(l)
 		total.Add(l)
-		total.Sublevels += l.Sublevels
 	}
 	// Compute total bytes-in as the bytes written to the WAL + bytes ingested.
 	total.BytesIn = m.WAL.BytesWritten + total.BytesIngested
