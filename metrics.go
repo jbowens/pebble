@@ -565,32 +565,15 @@ func (m *Metrics) RemoteTablesTotal() (count uint64, size uint64) {
 //	Ingestions: 27  as flushable: 36 (34B in 35 tables)
 //	Cgo memory usage: 15KB  block cache: 9.0KB (data: 4.0KB, maps: 2.0KB, entries: 3.0KB)  memtables: 5.0KB
 func (m *Metrics) String() string {
-	const multilevelIndex = 124
-
-	wb := whiteboard.Make(multilevelIndex, 32)
-	wb.At(0, 0).WriteString("      |                             |                |       |   ingested   |     moved    |    written   |       |    amp")
-	wb.At(0, 1).WriteString("level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w")
-	wb.At(0, 2).WriteString("------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------")
-
-	writeLevelMetrics := func(wb whiteboard.Pos, m *LevelMetrics) {
-		score := m.Score
-		if score == 0 {
-			// Format a zero level score as a dash.
-			score = math.NaN()
-		}
-		wb.Printf("| %5s %6s %6s %7s | %4s %4s %4s | %5s | %5s %6s | %5s %6s | %5s %6s | %5s | %3d %4s",
+	writeLSMMetrics := func(wb whiteboard.Pos, m *LevelMetrics) {
+		wb.Printf("| %5s %6s %6s %7s | %5s | %5s %6s | %5s %6s | %5s | %3d %4s",
 			humanize.Count.Int64(m.TablesCount),
 			humanize.Bytes.Int64(m.TablesSize),
 			humanize.Bytes.Uint64(m.Additional.ValueBlocksSize),
 			humanize.Count.Uint64(m.VirtualTablesCount),
-			humanizeFloat(score, 4),
-			humanizeFloat(m.UncompensatedScore, 4),
-			humanizeFloat(m.CompensatedScore, 4),
 			humanize.Bytes.Uint64(m.BytesIn),
 			humanize.Count.Uint64(m.TablesIngested),
 			humanize.Bytes.Uint64(m.BytesIngested),
-			humanize.Count.Uint64(m.TablesMoved),
-			humanize.Bytes.Uint64(m.BytesMoved),
 			humanize.Count.Uint64(m.TablesFlushed+m.TablesCompacted),
 			humanize.Bytes.Uint64(m.BytesFlushed+m.BytesCompacted),
 			humanize.Bytes.Uint64(m.BytesRead),
@@ -598,12 +581,47 @@ func (m *Metrics) String() string {
 			humanizeFloat(m.WriteAmp(), 4),
 		)
 	}
+	writeCompactionLevelMetrics := func(wb whiteboard.Pos, lm *LevelMetrics) {
+		score := lm.Score
+		if score == 0 {
+			// Format a zero level score as a dash.
+			score = math.NaN()
+		}
+		wb.Printf(" %4s %4s %4s |  %5s %6s | %5s %5s %5s |",
+			humanizeFloat(score, 4),
+			humanizeFloat(lm.UncompensatedScore, 4),
+			humanizeFloat(lm.CompensatedScore, 4),
+			humanize.Count.Uint64(lm.TablesMoved),
+			humanize.Bytes.Uint64(lm.BytesMoved),
+			humanize.Bytes.Uint64(lm.MultiLevel.BytesInTop),
+			humanize.Bytes.Uint64(lm.MultiLevel.BytesIn),
+			humanize.Bytes.Uint64(lm.MultiLevel.BytesRead))
+	}
+	summarizeCompactions := func(w whiteboard.Pos, m *Metrics) {
+		w.Printf("in-progress: %d (%s) debt: %s",
+			m.Compact.NumInProgress,
+			humanize.Bytes.Int64(m.Compact.InProgressBytes),
+			humanize.Bytes.Uint64(m.Compact.EstimatedDebt))
+		w.Offset(00, 2).Printf("  default: % 5s", humanize.Count.Int64(m.Compact.DefaultCount))
+		w.Offset(19, 2).Printf("elide: % 5s", humanize.Count.Int64(m.Compact.ElisionOnlyCount))
+		w.Offset(00, 3).Printf("   delete: % 5s", humanize.Count.Int64(m.Compact.DeleteOnlyCount))
+		w.Offset(20, 3).Printf("move: % 5s", humanize.Count.Int64(m.Compact.MoveCount))
+		w.Offset(00, 4).Printf("tombdense: % 5s", humanize.Count.Int64(m.Compact.TombstoneDensityCount))
+		w.Offset(20, 4).Printf("read: % 5s", humanize.Count.Int64(m.Compact.ReadCount))
+		w.Offset(00, 5).Printf("  rewrite: % 5s", humanize.Count.Int64(m.Compact.RewriteCount))
+		w.Offset(20, 5).Printf("copy: % 5s", humanize.Count.Int64(m.Compact.CopyCount))
+		w.Offset(00, 6).Printf(" multilvl: % 5s", humanize.Count.Int64(m.Compact.MultiLevelCount))
+		w.Offset(19, 6).Printf("total: % 5s", humanize.Count.Int64(m.Compact.Count))
+	}
 
+	wb := whiteboard.Make(92, 64)
+	// Print the LSM level metrics table.
+	wb.At(0, 0).WriteString("LSM                                 |       |   ingested   |    written   |       |    amp")
+	wb.At(0, 1).WriteString("level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w")
+	wb.At(0, 2).WriteString("------+-----------------------------+-------+--------------+--------------+-------+---------")
 	var total LevelMetrics
 	for level := 0; level < numLevels; level++ {
-		w := wb.At(0, level+3)
-		w.Printf("%5d ", redact.Safe(level))
-		writeLevelMetrics(w.Offset(6, 0), &m.Levels[level])
+		writeLSMMetrics(wb.NewLine().Printf("%5d ", redact.Safe(level)), &m.Levels[level])
 		total.Add(&m.Levels[level])
 	}
 	// Compute total bytes-in as the bytes written to the WAL + bytes ingested.
@@ -612,35 +630,25 @@ func (m *Metrics) String() string {
 	// the bytes written to the log and bytes written externally and then
 	// ingested.
 	total.BytesFlushed += total.BytesIn
+	writeLSMMetrics(wb.NewLine().WriteString("total "), &total)
+
+	// Print the compaction metrics table.
+	wb.NewLine().WriteString("--------------------------------------------------------------------------------------------")
+	wb.NewLine().WriteString("COMPACTIONS                   moved         multilevel")
+	headerEnd := wb.NewLine().WriteString("level | score  uc    c | tables   size |   top    in  read |")
+	wb.NewLine().WriteString("------+----------------+---------------+-------------------+")
+	for level := 0; level < numLevels; level++ {
+		writeCompactionLevelMetrics(wb.NewLine().Printf("%5d |", level), &m.Levels[level])
+	}
 	total.Score = math.NaN()
 	total.CompensatedScore = math.NaN()
 	total.UncompensatedScore = math.NaN()
-	totalLine := wb.NewLine()
-	totalLine.WriteString("total ")
-	writeLevelMetrics(totalLine.Offset(6, 0), &total)
-
-	wb.NewLine().WriteString("----------------------------------------------------------------------------------------------------------------------------")
-
-	if m.Compact.MultiLevelCount > 0 {
-		wb.At(multilevelIndex, 0).WriteString(" |     multilevel")
-		wb.At(multilevelIndex, 1).WriteString(" |    top   in  read")
-		wb.At(multilevelIndex, 2).WriteString("-+------------------")
-		for level := range m.Levels {
-			wb.At(multilevelIndex, level+3).Printf(" | %5s %5s %5s",
-				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesInTop),
-				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesIn),
-				humanize.Bytes.Uint64(m.Levels[level].MultiLevel.BytesRead))
-		}
-		wb.At(multilevelIndex, 10).Printf(" | %5s %5s %5s",
-			humanize.Bytes.Uint64(total.MultiLevel.BytesInTop),
-			humanize.Bytes.Uint64(total.MultiLevel.BytesIn),
-			humanize.Bytes.Uint64(total.MultiLevel.BytesRead))
-		wb.At(multilevelIndex, 11).WriteString("--------------------")
-	}
+	writeCompactionLevelMetrics(wb.NewLine().Printf("total |"), &total)
+	summarizeCompactions(headerEnd.Offset(1, 0), m)
 
 	{
 		w := wb.NewLine()
-		w.Printf("WAL: %d files (%s)  in: %s  written: %s (%.0f%% overhead)",
+		w = w.Printf("WAL: %d files (%s)  in: %s  written: %s (%.0f%% overhead)",
 			redact.Safe(m.WAL.Files),
 			humanize.Bytes.Uint64(m.WAL.Size),
 			humanize.Bytes.Uint64(m.WAL.BytesIn),
@@ -655,21 +663,6 @@ func (m *Metrics) String() string {
 	}
 
 	wb.NewLine().Printf("Flushes: %d", redact.Safe(m.Flush.Count))
-	wb.NewLine().Printf("Compactions: %d  estimated debt: %s  in progress: %d (%s)",
-		redact.Safe(m.Compact.Count),
-		humanize.Bytes.Uint64(m.Compact.EstimatedDebt),
-		redact.Safe(m.Compact.NumInProgress),
-		humanize.Bytes.Int64(m.Compact.InProgressBytes))
-	wb.NewLine().Printf("             default: %d  delete: %d  elision: %d  move: %d  read: %d  tombstone-density: %d  rewrite: %d  copy: %d  multi-level: %d",
-		redact.Safe(m.Compact.DefaultCount),
-		redact.Safe(m.Compact.DeleteOnlyCount),
-		redact.Safe(m.Compact.ElisionOnlyCount),
-		redact.Safe(m.Compact.MoveCount),
-		redact.Safe(m.Compact.ReadCount),
-		redact.Safe(m.Compact.TombstoneDensityCount),
-		redact.Safe(m.Compact.RewriteCount),
-		redact.Safe(m.Compact.CopyCount),
-		redact.Safe(m.Compact.MultiLevelCount))
 	wb.NewLine().Printf("MemTables: %d (%s)  zombie: %d (%s)",
 		redact.Safe(m.MemTable.Count),
 		humanize.Bytes.Uint64(m.MemTable.Size),

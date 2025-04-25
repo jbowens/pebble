@@ -1,21 +1,30 @@
 example
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp   |     multilevel
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w  |    top   in  read
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+----------+------------------
-    0 |   101   102B     0B     101 | 1.10 2.10 0.30 |  104B |   112   104B |   113   106B |   221   217B |  107B |   1 2.09 |  104B  104B  104B
-    1 |   201   202B     0B     201 | 1.20 2.20 0.60 |  204B |   212   204B |   213   206B |   421   417B |  207B |   2 2.04 |  204B  204B  204B
-    2 |   301   302B     0B     301 | 1.30 2.30 0.90 |  304B |   312   304B |   313   306B |   621   617B |  307B |   3 2.03 |  304B  304B  304B
-    3 |   401   402B     0B     401 | 1.40 2.40 1.20 |  404B |   412   404B |   413   406B |   821   817B |  407B |   4 2.02 |  404B  404B  404B
-    4 |   501   502B     0B     501 | 1.50 2.50 1.50 |  504B |   512   504B |   513   506B |  1.0K  1017B |  507B |   5 2.02 |  504B  504B  504B
-    5 |   601   602B     0B     601 | 1.60 2.60 1.80 |  604B |   612   604B |   613   606B |  1.2K  1.2KB |  607B |   6 2.01 |  604B  604B  604B
-    6 |   701   702B     0B     701 |    - 2.70 2.10 |  704B |   712   704B |   713   706B |  1.4K  1.4KB |  707B |   7 2.01 |  704B  704B  704B
-total |  2.8K  2.7KB     0B    2.8K |    -    -    - | 2.8KB |  2.9K  2.8KB |  2.9K  2.8KB |  5.7K  8.4KB | 2.8KB |  28 3.00 | 2.8KB 2.8KB 2.8KB
-------------------------------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |   101   102B     0B     101 |  104B |   112   104B |   221   217B |  107B |   1 2.09
+    1 |   201   202B     0B     201 |  204B |   212   204B |   421   417B |  207B |   2 2.04
+    2 |   301   302B     0B     301 |  304B |   312   304B |   621   617B |  307B |   3 2.03
+    3 |   401   402B     0B     401 |  404B |   412   404B |   821   817B |  407B |   4 2.02
+    4 |   501   502B     0B     501 |  504B |   512   504B |  1.0K  1017B |  507B |   5 2.02
+    5 |   601   602B     0B     601 |  604B |   612   604B |  1.2K  1.2KB |  607B |   6 2.01
+    6 |   701   702B     0B     701 |  704B |   712   704B |  1.4K  1.4KB |  707B |   7 2.01
+total |  2.8K  2.7KB     0B    2.8K | 2.8KB |  2.9K  2.8KB |  5.7K  8.4KB | 2.8KB |  28 3.00
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 2 (7B) debt: 6B
+------+----------------------------------------------------+
+    0 | 1.10 2.10 0.30 |    113   106B |  104B  104B  104B |   default:    27   elide:    29
+    1 | 1.20 2.20 0.60 |    213   206B |  204B  204B  204B |    delete:    28    move:    30
+    2 | 1.30 2.30 0.90 |    313   306B |  304B  304B  304B | tombdense:    16    read:    31
+    3 | 1.40 2.40 1.20 |    413   406B |  404B  404B  404B |   rewrite:    32    copy:    33
+    4 | 1.50 2.50 1.50 |    513   506B |  504B  504B  504B |  multilvl:    34   total:     5
+    5 | 1.60 2.60 1.80 |    613   606B |  604B  604B  604B |
+    6 |    - 2.70 2.10 |    713   706B |  704B  704B  704B |
+total |    -    -    - |   2.9K  2.8KB | 2.8KB 2.8KB 2.8KB |
 WAL: 22 files (24B)  in: 25B  written: 26B (4% overhead)
 Flushes: 8
-Compactions: 5  estimated debt: 6B  in progress: 2 (7B)
-             default: 27  delete: 28  elision: 29  move: 30  read: 31  tombstone-density: 16  rewrite: 32  copy: 33  multi-level: 34
 MemTables: 12 (11B)  zombie: 14 (13B)
 Zombie tables: 16 (15B, local: 30B)
 Backing tables: 1 (2.0MB)
@@ -54,22 +63,41 @@ iter-new b category=b
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     1   751B     0B       0 |    - 0.25 0.25 |   28B |     0     0B |     0     0B |     1   751B |    0B |   1 26.8
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-total |     1   751B     0B       0 |    -    -    - |   28B |     0     0B |     0     0B |     1   779B |    0B |   1 27.8
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     1   751B     0B       0 |   28B |     0     0B |     1   751B |    0B |   1 26.8
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+total |     1   751B     0B       0 |   28B |     0     0B |     1   779B |    0B |   1 27.8
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------+---------------+-------------------+
+    0 |    - 0.25 0.25 |      0     0B |    0B    0B    0B |   default:     0   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     0
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    -    0    0 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
+ITERATORS
+ cache   ents    size      hit | filter util |  titers  |      snapshots |
+ ------------------------------+-------------+----------+----------------+
+ table      1    832B     0.0% |        0.0% |        1 |              0 |
+ block      2    795B     0.0% |
+              category           qos   blkbytes   blkbytescached   blkreaddur
+     pebble-compaction | non-latency |        0 |              0 |         0s |
+                     a | non-latency |        0 |              0 |         0s |
+                     b       latency |      112 |              0 |       10ms |
+
 WAL: 1 files (0B)  in: 17B  written: 28B (65% overhead)
 Flushes: 1
-Compactions: 0  estimated debt: 0B  in progress: 0 (0B)
-             default: 0  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -77,18 +105,9 @@ Virtual tables: 0 (0B)
 Local tables size: 751B
 Compression types: snappy: 1
 Table stats: all loaded
-Block cache: 2 entries (795B)  hit rate: 0.0%
-Table cache: 1 entries (832B)  hit rate: 0.0%
 Range key sets: 0  Tombstones: 0  Total missized tombstones encountered: 0
-Snapshots: 0  earliest seq num: 0
-Table iters: 1
-Filter utility: 0.0%
 Ingestions: 0  as flushable: 0 (0B in 0 tables)
 Cgo memory usage: 0B  block cache: 0B (data: 0B, maps: 0B, entries: 0B)  memtables: 0B
-Iter category stats:
-   pebble-compaction, non-latency: {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s}
-                   a, non-latency: {BlockBytes:0 BlockBytesInCache:0 BlockReadDuration:0s}
-                   b,     latency: {BlockBytes:112 BlockBytesInCache:0 BlockReadDuration:10ms}
 
 disk-usage
 ----
@@ -119,22 +138,31 @@ L6:
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |   64B |     0     0B |     0     0B |     2  1.5KB |    0B |   0 23.5
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     2  1.5KB     0B       0 |    - 0.00 0.00 | 1.5KB |     0     0B |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
-total |     2  1.5KB     0B       0 |    -    -    - |   64B |     0     0B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |   64B |     0     0B |     2  1.5KB |    0B |   0 23.5
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     2  1.5KB     0B       0 | 1.5KB |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
+total |     2  1.5KB     0B       0 |   64B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 34B  written: 64B (88% overhead)
 Flushes: 2
-Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 2 (512KB)
 Zombie tables: 2 (1.5KB, local: 1.5KB)
 Backing tables: 0 (0B)
@@ -167,22 +195,31 @@ iter-close a
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |   64B |     0     0B |     0     0B |     2  1.5KB |    0B |   0 23.5
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     2  1.5KB     0B       0 |    - 0.00 0.00 | 1.5KB |     0     0B |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
-total |     2  1.5KB     0B       0 |    -    -    - |   64B |     0     0B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |   64B |     0     0B |     2  1.5KB |    0B |   0 23.5
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     2  1.5KB     0B       0 | 1.5KB |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
+total |     2  1.5KB     0B       0 |   64B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 34B  written: 64B (88% overhead)
 Flushes: 2
-Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 2 (512KB)
 Zombie tables: 2 (1.5KB, local: 1.5KB)
 Backing tables: 0 (0B)
@@ -212,22 +249,31 @@ iter-close c
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |   64B |     0     0B |     0     0B |     2  1.5KB |    0B |   0 23.5
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     2  1.5KB     0B       0 |    - 0.00 0.00 | 1.5KB |     0     0B |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
-total |     2  1.5KB     0B       0 |    -    -    - |   64B |     0     0B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |   64B |     0     0B |     2  1.5KB |    0B |   0 23.5
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     2  1.5KB     0B       0 | 1.5KB |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
+total |     2  1.5KB     0B       0 |   64B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 34B  written: 64B (88% overhead)
 Flushes: 2
-Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 2 (512KB)
 Zombie tables: 1 (751B, local: 751B)
 Backing tables: 0 (0B)
@@ -260,22 +306,31 @@ iter-close b
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |   64B |     0     0B |     0     0B |     2  1.5KB |    0B |   0 23.5
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     2  1.5KB     0B       0 |    - 0.00 0.00 | 1.5KB |     0     0B |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
-total |     2  1.5KB     0B       0 |    -    -    - |   64B |     0     0B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |   64B |     0     0B |     2  1.5KB |    0B |   0 23.5
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     2  1.5KB     0B       0 | 1.5KB |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
+total |     2  1.5KB     0B       0 |   64B |     0     0B |     4  3.0KB | 1.5KB |   1 48.0
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 34B  written: 64B (88% overhead)
 Flushes: 2
-Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -339,22 +394,31 @@ L6:
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     7  5.2KB     0B       0 |    - 0.25 0.25 |  165B |     0     0B |     0     0B |     9  6.7KB |    0B |   1 41.6
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     2  1.5KB     0B       0 |    - 0.00 0.00 | 1.5KB |     0     0B |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
-total |     9  6.7KB     0B       0 |    -    -    - |  165B |     0     0B |     0     0B |    11  8.3KB | 1.5KB |   2 51.7
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     7  5.2KB     0B       0 |  165B |     0     0B |     9  6.7KB |    0B |   1 41.6
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     2  1.5KB     0B       0 | 1.5KB |     0     0B |     2  1.5KB | 1.5KB |   1 1.00
+total |     9  6.7KB     0B       0 |  165B |     0     0B |    11  8.3KB | 1.5KB |   2 51.7
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 6.7KB
+------+----------------------------------------------------+
+    0 |    - 0.25 0.25 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 116B  written: 165B (42% overhead)
 Flushes: 3
-Compactions: 1  estimated debt: 6.7KB  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -403,22 +467,31 @@ L6:
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |  165B |     0     0B |     0     0B |     9  6.7KB |    0B |   0 41.6
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     9  6.6KB     0B       0 |    - 0.00 0.00 | 6.7KB |     0     0B |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
-total |     9  6.6KB     0B       0 |    -    -    - |  165B |     0     0B |     0     0B |    18   14KB | 6.7KB |   1 83.7
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |  165B |     0     0B |     9  6.7KB |    0B |   0 41.6
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     9  6.6KB     0B       0 | 6.7KB |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
+total |     9  6.6KB     0B       0 |  165B |     0     0B |    18   14KB | 6.7KB |   1 83.7
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     2   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     2
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 116B  written: 165B (42% overhead)
 Flushes: 3
-Compactions: 2  estimated debt: 0B  in progress: 0 (0B)
-             default: 2  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -518,22 +591,31 @@ L6:
 # iterator.
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     6  4.4KB     0B       0 |    - 0.50 0.50 |  211B |     3  2.2KB |     0     0B |    12  8.9KB |    0B |   2 43.2
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     9  6.6KB     0B       0 |    - 0.00 0.00 | 6.7KB |     0     0B |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
-total |    15   11KB     0B       0 |    -    -    - | 2.4KB |     3  2.2KB |     0     0B |    21   18KB | 6.7KB |   3 7.43
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     6  4.4KB     0B       0 |  211B |     3  2.2KB |    12  8.9KB |    0B |   2 43.2
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     9  6.6KB     0B       0 | 6.7KB |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
+total |    15   11KB     0B       0 | 2.4KB |     3  2.2KB |    21   18KB | 6.7KB |   3 7.43
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 11KB
+------+----------------------------------------------------+
+    0 |    - 0.50 0.50 |      0     0B |    0B    0B    0B |   default:     2   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     2
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 176B  written: 211B (20% overhead)
 Flushes: 8
-Compactions: 2  estimated debt: 11KB  in progress: 0 (0B)
-             default: 2  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (1.0MB)  zombie: 1 (1.0MB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -595,22 +677,31 @@ L6:
 
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |    13  9.5KB     0B       0 |    - 0.50 0.50 |  277B |     3  2.2KB |     0     0B |    19   14KB |    0B |   2 51.9
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     9  6.6KB     0B       0 |    - 0.00 0.00 | 6.7KB |     0     0B |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
-total |    22   16KB     0B       0 |    -    -    - | 2.5KB |     3  2.2KB |     0     0B |    28   23KB | 6.7KB |   3 9.33
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |    13  9.5KB     0B       0 |  277B |     3  2.2KB |    19   14KB |    0B |   2 51.9
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     9  6.6KB     0B       0 | 6.7KB |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
+total |    22   16KB     0B       0 | 2.5KB |     3  2.2KB |    28   23KB | 6.7KB |   3 9.33
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 16KB
+------+----------------------------------------------------+
+    0 |    - 0.50 0.50 |      0     0B |    0B    0B    0B |   default:     2   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     2
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 223B  written: 277B (24% overhead)
 Flushes: 9
-Compactions: 2  estimated debt: 16KB  in progress: 0 (0B)
-             default: 2  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (1.0MB)  zombie: 1 (1.0MB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -684,22 +775,31 @@ virtual-size
 
 metrics zero-cache-hits-misses
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |    11  8.1KB     0B       0 |    - 0.50 0.50 |  277B |     3  2.2KB |     0     0B |    19   14KB |    0B |   2 51.9
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |    10  7.4KB     0B       0 |    - 0.00 0.00 | 6.7KB |     1   754B |     0     0B |     9  6.6KB | 6.7KB |   1 0.99
-total |    21   15KB     0B       0 |    -    -    - | 3.2KB |     4  2.9KB |     0     0B |    28   24KB | 6.7KB |   3 7.42
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |    11  8.1KB     0B       0 |  277B |     3  2.2KB |    19   14KB |    0B |   2 51.9
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |    10  7.4KB     0B       0 | 6.7KB |     1   754B |     9  6.6KB | 6.7KB |   1 0.99
+total |    21   15KB     0B       0 | 3.2KB |     4  2.9KB |    28   24KB | 6.7KB |   3 7.42
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 15KB
+------+----------------------------------------------------+
+    0 |    - 0.50 0.50 |      0     0B |    0B    0B    0B |   default:     2   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     2
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 223B  written: 277B (24% overhead)
 Flushes: 9
-Compactions: 2  estimated debt: 15KB  in progress: 0 (0B)
-             default: 2  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (1.0MB)  zombie: 1 (1.0MB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -809,22 +909,31 @@ virtual-size
 
 metrics zero-cache-hits-misses
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |  277B |     3  2.2KB |     0     0B |    19   14KB |    0B |   0 51.9
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |    18   13KB     0B       0 |    - 0.00 0.00 |  14KB |     2  1.5KB |     0     0B |    16   12KB |  14KB |   1 0.84
-total |    18   13KB     0B       0 |    -    -    - | 3.9KB |     5  3.7KB |     0     0B |    35   30KB |  14KB |   1 7.55
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |  277B |     3  2.2KB |    19   14KB |    0B |   0 51.9
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |    18   13KB     0B       0 |  14KB |     2  1.5KB |    16   12KB |  14KB |   1 0.84
+total |    18   13KB     0B       0 | 3.9KB |     5  3.7KB |    35   30KB |  14KB |   1 7.55
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     3   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     3
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 223B  written: 277B (24% overhead)
 Flushes: 9
-Compactions: 3  estimated debt: 0B  in progress: 0 (0B)
-             default: 3  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (1.0MB)  zombie: 1 (1.0MB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -867,22 +976,31 @@ L0.0:
 # One local table.
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     3  2.2KB     0B       0 |    - 0.25 0.25 |   38B |     0     0B |     0     0B |     3  2.2KB |    0B |   1 59.3
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-total |     3  2.2KB     0B       0 |    -    -    - |   38B |     0     0B |     0     0B |     3  2.2KB |    0B |   1 60.3
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     3  2.2KB     0B       0 |   38B |     0     0B |     3  2.2KB |    0B |   1 59.3
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+total |     3  2.2KB     0B       0 |   38B |     0     0B |     3  2.2KB |    0B |   1 60.3
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    - 0.25 0.25 |      0     0B |    0B    0B    0B |   default:     0   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     0
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    -    0    0 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 27B  written: 38B (41% overhead)
 Flushes: 1
-Compactions: 0  estimated debt: 0B  in progress: 0 (0B)
-             default: 0  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -911,22 +1029,31 @@ L6:
 # Table becomes shared, so local table size becomes 0.
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |   38B |     0     0B |     0     0B |     3  2.2KB |    0B |   0 59.3
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     3  2.2KB     0B       0 |    - 0.00 0.00 | 2.2KB |     0     0B |     0     0B |     3  2.2KB | 2.2KB |   1 1.00
-total |     3  2.2KB     0B       0 |    -    -    - |   38B |     0     0B |     0     0B |     6  4.4KB | 2.2KB |   1  120
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |   38B |     0     0B |     3  2.2KB |    0B |   0 59.3
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     3  2.2KB     0B       0 | 2.2KB |     0     0B |     3  2.2KB | 2.2KB |   1 1.00
+total |     3  2.2KB     0B       0 |   38B |     0     0B |     6  4.4KB | 2.2KB |   1  120
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 27B  written: 38B (41% overhead)
 Flushes: 1
-Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -971,22 +1098,31 @@ L6:
 # Ingest is also shared table, so local table size stays 0.
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     1   754B     0B       0 |    - 0.25 0.25 |   38B |     1   754B |     0     0B |     3  2.2KB |    0B |   1 59.3
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     3  2.2KB     0B       0 |    - 0.00 0.00 | 2.2KB |     0     0B |     0     0B |     3  2.2KB | 2.2KB |   1 1.00
-total |     4  2.9KB     0B       0 |    -    -    - |  792B |     1   754B |     0     0B |     6  5.2KB | 2.2KB |   2 6.70
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     1   754B     0B       0 |   38B |     1   754B |     3  2.2KB |    0B |   1 59.3
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     3  2.2KB     0B       0 | 2.2KB |     0     0B |     3  2.2KB | 2.2KB |   1 1.00
+total |     4  2.9KB     0B       0 |  792B |     1   754B |     6  5.2KB | 2.2KB |   2 6.70
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 2.9KB
+------+----------------------------------------------------+
+    0 |    - 0.25 0.25 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 27B  written: 38B (41% overhead)
 Flushes: 1
-Compactions: 1  estimated debt: 2.9KB  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -1023,22 +1159,31 @@ L6:
 # Local table size increases due to flush.
 metrics
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     2  1.5KB     0B       0 |    - 0.50 0.50 |   74B |     1   754B |     0     0B |     4  2.9KB |    0B |   2 40.6
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     3  2.2KB     0B       0 |    - 0.00 0.00 | 2.2KB |     0     0B |     0     0B |     3  2.2KB | 2.2KB |   1 1.00
-total |     5  3.7KB     0B       0 |    -    -    - |  828B |     1   754B |     0     0B |     7  6.0KB | 2.2KB |   3 7.36
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     2  1.5KB     0B       0 |   74B |     1   754B |     4  2.9KB |    0B |   2 40.6
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     3  2.2KB     0B       0 | 2.2KB |     0     0B |     3  2.2KB | 2.2KB |   1 1.00
+total |     5  3.7KB     0B       0 |  828B |     1   754B |     7  6.0KB | 2.2KB |   3 7.36
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 3.7KB
+------+----------------------------------------------------+
+    0 |    - 0.50 0.50 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 44B  written: 74B (68% overhead)
 Flushes: 2
-Compactions: 1  estimated debt: 3.7KB  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (256KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -1064,22 +1209,31 @@ init reopen
 
 metrics zero-cache-hits-misses
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     2  1.5KB     0B       0 |    - 0.50 0.50 |    0B |     0     0B |     0     0B |     0     0B |    0B |   2    0
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     3  2.2KB     0B       0 |    - 0.00 0.00 |    0B |     0     0B |     0     0B |     0     0B |    0B |   1    0
-total |     5  3.7KB     0B       0 |    -    -    - |    0B |     0     0B |     0     0B |     0     0B |    0B |   3    0
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     2  1.5KB     0B       0 |    0B |     0     0B |     0     0B |    0B |   2    0
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     3  2.2KB     0B       0 |    0B |     0     0B |     0     0B |    0B |   1    0
+total |     5  3.7KB     0B       0 |    0B |     0     0B |     0     0B |    0B |   3    0
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 3.7KB
+------+----------------------------------------------------+
+    0 |    - 0.50 0.50 |      0     0B |    0B    0B    0B |   default:     0   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     0
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 0B  written: 0B (0% overhead)
 Flushes: 1
-Compactions: 0  estimated debt: 3.7KB  in progress: 0 (0B)
-             default: 0  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (512KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
@@ -1108,22 +1262,31 @@ L6:
 # All tables are local after compaction.
 metrics zero-cache-hits-misses
 ----
-      |                             |                |       |   ingested   |     moved    |    written   |       |    amp
-level | tables  size val-bl vtables | score  uc    c |   in  | tables  size | tables  size | tables  size |  read |   r   w
-------+-----------------------------+----------------+-------+--------------+--------------+--------------+-------+---------
-    0 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    1 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    2 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    3 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    4 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    5 |     0     0B     0B       0 |    -    0    0 |    0B |     0     0B |     0     0B |     0     0B |    0B |   0    0
-    6 |     3  2.2KB     0B       0 |    - 0.00 0.00 | 1.5KB |     0     0B |     0     0B |     1   754B | 2.2KB |   1 0.50
-total |     3  2.2KB     0B       0 |    -    -    - |    0B |     0     0B |     0     0B |     1   754B | 2.2KB |   1    0
-----------------------------------------------------------------------------------------------------------------------------
+LSM                                 |       |   ingested   |    written   |       |    amp
+level | tables  size val-bl vtables |   in  | tables  size | tables  size |  read |   r   w
+------+-----------------------------+-------+--------------+--------------+-------+---------
+    0 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    1 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    2 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    3 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    4 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    5 |     0     0B     0B       0 |    0B |     0     0B |     0     0B |    0B |   0    0
+    6 |     3  2.2KB     0B       0 | 1.5KB |     0     0B |     1   754B | 2.2KB |   1 0.50
+total |     3  2.2KB     0B       0 |    0B |     0     0B |     1   754B | 2.2KB |   1    0
+--------------------------------------------------------------------------------------------
+COMPACTIONS                   moved         multilevel
+level | score  uc    c | tables   size |   top    in  read | in-progress: 0 (0B) debt: 0B
+------+----------------------------------------------------+
+    0 |    -    0    0 |      0     0B |    0B    0B    0B |   default:     1   elide:     0
+    1 |    -    0    0 |      0     0B |    0B    0B    0B |    delete:     0    move:     0
+    2 |    -    0    0 |      0     0B |    0B    0B    0B | tombdense:     0    read:     0
+    3 |    -    0    0 |      0     0B |    0B    0B    0B |   rewrite:     0    copy:     0
+    4 |    -    0    0 |      0     0B |    0B    0B    0B |  multilvl:     0   total:     1
+    5 |    -    0    0 |      0     0B |    0B    0B    0B |
+    6 |    - 0.00 0.00 |      0     0B |    0B    0B    0B |
+total |    -    -    - |      0     0B |    0B    0B    0B |
 WAL: 1 files (0B)  in: 0B  written: 0B (0% overhead)
 Flushes: 1
-Compactions: 1  estimated debt: 0B  in progress: 0 (0B)
-             default: 1  delete: 0  elision: 0  move: 0  read: 0  tombstone-density: 0  rewrite: 0  copy: 0  multi-level: 0
 MemTables: 1 (512KB)  zombie: 1 (256KB)
 Zombie tables: 0 (0B, local: 0B)
 Backing tables: 0 (0B)
