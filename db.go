@@ -506,6 +506,10 @@ type DB struct {
 		}
 	}
 
+	// checkLevelsWaitGroup is used to wait for background level checking to
+	// complete.
+	checkLevelsWaitGroup sync.WaitGroup
+
 	// problemSpans keeps track of spans of keys within LSM levels where
 	// compactions have failed; used to avoid retrying these compactions too
 	// quickly.
@@ -1653,6 +1657,7 @@ func (d *DB) Close() error {
 	if err := d.closed.Load(); err != nil {
 		panic(err)
 	}
+	d.checkLevelsWaitGroup.Wait()
 	d.compactionSchedulers.Wait()
 	// Compactions can be asynchronously started by the CompactionScheduler
 	// calling d.Schedule. When this Unregister returns, we know that the

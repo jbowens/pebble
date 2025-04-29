@@ -1165,7 +1165,8 @@ var JemallocSizeClasses = sstable.JemallocSizeClasses
 // It may be set in the DebugCheck field of Options to check
 // level invariants whenever a new version is installed.
 func DebugCheckLevels(db *DB) error {
-	return db.CheckLevels(nil)
+	db.CheckLevelsAsync()
+	return nil
 }
 
 // EnsureDefaults ensures that the default values for all options are set if a

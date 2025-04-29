@@ -350,6 +350,7 @@ func iterateAndCheckTombstones(
 type checkConfig struct {
 	logger    Logger
 	comparer  *Comparer
+	fc        *fileCacheHandle
 	readState *readState
 	newIters  tableNewIters
 	seqNum    base.SeqNum
@@ -528,6 +529,26 @@ type CheckLevelsStats struct {
 //   - Range delete tombstones in sstables are ordered and fragmented.
 //   - Successful processing of all MERGE records.
 func (d *DB) CheckLevels(stats *CheckLevelsStats) error {
+	return checkLevelsInternal(d.makeCheckConfig(stats))
+}
+
+// CheckLevelsAsync is like CheckLevels but performs validation in the
+// background. If it discovers an inconsistency, it'll fatal the DB's logger.
+func (d *DB) CheckLevelsAsync() {
+	// Call makeCheckConfig synchronously to acquire the current readState. This
+	// ensures if CheckLevelsAsync is called through Options.DebugCheck, every
+	// read state is validated.
+	checkConfig := d.makeCheckConfig(nil)
+	d.checkLevelsWaitGroup.Add(1)
+	go func() {
+		defer d.checkLevelsWaitGroup.Done()
+		if err := checkLevelsInternal(checkConfig); err != nil {
+			d.opts.Logger.Fatalf("level checker failed: %s", err)
+		}
+	}()
+}
+
+func (d *DB) makeCheckConfig(stats *CheckLevelsStats) *checkConfig {
 	// Grab and reference the current readState.
 	readState := d.loadReadState()
 	defer readState.unref()
@@ -536,9 +557,10 @@ func (d *DB) CheckLevels(stats *CheckLevelsStats) error {
 	// memtables) above.
 	seqNum := d.mu.versions.visibleSeqNum.Load()
 
-	checkConfig := &checkConfig{
+	return &checkConfig{
 		logger:    d.opts.Logger,
 		comparer:  d.opts.Comparer,
+		fc:        d.fileCache,
 		readState: readState,
 		newIters:  d.newIters,
 		seqNum:    seqNum,
@@ -549,12 +571,11 @@ func (d *DB) CheckLevels(stats *CheckLevelsStats) error {
 			// TODO(jackson): Add categorized stats.
 		},
 	}
-	checkConfig.blobValueFetcher.Init(d.fileCache, checkConfig.readEnv)
-	defer func() { _ = checkConfig.blobValueFetcher.Close() }()
-	return checkLevelsInternal(checkConfig)
 }
 
 func checkLevelsInternal(c *checkConfig) (err error) {
+	c.blobValueFetcher.Init(c.fc, c.readEnv)
+	defer func() { _ = c.blobValueFetcher.Close() }()
 	internalOpts := internalIterOpts{
 		readEnv:          sstable.ReadEnv{Block: c.readEnv},
 		blobValueFetcher: &c.blobValueFetcher,
