@@ -9,21 +9,22 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/base"
-	"github.com/cockroachdb/pebble/sstable/valblk"
 	"github.com/cockroachdb/redact"
 )
 
 // MaxInlineHandleLength is the maximum length of an inline blob handle.
 //
 // Handle fields are varint encoded, so maximum 5 bytes each.
-const MaxInlineHandleLength = 4 * binary.MaxVarintLen32
+const MaxInlineHandleLength = 3 * binary.MaxVarintLen32
+
+// TODO(jackson): Guard against overflow.
+type ValueID uint32
 
 // Handle describes the location of a value stored within a blob file.
 type Handle struct {
-	FileNum       base.DiskFileNum
-	BlockNum      uint32
-	OffsetInBlock uint32
-	ValueLen      uint32
+	FileNum  base.DiskFileNum
+	ValueLen uint32
+	ValueID  ValueID
 }
 
 // String implements the fmt.Stringer interface.
@@ -33,8 +34,7 @@ func (h Handle) String() string {
 
 // SafeFormat implements redact.SafeFormatter.
 func (h Handle) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("(%s,blk%d[%d:%d])",
-		h.FileNum, h.BlockNum, h.OffsetInBlock, h.OffsetInBlock+h.ValueLen)
+	w.Printf("(%s,id%d,len%d)", h.FileNum, h.ValueID, h.ValueLen)
 }
 
 // TODO(jackson): Consider encoding the handle's data using columnar block
@@ -66,20 +66,19 @@ type InlineHandlePreface struct {
 	ValueLen    uint32
 }
 
+// TODO(jackson): If we never need to add additional fields to the HandleSuffix,
+// consider removing it and just using the ValueID directly.
+
 // HandleSuffix is the suffix of an inline handle. It's decoded only when the
 // value is being fetched from the blob file.
 type HandleSuffix struct {
-	BlockNum      uint32
-	OffsetInBlock uint32
+	ValueID ValueID
 }
 
 // Encode encodes the handle suffix into the provided buffer, returning the
 // number of bytes encoded.
 func (h HandleSuffix) Encode(b []byte) int {
-	n := 0
-	n += binary.PutUvarint(b[n:], uint64(h.BlockNum))
-	n += binary.PutUvarint(b[n:], uint64(h.OffsetInBlock))
-	return n
+	return binary.PutUvarint(b, uint64(h.ValueID))
 }
 
 // String implements the fmt.Stringer interface.
@@ -89,8 +88,7 @@ func (h InlineHandle) String() string {
 
 // SafeFormat implements redact.SafeFormatter.
 func (h InlineHandle) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("(f%d,blk%d[%d:%d])",
-		h.ReferenceID, h.BlockNum, h.OffsetInBlock, h.OffsetInBlock+h.ValueLen)
+	w.Printf("(f%d,id%d,len%d)", h.ReferenceID, h.ValueID, h.ValueLen)
 }
 
 // Encode encodes the inline handle into the provided buffer, returning the
@@ -98,11 +96,8 @@ func (h InlineHandle) SafeFormat(w redact.SafePrinter, _ rune) {
 func (h InlineHandle) Encode(b []byte) int {
 	n := 0
 	n += binary.PutUvarint(b[n:], uint64(h.ReferenceID))
-	n += valblk.EncodeHandle(b[n:], valblk.Handle{
-		BlockNum:      h.BlockNum,
-		OffsetInBlock: h.OffsetInBlock,
-		ValueLen:      h.ValueLen,
-	})
+	n += binary.PutUvarint(b[n:], uint64(h.ValueLen))
+	n += h.HandleSuffix.Encode(b[n:])
 	return n
 }
 
@@ -155,12 +150,21 @@ func DecodeInlineHandlePreface(src []byte) (InlineHandlePreface, []byte) {
 	}, src
 }
 
-// DecodeHandleSuffix decodes the block number and offset in block from the
-// encoded handle.
+// DecodeHandleSuffix decodes the HandleSuffix from the provided buffer.
 func DecodeHandleSuffix(src []byte) HandleSuffix {
-	h := valblk.DecodeRemainingHandle(src)
-	return HandleSuffix{
-		BlockNum:      h.BlockNum,
-		OffsetInBlock: h.OffsetInBlock,
+	ptr := unsafe.Pointer(&src[0])
+	var valueID uint32
+	if a := *((*uint8)(ptr)); a < 128 {
+		valueID = uint32(a)
+	} else if a, b := a&0x7f, *((*uint8)(unsafe.Add(ptr, 1))); b < 128 {
+		valueID = uint32(b)<<7 | uint32(a)
+	} else if b, c := b&0x7f, *((*uint8)(unsafe.Add(ptr, 2))); c < 128 {
+		valueID = uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+	} else if c, d := c&0x7f, *((*uint8)(unsafe.Add(ptr, 3))); d < 128 {
+		valueID = uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+	} else {
+		d, e := d&0x7f, *((*uint8)(unsafe.Add(ptr, 4)))
+		valueID = uint32(e)<<28 | uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
 	}
+	return HandleSuffix{ValueID: ValueID(valueID)}
 }

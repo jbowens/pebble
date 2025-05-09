@@ -1,30 +1,40 @@
 build
-10 20
-35 100
-140 10
-155 100
-260 51
-316 10
+10 20 100
+35 100 203
+140 10 295
+155 100 959
+260 51 1000
+316 10 1050
 ----
 index-block-decoder
  └── index block header
       ├── columnar block header
       │    ├── 00-01: x 01       # version 1
-      │    ├── 01-03: x 0100     # 1 columns
+      │    ├── 01-03: x 0200     # 2 columns
       │    ├── 03-07: x 06000000 # 6 rows
       │    ├── 07-08: b 00000010 # col 0: uint
-      │    └── 08-12: x 0c000000 # col 0: page start 12
+      │    ├── 08-12: x 11000000 # col 0: page start 17
+      │    ├── 12-13: b 00000010 # col 1: uint
+      │    └── 13-17: x 1e000000 # col 1: page start 30
       ├── data for column 0 (uint)
-      │    ├── 12-13: x 02   # encoding: 2b
-      │    ├── 13-14: x 00   # padding (aligning to 16-bit boundary)
-      │    ├── 14-16: x 0a00 # data[0] = 10
-      │    ├── 16-18: x 2300 # data[1] = 35
-      │    ├── 18-20: x 8c00 # data[2] = 140
-      │    ├── 20-22: x 9b00 # data[3] = 155
-      │    ├── 22-24: x 0401 # data[4] = 260
-      │    ├── 24-26: x 3c01 # data[5] = 316
-      │    └── 26-28: x 4b01 # data[6] = 331
-      └── 28-29: x 00 # block padding byte
+      │    ├── 17-18: x 02   # encoding: 2b
+      │    ├── 18-20: x 6400 # data[0] = 100
+      │    ├── 20-22: x cb00 # data[1] = 203
+      │    ├── 22-24: x 2701 # data[2] = 295
+      │    ├── 24-26: x bf03 # data[3] = 959
+      │    ├── 26-28: x e803 # data[4] = 1000
+      │    └── 28-30: x 1a04 # data[5] = 1050
+      ├── data for column 1 (uint)
+      │    ├── 30-31: x 02   # encoding: 2b
+      │    ├── 31-32: x 00   # padding (aligning to 16-bit boundary)
+      │    ├── 32-34: x 0a00 # data[0] = 10
+      │    ├── 34-36: x 2300 # data[1] = 35
+      │    ├── 36-38: x 8c00 # data[2] = 140
+      │    ├── 38-40: x 9b00 # data[3] = 155
+      │    ├── 40-42: x 0401 # data[4] = 260
+      │    ├── 42-44: x 3c01 # data[5] = 316
+      │    └── 44-46: x 4b01 # data[6] = 331
+      └── 46-47: x 00 # block padding byte
 
 get 0 1 2 3 4 5
 ----
@@ -34,3 +44,39 @@ get 0 1 2 3 4 5
 3: (155, 100)
 4: (260, 51)
 5: (316, 10)
+
+seek 0 1 2 3 4 5 99 100 101
+----
+0: blk0
+1: blk0
+2: blk0
+3: blk0
+4: blk0
+5: blk0
+99: blk0
+100: blk0
+101: blk1
+
+seek 105 202 203 204 959 958 1000 1050 1051
+----
+105: blk1
+202: blk1
+203: blk1
+204: blk2
+959: blk3
+958: blk3
+1000: blk4
+1050: blk5
+1051: blk6
+
+# Seek exactly to each block's max value ID. Each should seek to the successor
+# block.
+
+seek 100 203 295 959 1000 1050
+----
+100: blk0
+203: blk1
+295: blk2
+959: blk3
+1000: blk4
+1050: blk5

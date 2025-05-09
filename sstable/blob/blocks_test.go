@@ -28,14 +28,16 @@ func TestIndexBlockEncoding(t *testing.T) {
 			e.Init()
 			for _, line := range crstrings.Lines(d.Input) {
 				fields := strings.Fields(line)
-				require.Len(t, fields, 2)
+				require.Len(t, fields, 3)
 				var err error
 				var h block.Handle
 				h.Offset, err = strconv.ParseUint(fields[0], 10, 64)
 				require.NoError(t, err)
 				h.Length, err = strconv.ParseUint(fields[1], 10, 64)
 				require.NoError(t, err)
-				e.AddBlockHandle(h)
+				maxValueID, err := strconv.ParseUint(fields[2], 10, 64)
+				require.NoError(t, err)
+				e.AddBlockHandle(h, ValueID(maxValueID))
 			}
 
 			data := e.Finish()
@@ -44,12 +46,21 @@ func TestIndexBlockEncoding(t *testing.T) {
 			return buf.String()
 		case "get":
 			for _, arg := range d.CmdArgs {
-				blockNum, err := strconv.Atoi(arg.Key)
+				blockIndex, err := strconv.Atoi(arg.Key)
 				require.NoError(t, err)
-				h := decoder.BlockHandle(uint32(blockNum))
-				fmt.Fprintf(&buf, "%d: %s\n", blockNum, h)
+				h := decoder.BlockHandle(blockIndex)
+				fmt.Fprintf(&buf, "%d: %s\n", blockIndex, h)
 			}
 			return buf.String()
+		case "seek":
+			for _, arg := range d.CmdArgs {
+				valueIndex, err := strconv.Atoi(arg.Key)
+				require.NoError(t, err)
+				idx := decoder.Seek(ValueID(valueIndex))
+				fmt.Fprintf(&buf, "%d: blk%d\n", valueIndex, idx)
+			}
+			return buf.String()
+
 		default:
 			panic(fmt.Sprintf("unknown command: %s", d.Cmd))
 		}

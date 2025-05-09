@@ -90,8 +90,7 @@ func TestHandleRoundtrip(t *testing.T) {
 				ValueLen:    29357353,
 			},
 			HandleSuffix: HandleSuffix{
-				BlockNum:      194,
-				OffsetInBlock: 32911,
+				ValueID: 194,
 			},
 		},
 		{
@@ -100,8 +99,7 @@ func TestHandleRoundtrip(t *testing.T) {
 				ValueLen:    205,
 			},
 			HandleSuffix: HandleSuffix{
-				BlockNum:      2,
-				OffsetInBlock: 20,
+				ValueID: 23965703,
 			},
 		},
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/objiotracing"
@@ -80,10 +81,9 @@ func (r *ValueFetcher) Fetch(
 ) (val []byte, callerOwned bool, err error) {
 	handleSuffix := DecodeHandleSuffix(handle)
 	vh := Handle{
-		FileNum:       fileNum,
-		ValueLen:      valLen,
-		BlockNum:      handleSuffix.BlockNum,
-		OffsetInBlock: handleSuffix.OffsetInBlock,
+		FileNum:  fileNum,
+		ValueLen: valLen,
+		ValueID:  handleSuffix.ValueID,
 	}
 	v, err := r.retrieve(ctx, vh)
 	return v, false, err
@@ -147,17 +147,29 @@ func (r *ValueFetcher) Close() error {
 // cachedReader holds a Reader into an open file, and possibly blocks retrieved
 // from the block cache.
 type cachedReader struct {
-	fileNum            base.DiskFileNum
-	r                  ValueReader
-	closeFunc          func()
-	rh                 objstorage.ReadHandle
-	lastFetchCount     int
-	currentBlockNum    uint32
-	currentBlockLoaded bool
-	currentBlockBuf    block.BufferHandle
-	indexBlockBuf      block.BufferHandle
-	indexBlockDecoder  *indexBlockDecoder
-	preallocRH         objstorageprovider.PreallocatedReadHandle
+	fileNum        base.DiskFileNum
+	r              ValueReader
+	closeFunc      func()
+	rh             objstorage.ReadHandle
+	lastFetchCount int
+	// indexBlock holds the index block for the file, lazily loaded on the first
+	// call to GetUnsafeValue.
+	indexBlock struct {
+		buf block.BufferHandle
+		dec *indexBlockDecoder
+	}
+	// currentValueBlock holds the currently loaded blob value block, if any.
+	currentValueBlock struct {
+		// index is the index of the current value block.
+		// index is in the range [0, indexBlock.dec.BlockCount()).
+		index int
+		// loaded indicates whether buf and dec are valid and hold the block
+		// identified by index.
+		loaded bool
+		buf    block.BufferHandle
+		dec    *blobValueBlockDecoder
+	}
+	preallocRH objstorageprovider.PreallocatedReadHandle
 }
 
 // GetUnsafeValue retrieves the value for the given handle. The value is
@@ -169,36 +181,59 @@ func (cr *cachedReader) GetUnsafeValue(
 ) ([]byte, error) {
 	ctx = objiotracing.WithBlockType(ctx, objiotracing.ValueBlock)
 
-	if !cr.indexBlockBuf.Valid() {
+	if !cr.indexBlock.buf.Valid() {
 		// Read the index block.
 		var err error
-		cr.indexBlockBuf, err = cr.r.ReadIndexBlock(ctx, env, cr.rh)
+		cr.indexBlock.buf, err = cr.r.ReadIndexBlock(ctx, env, cr.rh)
 		if err != nil {
 			return nil, err
 		}
-		cr.indexBlockDecoder = (*indexBlockDecoder)(unsafe.Pointer(cr.indexBlockBuf.BlockMetadata()))
+		cr.indexBlock.dec = (*indexBlockDecoder)(unsafe.Pointer(cr.indexBlock.buf.BlockMetadata()))
 	}
 
-	if !cr.currentBlockLoaded || vh.BlockNum != cr.currentBlockNum {
-		// Translate the handle's block number into a block handle via the blob
-		// file's index block.
-		h := cr.indexBlockDecoder.BlockHandle(vh.BlockNum)
-		cr.currentBlockBuf.Release()
-		cr.currentBlockLoaded = false
+	// Determine which block contains the value.
+	//
+	// If we already have a block loaded (eg, we're scanning retrieving multiple
+	// values), the current block might contain the value.
+	if !cr.currentValueBlock.loaded || cr.currentValueBlock.dec.minimumValueID > vh.ValueID ||
+		vh.ValueID > ValueID(cr.indexBlock.dec.maxValueIDs.At(cr.currentValueBlock.index)) {
+		// Otherwise, seek within the index block's maxValueIDs column to find
+		// which block contains the value.
+		blockIndex := cr.indexBlock.dec.Seek(vh.ValueID)
+		if invariants.Enabled {
+			if blockIndex >= cr.indexBlock.dec.BlockCount() {
+				return nil, errors.AssertionFailedf("value ID out of range of blob file: %d > %d",
+					vh.ValueID, cr.indexBlock.dec.maxValueIDs.At(cr.indexBlock.dec.BlockCount()-1))
+			}
+			if maxValueID := ValueID(cr.indexBlock.dec.maxValueIDs.At(blockIndex)); vh.ValueID > maxValueID {
+				return nil, errors.AssertionFailedf("value ID out of range: %d > %d", vh.ValueID, maxValueID)
+			}
+		}
+
+		// Retreive the block's handle and read the blob value block.
+		h := cr.indexBlock.dec.BlockHandle(blockIndex)
+		cr.currentValueBlock.buf.Release()
+		cr.currentValueBlock.loaded = false
 		var err error
-		cr.currentBlockBuf, err = cr.r.ReadValueBlock(ctx, env, cr.rh, h)
+		cr.currentValueBlock.buf, err = cr.r.ReadValueBlock(ctx, env, cr.rh, h)
 		if err != nil {
 			return nil, err
 		}
-		cr.currentBlockNum = vh.BlockNum
-		cr.currentBlockLoaded = true
+		cr.currentValueBlock.dec = (*blobValueBlockDecoder)(unsafe.Pointer(cr.currentValueBlock.buf.BlockMetadata()))
+		cr.currentValueBlock.index = blockIndex
+		cr.currentValueBlock.loaded = true
+		if invariants.Enabled {
+			maxValueID := cr.currentValueBlock.dec.minimumValueID + ValueID(cr.currentValueBlock.dec.bd.Rows())
+			if vh.ValueID > maxValueID {
+				panic(errors.AssertionFailedf("value ID out of range: %d > %d", vh.ValueID, maxValueID))
+			}
+		}
 	}
-	data := cr.currentBlockBuf.BlockData()
-	if len(data) < int(vh.OffsetInBlock+vh.ValueLen) {
-		return nil, base.CorruptionErrorf("blob file %s: block %d: value offset %d plus len %d exceeds block length %d",
-			vh.FileNum, vh.BlockNum, vh.OffsetInBlock, vh.ValueLen, len(data))
+	v := cr.currentValueBlock.dec.Value(vh.ValueID)
+	if invariants.Enabled && len(v) != int(vh.ValueLen) {
+		panic(errors.AssertionFailedf("value length mismatch: %d != %d", len(v), vh.ValueLen))
 	}
-	return data[vh.OffsetInBlock : vh.OffsetInBlock+vh.ValueLen], nil
+	return v, nil
 }
 
 // Close releases resources associated with the reader.
@@ -206,8 +241,8 @@ func (cfr *cachedReader) Close() (err error) {
 	if cfr.rh != nil {
 		err = cfr.rh.Close()
 	}
-	cfr.indexBlockBuf.Release()
-	cfr.currentBlockBuf.Release()
+	cfr.indexBlock.buf.Release()
+	cfr.currentValueBlock.buf.Release()
 	// Release the cfg.Reader. closeFunc is provided by the file cache and
 	// decrements the refcount on the open file reader.
 	cfr.closeFunc()
