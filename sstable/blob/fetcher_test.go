@@ -104,16 +104,21 @@ func TestValueFetcher(t *testing.T) {
 				name            string
 				blobFileNum     uint64
 				valLen, valueID uint32
+				blockID         uint32
 			)
 			td.ScanArgs(t, "name", &name)
 			td.ScanArgs(t, "filenum", &blobFileNum)
 			td.ScanArgs(t, "valLen", &valLen)
+			td.ScanArgs(t, "blockID", &blockID)
 			td.ScanArgs(t, "valueID", &valueID)
 			fetcher := fetchers[name]
 			if fetcher == nil {
 				t.Fatalf("fetcher %s not found", name)
 			}
-			handle := encodeRemainingHandle(handleBuf[:], HandleSuffix{ValueID: ValueID(valueID)})
+			handle := encodeRemainingHandle(handleBuf[:], HandleSuffix{
+				BlockID: BlockID(blockID),
+				ValueID: BlockValueID(valueID),
+			})
 
 			val, _, err := fetcher.Fetch(ctx, handle, base.DiskFileNum(blobFileNum), valLen, nil)
 			if err != nil {
@@ -140,7 +145,7 @@ func writeValueFetcherState(w *bytes.Buffer, f *ValueFetcher) {
 			fmt.Fprintln(w, "  empty")
 			continue
 		}
-		fmt.Fprintf(w, "  %s (blk%d)\n", cr.fileNum, cr.currentValueBlock.index)
+		fmt.Fprintf(w, "  %s (blk%d)\n", cr.fileNum, cr.currentValueBlock.id)
 	}
 	fmt.Fprintf(w, "}\n")
 }

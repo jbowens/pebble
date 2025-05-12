@@ -128,10 +128,10 @@ import (
 )
 
 const (
-	indexBlockColumnCount = 2
-
-	indexBlockColumnMaxValueIDsIdx = 0
-	indexBlockColumnOffsetsIdx     = 1
+	indexBlockCustomHeaderSize       = 4
+	indexBlockColumnCount            = 2
+	indexBlockColumnVirtualBlocksIdx = 0
+	indexBlockColumnOffsetsIdx       = 1
 )
 
 // indexBlockEncoder encodes a blob index block.
@@ -144,10 +144,9 @@ type indexBlockEncoder struct {
 	// rows in the offsets column is countBlocks+1. The last offset points to
 	// the first byte after the last block so that a reader can compute the
 	// length of the last block.
-	countBlocks int
-	// maxValueIDs contains the maximum value ID of a value contained in each
-	// block. Values in this column are strictly increasing.
-	maxValueIDs colblk.UintBuilder
+	countBlocks        int
+	countVirtualBlocks int
+	virtualBlocks      colblk.UintBuilder
 	// offsets contains the offset of the start of each block. There is +1 more
 	// offset than there are blocks, with the last offset pointing to the first
 	// byte after the last block. Block lengths are inferred from the difference
@@ -158,22 +157,23 @@ type indexBlockEncoder struct {
 
 // Init initializes the index block encoder.
 func (e *indexBlockEncoder) Init() {
-	e.maxValueIDs.Init()
-	e.offsets.Init()
 	e.countBlocks = 0
+	e.countVirtualBlocks = 0
+	e.offsets.Init()
+	e.virtualBlocks.Init()
 }
 
 // Reset resets the index block encoder to its initial state, retaining buffers.
 func (e *indexBlockEncoder) Reset() {
-	e.maxValueIDs.Reset()
-	e.offsets.Reset()
 	e.countBlocks = 0
+	e.countVirtualBlocks = 0
+	e.offsets.Reset()
+	e.virtualBlocks.Reset()
 	e.enc.Reset()
 }
 
-// AddBlockHandle adds a handle to a blob-value block to the index block. The
-// maxValueID must be the maximum value ID of a value contained in the block.
-func (e *indexBlockEncoder) AddBlockHandle(h block.Handle, maxValueID ValueID) {
+// AddBlockHandle adds a handle to a blob-value block to the index block.
+func (e *indexBlockEncoder) AddBlockHandle(h block.Handle) {
 	// Every call to AddBlockHandle adds its end offset (i.e, the next block's
 	// start offset) to the offsets column.
 	//
@@ -186,20 +186,26 @@ func (e *indexBlockEncoder) AddBlockHandle(h block.Handle, maxValueID ValueID) {
 		panic(errors.AssertionFailedf("block handle %s doesn't have expected offset of %d", h, expected))
 	}
 
-	// Set the value ID separator (the maximum value ID in the block) for the
-	// block.
-	e.maxValueIDs.Set(e.countBlocks, uint64(maxValueID))
-
 	// Increment the number blocks, and set the endOffset.
 	e.countBlocks++
 	endOffset := h.Offset + h.Length + block.TrailerLen
 	e.offsets.Set(e.countBlocks, endOffset)
 }
 
+func (e *indexBlockEncoder) AddVirtualBlockMapping(virtualBlockID, physicalBlockID BlockID) {
+	if virtualBlockID != BlockID(e.countVirtualBlocks) {
+		panic(errors.AssertionFailedf("virtual block ID %d is out of order; expected %d", virtualBlockID, e.countVirtualBlocks))
+	}
+	e.virtualBlocks.Set(int(virtualBlockID), uint64(physicalBlockID))
+	e.countVirtualBlocks++
+}
+
 func (e *indexBlockEncoder) size() int {
-	off := colblk.HeaderSize(indexBlockColumnCount, 0 /* custom header size */)
+	off := colblk.HeaderSize(indexBlockColumnCount, indexBlockCustomHeaderSize)
+	if e.countVirtualBlocks > 0 {
+		off = e.virtualBlocks.Size(e.countVirtualBlocks, off)
+	}
 	if e.countBlocks > 0 {
-		off = e.maxValueIDs.Size(e.countBlocks, off)
 		off = e.offsets.Size(e.countBlocks+1, off)
 	}
 	off++
@@ -208,45 +214,36 @@ func (e *indexBlockEncoder) size() int {
 
 // Finish serializes the pending index block.
 func (e *indexBlockEncoder) Finish() []byte {
-	if invariants.Enabled {
-		// Validate that the maximum value IDs are strictly increasing.
-		for i := 1; i < e.countBlocks; i++ {
-			if e.maxValueIDs.Get(i-1) >= e.maxValueIDs.Get(i) {
-				panic(errors.AssertionFailedf("value ID separators must be strictly increasing; %d (block %d) >= %d (block %d)",
-					e.maxValueIDs.Get(i-1), i-1, e.maxValueIDs.Get(i), i))
-			}
-		}
-	}
-
 	e.enc.Init(e.size(), colblk.Header{
 		Version: colblk.Version1,
 		Columns: indexBlockColumnCount,
 		Rows:    uint32(e.countBlocks),
-	}, 0 /* custom header size */)
-	e.enc.Encode(e.countBlocks, &e.maxValueIDs)
+	}, indexBlockCustomHeaderSize)
+	e.enc.Encode(e.countVirtualBlocks, &e.virtualBlocks)
 	e.enc.Encode(e.countBlocks+1, &e.offsets)
 	return e.enc.Finish()
 }
 
 // An indexBlockDecoder decodes blob index blocks.
 type indexBlockDecoder struct {
+	// virtualBlockCount ...
+	virtualBlockCount int
+	virtualBlocks     colblk.UnsafeUints
 	// offsets contains the offset of the start of each block. There is +1 more
 	// offset than there are blocks, with the last offset pointing to the first
 	// byte after the last block. Block lengths are inferred from the difference
 	// between consecutive offsets.
 	offsets colblk.UnsafeUints
-	// maxValueIDs contains the maximum value ID of a value contained in each
-	// block. Values in this column are strictly increasing.
-	maxValueIDs colblk.UnsafeUints
-	bd          colblk.BlockDecoder
+	bd      colblk.BlockDecoder
 }
 
 // Init initializes the index block decoder with the given serialized index
 // block.
 func (r *indexBlockDecoder) Init(data []byte) {
-	r.bd.Init(data, 0 /* custom header size */)
-	r.maxValueIDs = colblk.DecodeColumn(&r.bd, indexBlockColumnMaxValueIDsIdx,
-		r.bd.Rows(), colblk.DataTypeUint, colblk.DecodeUnsafeUints)
+	r.virtualBlockCount = int(binary.LittleEndian.Uint32(data))
+	r.bd.Init(data, indexBlockCustomHeaderSize)
+	r.virtualBlocks = colblk.DecodeColumn(&r.bd, indexBlockColumnVirtualBlocksIdx,
+		r.virtualBlockCount, colblk.DataTypeUint, colblk.DecodeUnsafeUints)
 	// Decode the offsets column. We pass rows+1 because an index block encoding
 	// n block handles encodes n+1 offsets.
 	r.offsets = colblk.DecodeColumn(&r.bd, indexBlockColumnOffsetsIdx,
@@ -255,47 +252,20 @@ func (r *indexBlockDecoder) Init(data []byte) {
 
 // BlockHandle returns the block handle for the given block index in the
 // range [0, bd.Rows()).
-func (r *indexBlockDecoder) BlockHandle(blockIndex int) block.Handle {
-	invariants.CheckBounds(int(blockIndex), r.bd.Rows())
+func (r *indexBlockDecoder) BlockHandle(blockID BlockID) block.Handle {
+	invariants.CheckBounds(int(blockID), r.bd.Rows())
 	// TODO(jackson): Add an At2 method to the UnsafeUints type too.
-	offset := r.offsets.At(int(blockIndex))
-	offset2 := r.offsets.At(int(blockIndex) + 1)
+	offset := r.offsets.At(int(blockID))
+	offset2 := r.offsets.At(int(blockID) + 1)
 	return block.Handle{
 		Offset: offset,
 		Length: offset2 - offset - block.TrailerLen,
 	}
 }
 
-// BlockCount returns the number of blocks in the index block.
+// BlockCount returns the number of physical blocks encoded in the index block.
 func (r *indexBlockDecoder) BlockCount() int {
 	return int(r.bd.Rows())
-}
-
-// Seek binary searches the index block's maxValueIDs column to find the block
-// that must contain a value for the given value ID. It returns the index of the
-// block that must contain the value.
-func (r *indexBlockDecoder) Seek(id ValueID) int {
-	target := uint64(id)
-	n := r.bd.Rows()
-	// Define x[k] = r.maxValueIDs.At(k).
-	// Define x[-1] < target and x[n] >= target.
-	// Invariant: x[i-1] < target, x[j] >= target.
-	i, j := 0, n
-	for i < j {
-		h := int(uint(i+j) >> 1) // avoid overflow when computing h
-		// i ≤ h < j
-		if r.maxValueIDs.At(h) < target {
-			i = h + 1 // preserves x[i-1] < target
-		} else {
-			j = h // preserves x[j] >= target
-		}
-	}
-	// i == j
-	if invariants.Enabled && i > 0 && r.maxValueIDs.At(i-1) >= target {
-		panic(errors.AssertionFailedf("seek ID %d is less than %d; should've returned blk%d instead of blk%d (max value ID %d)",
-			id, r.maxValueIDs.At(i-1), i-1, i, r.maxValueIDs.At(i-1)))
-	}
-	return i
 }
 
 // DebugString prints a human-readable explanation of the index block's binary
@@ -319,8 +289,9 @@ func (r *indexBlockDecoder) Describe(f *binfmt.Formatter, tp treeprinter.Node) {
 	f.SetAnchorOffset()
 
 	n := tp.Child("index block header")
+	f.HexBytesln(4, "virtual block count: %d", r.virtualBlockCount)
 	r.bd.HeaderToBinFormatter(f, n)
-	r.bd.ColumnToBinFormatter(f, n, indexBlockColumnMaxValueIDsIdx, r.bd.Rows())
+	r.bd.ColumnToBinFormatter(f, n, indexBlockColumnVirtualBlocksIdx, r.virtualBlockCount)
 	r.bd.ColumnToBinFormatter(f, n, indexBlockColumnOffsetsIdx, r.bd.Rows()+1)
 	f.HexBytesln(1, "block padding byte")
 	f.ToTreePrinter(n)
@@ -423,15 +394,6 @@ func (d *blobValueBlockDecoder) Init(data []byte) {
 	d.minimumValueID = ValueID(binary.LittleEndian.Uint32(data))
 	d.bd.Init(data, blobValueBlockCustomHeaderSize)
 	d.values = d.bd.RawBytes(blobValueBlockColumnValuesIdx)
-}
-
-// Value returns the value for the given value ID. It panics if the value ID is
-// out of range this block's value IDs.
-func (d *blobValueBlockDecoder) Value(id ValueID) []byte {
-	if id < d.minimumValueID || (id-d.minimumValueID) >= ValueID(d.bd.Rows()) {
-		panic(errors.AssertionFailedf("value ID %d is out of range: block min=%d, rows=%d", id, d.minimumValueID, d.bd.Rows()))
-	}
-	return d.values.At(int(id - d.minimumValueID))
 }
 
 // DebugString prints a human-readable explanation of the blob value block's

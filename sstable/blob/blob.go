@@ -114,8 +114,6 @@ type compressedBlock struct {
 	pb  block.PhysicalBlock
 	bh  *block.BufHandle
 	off uint64
-	// maxValueID is the maximum value ID (inclusive) in the block.
-	maxValueID ValueID
 }
 
 // NewFileWriter creates a new FileWriter.
@@ -144,19 +142,21 @@ var writerPool = sync.Pool{
 // identifying the location of the value.
 func (w *FileWriter) AddValue(v []byte) Handle {
 	// Determine if we should first flush the block.
-	if w.valuesEncoder.Count() > 0 {
+	valuesInBlock := w.valuesEncoder.Count()
+	if valuesInBlock > 0 {
 		if sz := w.valuesEncoder.size(); w.flushGov.ShouldFlush(sz, sz+len(v)) {
 			w.flush()
+			valuesInBlock = 0
 		}
 	}
-	valueID := ValueID(w.stats.ValueCount)
 	w.stats.ValueCount++
 	w.stats.UncompressedValueBytes += uint64(len(v))
 	w.valuesEncoder.AddValue(v)
 	return Handle{
 		FileNum:  w.fileNum,
 		ValueLen: uint32(len(v)),
-		ValueID:  valueID,
+		BlockID:  BlockID(w.stats.BlockCount),
+		ValueID:  BlockValueID(valuesInBlock),
 	}
 }
 
@@ -185,7 +185,7 @@ func (w *FileWriter) flush() {
 	w.stats.BlockCount++
 	off := w.stats.FileLen
 	w.stats.FileLen += compressedLen + block.TrailerLen
-	w.writeQueue.ch <- compressedBlock{pb: pb, bh: bh, off: off, maxValueID: ValueID(w.stats.ValueCount - 1)}
+	w.writeQueue.ch <- compressedBlock{pb: pb, bh: bh, off: off}
 	w.valuesEncoder.Reset(ValueID(w.stats.ValueCount))
 }
 
@@ -208,7 +208,7 @@ func (w *FileWriter) drainWriteQueue() {
 		w.indexEncoder.AddBlockHandle(block.Handle{
 			Offset: cb.off,
 			Length: uint64(cb.pb.LengthWithoutTrailer()),
-		}, cb.maxValueID)
+		})
 		// We're done with the buffer associated with this physical block.
 		// Release it back to its pool.
 		cb.bh.Release()

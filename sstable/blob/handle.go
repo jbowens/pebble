@@ -17,14 +17,19 @@ import (
 // Handle fields are varint encoded, so maximum 5 bytes each.
 const MaxInlineHandleLength = 3 * binary.MaxVarintLen32
 
-// TODO(jackson): Guard against overflow.
 type ValueID uint32
+
+// TODO(jackson): Guard against overflow.
+type BlockValueID uint32
+
+type BlockID uint32
 
 // Handle describes the location of a value stored within a blob file.
 type Handle struct {
 	FileNum  base.DiskFileNum
 	ValueLen uint32
-	ValueID  ValueID
+	BlockID  BlockID
+	ValueID  BlockValueID
 }
 
 // String implements the fmt.Stringer interface.
@@ -34,7 +39,7 @@ func (h Handle) String() string {
 
 // SafeFormat implements redact.SafeFormatter.
 func (h Handle) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("(%s,id%d,len%d)", h.FileNum, h.ValueID, h.ValueLen)
+	w.Printf("(%s,blk%d,id%d,len%d)", h.FileNum, h.BlockID, h.ValueID, h.ValueLen)
 }
 
 // TODO(jackson): Consider encoding the handle's data using columnar block
@@ -66,19 +71,19 @@ type InlineHandlePreface struct {
 	ValueLen    uint32
 }
 
-// TODO(jackson): If we never need to add additional fields to the HandleSuffix,
-// consider removing it and just using the ValueID directly.
-
 // HandleSuffix is the suffix of an inline handle. It's decoded only when the
 // value is being fetched from the blob file.
 type HandleSuffix struct {
-	ValueID ValueID
+	BlockID BlockID
+	ValueID BlockValueID
 }
 
 // Encode encodes the handle suffix into the provided buffer, returning the
 // number of bytes encoded.
 func (h HandleSuffix) Encode(b []byte) int {
-	return binary.PutUvarint(b, uint64(h.ValueID))
+	n := binary.PutUvarint(b, uint64(h.BlockID))
+	n += binary.PutUvarint(b[n:], uint64(h.ValueID))
+	return n
 }
 
 // String implements the fmt.Stringer interface.
@@ -88,7 +93,7 @@ func (h InlineHandle) String() string {
 
 // SafeFormat implements redact.SafeFormatter.
 func (h InlineHandle) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("(f%d,id%d,len%d)", h.ReferenceID, h.ValueID, h.ValueLen)
+	w.Printf("(f%d,blk%d,id%d,len%d)", h.ReferenceID, h.BlockID, h.ValueID, h.ValueLen)
 }
 
 // Encode encodes the inline handle into the provided buffer, returning the
@@ -152,19 +157,42 @@ func DecodeInlineHandlePreface(src []byte) (InlineHandlePreface, []byte) {
 
 // DecodeHandleSuffix decodes the HandleSuffix from the provided buffer.
 func DecodeHandleSuffix(src []byte) HandleSuffix {
+	var vs HandleSuffix
 	ptr := unsafe.Pointer(&src[0])
-	var valueID uint32
+	// Manually inlined uvarint decoding. Saves ~25% in benchmarks. Unrolling
+	// a loop for i:=0; i<2; i++, saves ~6%.
+	var v uint32
 	if a := *((*uint8)(ptr)); a < 128 {
-		valueID = uint32(a)
+		v = uint32(a)
+		ptr = unsafe.Add(ptr, 1)
 	} else if a, b := a&0x7f, *((*uint8)(unsafe.Add(ptr, 1))); b < 128 {
-		valueID = uint32(b)<<7 | uint32(a)
+		v = uint32(b)<<7 | uint32(a)
+		ptr = unsafe.Add(ptr, 2)
 	} else if b, c := b&0x7f, *((*uint8)(unsafe.Add(ptr, 2))); c < 128 {
-		valueID = uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		v = uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		ptr = unsafe.Add(ptr, 3)
 	} else if c, d := c&0x7f, *((*uint8)(unsafe.Add(ptr, 3))); d < 128 {
-		valueID = uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		v = uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		ptr = unsafe.Add(ptr, 4)
 	} else {
 		d, e := d&0x7f, *((*uint8)(unsafe.Add(ptr, 4)))
-		valueID = uint32(e)<<28 | uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		v = uint32(e)<<28 | uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+		ptr = unsafe.Add(ptr, 5)
 	}
-	return HandleSuffix{ValueID: ValueID(valueID)}
+	vs.BlockID = BlockID(v)
+
+	if a := *((*uint8)(ptr)); a < 128 {
+		v = uint32(a)
+	} else if a, b := a&0x7f, *((*uint8)(unsafe.Add(ptr, 1))); b < 128 {
+		v = uint32(b)<<7 | uint32(a)
+	} else if b, c := b&0x7f, *((*uint8)(unsafe.Add(ptr, 2))); c < 128 {
+		v = uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+	} else if c, d := c&0x7f, *((*uint8)(unsafe.Add(ptr, 3))); d < 128 {
+		v = uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+	} else {
+		d, e := d&0x7f, *((*uint8)(unsafe.Add(ptr, 4)))
+		v = uint32(e)<<28 | uint32(d)<<21 | uint32(c)<<14 | uint32(b)<<7 | uint32(a)
+	}
+	vs.ValueID = BlockValueID(v)
+	return vs
 }
