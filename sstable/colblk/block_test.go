@@ -296,7 +296,8 @@ func testRandomBlock(t *testing.T, rng *rand.Rand, rows int, schema []testColumn
 			case DataTypeUint:
 				got = Clone(d.Uints(col), rows)
 			case DataTypeBytes:
-				got = Clone(d.RawBytes(col), rows)
+				rb := d.RawBytes(col)
+				got = Clone(&rb, rows)
 			case DataTypePrefixBytes:
 				got = Clone(d.PrefixBytes(col), rows)
 			}

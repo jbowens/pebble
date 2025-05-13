@@ -145,7 +145,7 @@ func writeValueFetcherState(w *bytes.Buffer, f *ValueFetcher) {
 			fmt.Fprintln(w, "  empty")
 			continue
 		}
-		fmt.Fprintf(w, "  %s (blk%d)\n", cr.fileNum, cr.currentValueBlock.id)
+		fmt.Fprintf(w, "  %s (blk%d)\n", cr.fileNum, cr.currentValueBlock.physicalID)
 	}
 	fmt.Fprintf(w, "}\n")
 }

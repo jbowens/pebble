@@ -138,7 +138,7 @@ func (bv *Values) Parse(input string) (h blob.Handle, remaining string, err erro
 			fileNumSet = true
 		case "valueID":
 			p.Expect("=")
-			h.ValueID = blob.ValueID(p.Uint32())
+			h.ValueID = blob.BlockValueID(p.Uint32())
 			valueIDSet = true
 		case "valueLen":
 			p.Expect("=")
@@ -160,7 +160,7 @@ func (bv *Values) Parse(input string) (h blob.Handle, remaining string, err erro
 	}
 	if !valueIDSet {
 		if nextValueID, ok := bv.nextValueID[h.FileNum]; ok {
-			h.ValueID = nextValueID
+			h.ValueID = blob.BlockValueID(nextValueID)
 		} else {
 			h.ValueID = 0
 		}
@@ -235,7 +235,7 @@ func (bv *Values) WriteFiles(
 			for prevID < int(handle.ValueID) {
 				writer.AddValue(deriveValueFromHandle(blob.Handle{
 					FileNum:  fileNum,
-					ValueID:  blob.ValueID(prevID),
+					ValueID:  blob.BlockValueID(prevID),
 					ValueLen: 12,
 				}))
 				prevID++

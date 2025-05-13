@@ -162,9 +162,10 @@ type cachedReader struct {
 	}
 	// currentValueBlock holds the currently loaded blob value block, if any.
 	currentValueBlock struct {
-		// id is the physical index of the current value block. id is in the
-		// range [0, indexBlock.dec.BlockCount()).
-		id BlockID
+		// physicalID is the physical index of the current value block.
+		// physicalID is in the range [0, indexBlock.dec.BlockCount()).
+		physicalID BlockID
+		virtualID  BlockID
 		// loaded indicates whether buf and dec are valid and hold the block
 		// identified by index.
 		loaded bool
@@ -183,30 +184,31 @@ func (cr *cachedReader) GetUnsafeValue(
 ) ([]byte, error) {
 	ctx = objiotracing.WithBlockType(ctx, objiotracing.ValueBlock)
 
-	if !cr.indexBlock.loaded {
-		// Read the index block.
-		var err error
-		cr.indexBlock.buf, err = cr.r.ReadIndexBlock(ctx, env, cr.rh)
-		if err != nil {
-			return nil, err
-		}
-		cr.indexBlock.dec = (*indexBlockDecoder)(unsafe.Pointer(cr.indexBlock.buf.BlockMetadata()))
-		cr.indexBlock.loaded = true
-	}
-
 	// tktk: remap blockID, valueID
 	blockID := vh.BlockID
 	valueID := vh.ValueID
-	if invariants.Enabled && blockID >= BlockID(cr.indexBlock.dec.BlockCount()) {
-		return nil, errors.AssertionFailedf("block ID out of range of blob file: %d > %d",
-			blockID, cr.indexBlock.dec.BlockCount()-1)
-	}
 
 	// Determine which block contains the value.
 	//
 	// If we already have a block loaded (eg, we're scanning retrieving multiple
 	// values), the current block might contain the value.
-	if !cr.currentValueBlock.loaded || cr.currentValueBlock.id != blockID {
+	if !cr.currentValueBlock.loaded || cr.currentValueBlock.virtualID != vh.BlockID {
+		if !cr.indexBlock.loaded {
+			// Read the index block.
+			var err error
+			cr.indexBlock.buf, err = cr.r.ReadIndexBlock(ctx, env, cr.rh)
+			if err != nil {
+				return nil, err
+			}
+			cr.indexBlock.dec = (*indexBlockDecoder)(unsafe.Pointer(cr.indexBlock.buf.BlockMetadata()))
+			cr.indexBlock.loaded = true
+		}
+
+		if invariants.Enabled && blockID >= BlockID(cr.indexBlock.dec.BlockCount()) {
+			return nil, errors.AssertionFailedf("block ID out of range of blob file: %d > %d",
+				blockID, cr.indexBlock.dec.BlockCount()-1)
+		}
+
 		// Retreive the block's handle and read the blob value block.
 		h := cr.indexBlock.dec.BlockHandle(blockID)
 		cr.currentValueBlock.buf.Release()
@@ -217,14 +219,15 @@ func (cr *cachedReader) GetUnsafeValue(
 			return nil, err
 		}
 		cr.currentValueBlock.dec = (*blobValueBlockDecoder)(unsafe.Pointer(cr.currentValueBlock.buf.BlockMetadata()))
-		cr.currentValueBlock.id = blockID
+		cr.currentValueBlock.physicalID = blockID
+		cr.currentValueBlock.virtualID = blockID // TODO
 		cr.currentValueBlock.loaded = true
 	}
 	if invariants.Enabled && valueID >= BlockValueID(cr.currentValueBlock.dec.bd.Rows()) {
 		return nil, errors.AssertionFailedf("value ID %d is out of range: rows=%d",
 			blockID, cr.currentValueBlock.dec.bd.Rows())
 	}
-	v := cr.currentValueBlock.dec.values.At(int(valueID))
+	v := cr.currentValueBlock.dec.values.Slice(cr.currentValueBlock.dec.values.Offsets(int(valueID)))
 	if invariants.Enabled && len(v) != int(vh.ValueLen) {
 		return nil, errors.AssertionFailedf("value length mismatch: %d != %d", len(v), vh.ValueLen)
 	}
