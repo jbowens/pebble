@@ -158,6 +158,7 @@ type cachedReader struct {
 	currentBlockNum    uint32
 	currentBlockLoaded bool
 	currentBlockBuf    block.BufferHandle
+	indexBlockLoaded   bool
 	indexBlockBuf      block.BufferHandle
 	indexBlockDecoder  *indexBlockDecoder
 	preallocRH         objstorageprovider.PreallocatedReadHandle
@@ -172,7 +173,7 @@ func (cr *cachedReader) GetUnsafeValue(
 ) ([]byte, error) {
 	ctx = objiotracing.WithBlockType(ctx, objiotracing.ValueBlock)
 
-	if !cr.indexBlockBuf.Valid() {
+	if !cr.indexBlockLoaded {
 		// Read the index block.
 		var err error
 		cr.indexBlockBuf, err = cr.r.ReadIndexBlock(ctx, env, cr.rh)
@@ -180,6 +181,7 @@ func (cr *cachedReader) GetUnsafeValue(
 			return nil, err
 		}
 		cr.indexBlockDecoder = (*indexBlockDecoder)(unsafe.Pointer(cr.indexBlockBuf.BlockMetadata()))
+		cr.indexBlockLoaded = true
 	}
 
 	if !cr.currentBlockLoaded || vh.BlockNum != cr.currentBlockNum {
