@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/record"
-	"github.com/cockroachdb/pebble/sstable/blob"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/pebble/vfs/atomicfs"
 )
@@ -1133,9 +1132,11 @@ func (vs *versionSet) addLiveFileNums(m map[base.DiskFileNum]struct{}) {
 			for f := range lm.All() {
 				m[f.TableBacking.DiskFileNum] = struct{}{}
 				for _, ref := range f.BlobReferences {
-					// TODO(jackson): Once we support blob file replacement, we
-					// need to look up the new blob file's number here.
-					diskFileNum := blob.DiskFileNumTODO(ref.FileID)
+					diskFileNum, ok := v.BlobFiles.Lookup(ref.FileID)
+					if !ok {
+						panic(errors.AssertionFailedf("blob file %d not found, referenced by table %d",
+							ref.FileID, f.TableNum))
+					}
 					m[diskFileNum] = struct{}{}
 				}
 			}

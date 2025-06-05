@@ -797,6 +797,7 @@ func (r *Runner) prepareWorkloadSteps(ctx context.Context) error {
 				}
 				var newFiles []base.DiskFileNum
 				blobRefMap := make(map[base.DiskFileNum]manifest.BlobReferences)
+				blobFileMap := make(blobFileMap)
 				for _, nf := range ve.NewTables {
 					newFiles = append(newFiles, nf.Meta.TableBacking.DiskFileNum)
 					if s.kind == ingestStepKind && (nf.Meta.SmallestSeqNum != nf.Meta.LargestSeqNum || nf.Level != 0) {
@@ -861,7 +862,7 @@ func (r *Runner) prepareWorkloadSteps(ctx context.Context) error {
 					// Load all of the flushed sstables' keys into a batch.
 					s.flushBatch = r.d.NewBatch()
 					err := loadFlushedSSTableKeys(s.flushBatch, r.WorkloadFS, r.WorkloadPath,
-						newFiles, blobRefMap, provider, r.readerOpts, &flushBufs)
+						newFiles, blobRefMap, blobFileMap.Lookup, provider, r.readerOpts, &flushBufs)
 					if err != nil {
 						return errors.Wrapf(err, "flush in %q at offset %d", manifestName, rr.Offset())
 					}
@@ -1011,6 +1012,7 @@ func loadFlushedSSTableKeys(
 	path string,
 	fileNums []base.DiskFileNum,
 	blobRefMap map[base.DiskFileNum]manifest.BlobReferences,
+	blobFileLookup blob.FileLookupFunc,
 	provider blob.ReaderProvider,
 	readOpts sstable.ReaderOptions,
 	bufs *flushBuffers,
@@ -1040,7 +1042,7 @@ func loadFlushedSSTableKeys(
 			if bf, ok := blobRefMap[fileNum]; ok {
 				blobRefs = &bf
 			}
-			vf, blobContext := sstable.LoadValBlobContext(provider, blobRefs)
+			vf, blobContext := sstable.LoadValBlobContext(blobFileLookup, provider, blobRefs)
 			defer func() { _ = vf.Close() }()
 			iter, err := r.NewIter(sstable.NoTransforms, nil, nil, blobContext)
 			if err != nil {
@@ -1176,6 +1178,13 @@ func loadFlushedSSTableKeys(
 	// Done with the flushBuffers. Reset.
 	bufs.keys = bufs.keys[:0]
 	return nil
+}
+
+type blobFileMap map[base.BlobFileID]base.DiskFileNum
+
+func (m *blobFileMap) Lookup(fileID base.BlobFileID) (base.DiskFileNum, bool) {
+	diskFileNum, ok := (*m)[fileID]
+	return diskFileNum, ok
 }
 
 type flushBuffers struct {

@@ -623,7 +623,7 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		keyBuf:       buf.keyBuf,
 	}
 	// Set up a blob value fetcher to use for retrieving values from blob files.
-	i.blobValueFetcher.Init(d.fileCache, block.NoReadEnv)
+	i.blobValueFetcher.Init(readState.current.BlobFiles.Lookup, d.fileCache, block.NoReadEnv)
 	get.iiopts.blobValueFetcher = &i.blobValueFetcher
 
 	if !i.First() {
@@ -1352,7 +1352,11 @@ func (d *DB) newInternalIter(
 		seqNum:          seqNum,
 		mergingIter:     &buf.merging,
 	}
-	dbi.blobValueFetcher.Init(d.fileCache, block.ReadEnv{})
+	if readState != nil {
+		dbi.blobValueFetcher.Init(readState.current.BlobFiles.Lookup, d.fileCache, block.ReadEnv{})
+	} else {
+		dbi.blobValueFetcher.Init(sOpts.vers.BlobFiles.Lookup, d.fileCache, block.ReadEnv{})
+	}
 
 	dbi.opts = *o
 	dbi.opts.logger = d.opts.Logger
@@ -1434,7 +1438,13 @@ func (i *Iterator) constructPointIter(
 			i.opts.Category,
 		),
 	}
-	i.blobValueFetcher.Init(i.fc, readEnv)
+
+	if i.readState != nil {
+		i.blobValueFetcher.Init(i.readState.current.BlobFiles.Lookup, i.fc, readEnv)
+	} else if i.version != nil {
+		i.blobValueFetcher.Init(i.version.BlobFiles.Lookup, i.fc, readEnv)
+	}
+
 	internalOpts := internalIterOpts{
 		readEnv:          sstable.ReadEnv{Block: readEnv},
 		blobValueFetcher: &i.blobValueFetcher,

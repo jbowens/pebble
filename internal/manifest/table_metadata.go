@@ -746,7 +746,7 @@ func ParseTableMetadataDebug(s string) (_ *TableMetadata, err error) {
 	}()
 
 	// Input format:
-	//	000000:[a#0,SET-z#0,SET] seqnums:[5-5] points:[...] ranges:[...] size:5
+	//	000000:[a#0,SET-z#0,SET] seqnums:[5-5] points:[...] ranges:[...] blobrefs:[...] size:5
 	m := &TableMetadata{}
 	p := strparse.MakeParser(debugParserSeparators, s)
 	m.TableNum = p.FileNum()

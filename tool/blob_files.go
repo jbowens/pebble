@@ -11,6 +11,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/manifest"
+	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/record"
 	"github.com/cockroachdb/pebble/sstable"
@@ -28,8 +29,16 @@ import (
 // sufficient information to perform this mapping.
 type blobFileMappings struct {
 	references map[base.TableNum]*manifest.BlobReferences
+	blobFiles  map[base.BlobFileID][]physicalBlobFile
 	fetcher    blob.ValueFetcher
 	provider   debugReaderProvider
+	stderr     io.Writer
+}
+
+type physicalBlobFile struct {
+	FileNum  base.DiskFileNum
+	Metadata objstorage.ObjectMetadata
+	Err      error
 }
 
 // LoadValueBlobContext returns a TableBlobContext that configures a sstable
@@ -40,6 +49,23 @@ func (m *blobFileMappings) LoadValueBlobContext(tableNum base.TableNum) sstable.
 		ValueFetcher: &m.fetcher,
 		References:   m.references[tableNum],
 	}
+}
+
+// LookupBlobFile returns the physical blob file number for the given blob file
+// ID. It returns false for the second return value if no blob file is found.
+func (m *blobFileMappings) LookupBlobFile(fileID base.BlobFileID) (base.DiskFileNum, bool) {
+	for _, file := range m.blobFiles[fileID] {
+		if file.Err == nil {
+			return file.FileNum, true
+		}
+	}
+	// For every unique physical blob file with this fileID that we found across
+	// all manifests, print the file number and error.
+	fmt.Fprintf(m.stderr, "no extant blob files found for fileID %s\n", fileID)
+	for _, file := range m.blobFiles[fileID] {
+		fmt.Fprintf(m.stderr, "  %s: %s\n", file.Metadata.DiskFileNum, file.Err)
+	}
+	return 0, false
 }
 
 // Close releases any resources held by the blobFileMappings.
@@ -65,9 +91,11 @@ func newBlobFileMappings(
 	}
 	mappings := blobFileMappings{
 		references: make(map[base.TableNum]*manifest.BlobReferences),
+		blobFiles:  make(map[base.BlobFileID][]physicalBlobFile),
 		provider:   debugReaderProvider{objProvider: provider},
+		stderr:     stderr,
 	}
-	mappings.fetcher.Init(&mappings.provider, block.ReadEnv{})
+	mappings.fetcher.Init(mappings.LookupBlobFile, &mappings.provider, block.ReadEnv{})
 	for _, fl := range manifests {
 		err := func() error {
 			mf, err := fs.Open(fl.path)
@@ -91,6 +119,22 @@ func newBlobFileMappings(
 				}
 				for _, nf := range ve.NewTables {
 					mappings.references[nf.Meta.TableNum] = &nf.Meta.BlobReferences
+				}
+				// Collect all the blob file metadatas. Some of these may
+				// ultimately be replaced if a blob file is replaced. However,
+				// in the context of the pebble tool, we're not trying to read
+				// just the latest state. We collect the file numbers of all
+				// physical blob files and check for their existence in the
+				// objstorage. The LookupBlobFile method will use any of these
+				// that exists in object storage, and print information about
+				// the mapping used.
+				for _, nf := range ve.NewBlobFiles {
+					meta, err := mappings.provider.objProvider.Lookup(base.FileTypeBlob, nf.Physical.FileNum)
+					mappings.blobFiles[nf.FileID] = append(mappings.blobFiles[nf.FileID], physicalBlobFile{
+						FileNum:  nf.Physical.FileNum,
+						Metadata: meta,
+						Err:      err,
+					})
 				}
 			}
 			return nil
