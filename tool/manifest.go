@@ -102,43 +102,50 @@ Check the contents of the MANIFEST files.
 	return m
 }
 
-func (m *manifestT) printLevels(cmp base.Compare, stdout io.Writer, v *manifest.Version) {
+func (m *manifestT) printVersionState(cmp base.Compare, stdout io.Writer, v *manifest.Version) {
+	printTableMetadata := func(f *manifest.TableMetadata) {
+		if !anyOverlapFile(cmp, f, m.filterStart, m.filterEnd) {
+			return
+		}
+		fmt.Fprintf(stdout, "  %s:%d", f.TableNum, f.Size)
+		formatSeqNumRange(stdout, f.SmallestSeqNum, f.LargestSeqNum)
+		smallest := f.Smallest()
+		largest := f.Largest()
+		formatKeyRange(stdout, m.fmtKey, &smallest, &largest)
+		if f.Virtual {
+			fmt.Fprintf(stdout, " (virtual:backingNum=%s)", f.TableBacking.DiskFileNum)
+		}
+		if len(f.BlobReferences) > 0 {
+			fmt.Fprintf(stdout, " (blobRefs:")
+			for i, ref := range f.BlobReferences {
+				if i > 0 {
+					fmt.Fprintf(stdout, " ")
+				}
+				fmt.Fprintf(stdout, " (%s:%d)", ref.FileID, ref.ValueSize)
+			}
+			fmt.Fprintf(stdout, ")")
+		}
+		fmt.Fprintf(stdout, "\n")
+	}
+
 	for level := range v.Levels {
 		if level == 0 && len(v.L0SublevelFiles) > 0 && !v.Levels[level].Empty() {
 			for sublevel := len(v.L0SublevelFiles) - 1; sublevel >= 0; sublevel-- {
 				fmt.Fprintf(stdout, "--- L0.%d ---\n", sublevel)
 				for f := range v.L0SublevelFiles[sublevel].All() {
-					if !anyOverlapFile(cmp, f, m.filterStart, m.filterEnd) {
-						continue
-					}
-					fmt.Fprintf(stdout, "  %s:%d", f.TableNum, f.Size)
-					formatSeqNumRange(stdout, f.SmallestSeqNum, f.LargestSeqNum)
-					smallest := f.Smallest()
-					largest := f.Largest()
-					formatKeyRange(stdout, m.fmtKey, &smallest, &largest)
-					if f.Virtual {
-						fmt.Fprintf(stdout, "(virtual:backingNum=%s)", f.TableBacking.DiskFileNum)
-					}
-					fmt.Fprintf(stdout, "\n")
+					printTableMetadata(f)
 				}
 			}
 			continue
 		}
 		fmt.Fprintf(stdout, "--- L%d ---\n", level)
 		for f := range v.Levels[level].All() {
-			if !anyOverlapFile(cmp, f, m.filterStart, m.filterEnd) {
-				continue
-			}
-			fmt.Fprintf(stdout, "  %s:%d", f.TableNum, f.Size)
-			formatSeqNumRange(stdout, f.SmallestSeqNum, f.LargestSeqNum)
-			smallest := f.Smallest()
-			largest := f.Largest()
-			formatKeyRange(stdout, m.fmtKey, &smallest, &largest)
-			if f.Virtual {
-				fmt.Fprintf(stdout, "(virtual:backingNum=%s)", f.TableBacking.DiskFileNum)
-			}
-			fmt.Fprintf(stdout, "\n")
+			printTableMetadata(f)
 		}
+	}
+	fmt.Fprintf(stdout, "--- Blob files ---\n")
+	for file := range v.BlobFiles.All() {
+		fmt.Fprintf(stdout, "  %s\n", file.String())
 	}
 }
 
@@ -267,7 +274,7 @@ func (m *manifestT) runDump(cmd *cobra.Command, args []string) {
 					return
 				}
 				l0Organizer.PerformUpdate(l0Organizer.PrepareUpdate(&bve, v), v)
-				m.printLevels(comparer.Compare, stdout, v)
+				m.printVersionState(comparer.Compare, stdout, v)
 			}
 		}()
 	}
@@ -652,7 +659,7 @@ func (m *manifestT) runCheck(cmd *cobra.Command, args []string) {
 					fmt.Fprintf(stdout, "%s: offset: %d err: %s\n",
 						arg, offset, err)
 					fmt.Fprintf(stdout, "Version state before failed Apply\n")
-					m.printLevels(cmp.Compare, stdout, v)
+					m.printVersionState(cmp.Compare, stdout, v)
 					fmt.Fprintf(stdout, "Version edit that failed\n")
 					for df := range ve.DeletedTables {
 						fmt.Fprintf(stdout, "  deleted: L%d %s\n", df.Level, df.FileNum)
