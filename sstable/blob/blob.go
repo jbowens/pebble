@@ -166,10 +166,10 @@ func (w *FileWriter) AddValue(v []byte) Handle {
 // block and valueID offset within the block.
 //
 // When a blob file is rewritten, BeginNewVirtualBlock is called for each block
-// in the original blob file before adding any of the block's extant values.
-// BeginNewVirtualBlock records a mapping from the original block ID (referred
-// to as a virtual block) to a tuple of the physical block index and the offset
-// of the BlockValueIDs within the new physical block.
+// in the original blob file that has a value before adding any of the block's
+// extant values.  BeginNewVirtualBlock records a mapping from the original
+// block ID (referred to as a virtual block) to a tuple of the physical block
+// index and the offset of the BlockValueIDs within the new physical block.
 //
 // This mapping is used by readers to determine which physical block contains a
 // given virtual block, and how to map BlockValueIDs from the given virtual

@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,9 +19,12 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/blobtest"
+	"github.com/cockroachdb/pebble/internal/bytealloc"
+	"github.com/cockroachdb/pebble/internal/cache"
 	"github.com/cockroachdb/pebble/internal/compact"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/testkeys"
+	"github.com/cockroachdb/pebble/internal/testutils"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable"
@@ -211,4 +216,189 @@ func TestBlobRewrite(t *testing.T) {
 			}
 			panic("unreachable")
 		})
+}
+
+// TestBlobRewriteRandomized tests blob file rewriting by constructing a blob
+// file and n sstables that each reference one value in the blob file.
+//
+// It then runs a blob rewrite repeatedly, passing in a random subset of the
+// sstables as extant references. Each blob rewrite may rewrite the original
+// blob file, or one of the previous iteration's rewritten blob files.
+func TestBlobRewriteRandomized(t *testing.T) {
+	const numKVs = 1000
+	const blobFileID = 100000
+	const numRewrites = 1
+
+	seed := time.Now().UnixNano()
+	seed = 5
+	t.Logf("seed: %d", seed)
+	rng := rand.New(rand.NewPCG(0, uint64(seed)))
+
+	// Generate keys and values.
+	keys, values := func() (keys, values [][]byte) {
+		keys = make([][]byte, numKVs)
+		values = make([][]byte, numKVs)
+		var alloc bytealloc.A
+		for i := 0; i < numKVs; i++ {
+			var key, value []byte
+			key, alloc = alloc.Copy([]byte(fmt.Sprintf("%06d", i)))
+			value, alloc = alloc.Copy([]byte(fmt.Sprintf("value %d", i)))
+			keys[i] = key
+			values[i] = value
+		}
+		return keys, values
+	}()
+
+	ctx := context.Background()
+	objStore, err := objstorageprovider.Open(objstorageprovider.Settings{
+		FS: vfs.NewMem(),
+	})
+	require.NoError(t, err)
+
+	// Write the source blob file.
+	var originalBlobFile manifest.BlobFileMetadata
+	handles := make([]blob.Handle, numKVs)
+	{
+		w, _, err := objStore.Create(ctx, base.FileTypeBlob, base.DiskFileNum(blobFileID), objstorage.CreateOptions{})
+		require.NoError(t, err)
+		blobWriter := blob.NewFileWriter(base.DiskFileNum(blobFileID), w, blob.FileWriterOptions{})
+		for i := range numKVs {
+			if rng.IntN(20) == 0 {
+				blobWriter.ForceFlush()
+			}
+			handles[i] = blobWriter.AddValue(values[i])
+		}
+		stats, err := blobWriter.Close()
+		require.NoError(t, err)
+		require.Equal(t, numKVs, int(stats.ValueCount))
+		originalBlobFile = manifest.BlobFileMetadata{
+			FileID: base.BlobFileID(blobFileID),
+			Physical: &manifest.PhysicalBlobFile{
+				FileNum:      base.DiskFileNum(blobFileID),
+				CreationTime: uint64(time.Now().Unix()),
+				ValueSize:    stats.UncompressedValueBytes,
+				Size:         stats.FileLen,
+			},
+		}
+	}
+
+	// Write numKVs SSTables, each with 1 kv pair, all referencing the same blob
+	// file.
+	originalTables := make([]*manifest.TableMetadata, numKVs)
+	originalValueIndices := make([]int, numKVs)
+	for i := range numKVs {
+		w, _, err := objStore.Create(ctx, base.FileTypeTable, base.DiskFileNum(i), objstorage.CreateOptions{})
+		require.NoError(t, err)
+		tw := sstable.NewRawWriter(w, sstable.WriterOptions{
+			TableFormat: sstable.TableFormatMax,
+		})
+		require.NoError(t, tw.AddWithBlobHandle(
+			base.MakeInternalKey(keys[i], base.SeqNum(i), base.InternalKeyKindSet),
+			blob.InlineHandle{
+				InlineHandlePreface: blob.InlineHandlePreface{
+					ReferenceID: blob.ReferenceID(0),
+					ValueLen:    uint32(len(values[i])),
+				},
+				HandleSuffix: blob.HandleSuffix{
+					BlockID: handles[i].BlockID,
+					ValueID: handles[i].ValueID,
+				},
+			},
+			base.ShortAttribute(0),
+			false, /* forceObsolete */
+		))
+		require.NoError(t, tw.Close())
+		originalValueIndices[i] = i
+		originalTables[i] = &manifest.TableMetadata{
+			TableNum: base.TableNum(i),
+			TableBacking: &manifest.TableBacking{
+				DiskFileNum: base.DiskFileNum(i),
+			},
+			BlobReferences: []manifest.BlobReference{
+				{FileID: base.BlobFileID(blobFileID), ValueSize: uint64(len(values[i]))},
+			},
+		}
+	}
+
+	fc := NewFileCache(1, 100)
+	defer fc.Unref()
+	c := cache.New(100)
+	defer c.Unref()
+	ch := c.NewHandle()
+	defer ch.Close()
+	fch := fc.newHandle(ch, objStore, base.NoopLoggerAndTracer{}, sstable.ReaderOptions{}, nil)
+	defer fch.Close()
+	var bufferPool block.BufferPool
+	bufferPool.Init(4)
+	defer bufferPool.Release()
+	readEnv := block.ReadEnv{BufferPool: &bufferPool}
+
+	type sourceFile struct {
+		metadata          manifest.BlobFileMetadata
+		valueIndices      []int
+		referencingTables []*manifest.TableMetadata
+	}
+
+	files := []sourceFile{{
+		metadata:          originalBlobFile,
+		valueIndices:      originalValueIndices,
+		referencingTables: originalTables,
+	}}
+
+	for i := range numRewrites {
+		fileIdx := rng.IntN(len(files))
+		fileToRewrite := files[fileIdx]
+
+		// Rewrite the blob file.
+		newBlobFileNum := base.DiskFileNum(blobFileID + i + 1)
+		w, _, err := objStore.Create(ctx, base.FileTypeBlob, newBlobFileNum, objstorage.CreateOptions{})
+		require.NoError(t, err)
+		blobWriter := blob.NewFileWriter(newBlobFileNum, w, blob.FileWriterOptions{})
+
+		// Pick a random subset of the referencing tables to use as remaining
+		// extant references.
+		n := testutils.RandIntInRange(rng, 1, len(fileToRewrite.valueIndices))
+		t.Logf("rewriting file %s with %d extant references", fileToRewrite.metadata.Physical.FileNum, n)
+
+		newFile := sourceFile{
+			metadata: manifest.BlobFileMetadata{
+				FileID: base.BlobFileID(blobFileID),
+				Physical: &manifest.PhysicalBlobFile{
+					FileNum: newBlobFileNum,
+				},
+			},
+			valueIndices:      make([]int, n),
+			referencingTables: make([]*manifest.TableMetadata, n),
+		}
+		for k, j := range rng.Perm(len(fileToRewrite.valueIndices))[:n] {
+			newFile.valueIndices[k] = fileToRewrite.valueIndices[j]
+			newFile.referencingTables[k] = fileToRewrite.referencingTables[j]
+		}
+		slices.Sort(newFile.valueIndices)
+		t.Logf("newFile.valueIndices: %v", newFile.valueIndices)
+
+		rewriter := newBlobFileRewriter(fch, readEnv, blobWriter, newFile.referencingTables, fileToRewrite.metadata)
+		stats, err := rewriter.Rewrite(ctx)
+		require.NoError(t, err)
+		require.LessOrEqual(t, n, int(stats.ValueCount))
+		newFile.metadata.Physical.ValueSize = stats.UncompressedValueBytes
+		newFile.metadata.Physical.Size = stats.FileLen
+
+		var valueFetcher blob.ValueFetcher
+		valueFetcher.Init(&blobFileMapping{fileNum: newBlobFileNum}, fch, readEnv)
+		func() {
+			defer func() { _ = valueFetcher.Close() }()
+			for _, valueIndex := range newFile.valueIndices {
+				handle := handles[valueIndex]
+				val, _, err := valueFetcher.Fetch(ctx, blobFileID, handle.BlockID, handle.ValueID)
+				require.NoError(t, err)
+				require.Equal(t, values[valueIndex], val)
+			}
+		}()
+
+		// Add the new blob file to the list of blob files so that a future
+		// rewrite can use it as the source file. This ensures we test rewrites
+		// of rewritten blob files.
+		files = append(files, newFile)
+	}
 }

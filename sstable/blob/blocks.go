@@ -95,11 +95,14 @@ func (e *indexBlockEncoder) AddBlockHandle(h block.Handle) {
 func (e *indexBlockEncoder) AddVirtualBlockMapping(
 	virtualBlockID BlockID, physicalBlockIndex int, valueIDOffset BlockValueID,
 ) {
-	if virtualBlockID != BlockID(e.countVirtualBlocks) {
+	// Virtual blocks must be added in order.
+	if virtualBlockID < BlockID(e.countVirtualBlocks) {
 		panic(errors.AssertionFailedf("virtual block ID %d is out of order; expected %d", virtualBlockID, e.countVirtualBlocks))
 	}
-	e.virtualBlocks.Set(int(virtualBlockID), uint64(physicalBlockIndex)|(uint64(valueIDOffset)<<32))
-	e.countVirtualBlocks++
+	for id := BlockID(e.countVirtualBlocks); id <= virtualBlockID; id++ {
+		e.virtualBlocks.Set(int(id), uint64(physicalBlockIndex)|(uint64(valueIDOffset)<<32))
+		e.countVirtualBlocks++
+	}
 }
 
 func (e *indexBlockEncoder) size() int {
