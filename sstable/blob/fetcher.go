@@ -287,8 +287,9 @@ func (cr *cachedReader) GetUnsafeValue(
 		cr.currentValueBlock.loaded = true
 	}
 
-	invariants.CheckBounds(int(valueID), cr.currentValueBlock.dec.bd.Rows())
-	v := cr.currentValueBlock.dec.values.Slice(cr.currentValueBlock.dec.values.Offsets(int(valueID)))
+	translatedValueID := valueID + cr.currentValueBlock.valueIDOffset
+	invariants.CheckBounds(int(translatedValueID), cr.currentValueBlock.dec.bd.Rows())
+	v := cr.currentValueBlock.dec.values.Slice(cr.currentValueBlock.dec.values.Offsets(int(translatedValueID)))
 	return v, nil
 }
 

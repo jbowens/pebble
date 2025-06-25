@@ -227,7 +227,7 @@ func TestBlobRewrite(t *testing.T) {
 func TestBlobRewriteRandomized(t *testing.T) {
 	const numKVs = 1000
 	const blobFileID = 100000
-	const numRewrites = 1
+	const numRewrites = 10
 
 	seed := time.Now().UnixNano()
 	seed = 5
@@ -358,7 +358,7 @@ func TestBlobRewriteRandomized(t *testing.T) {
 		// Pick a random subset of the referencing tables to use as remaining
 		// extant references.
 		n := testutils.RandIntInRange(rng, 1, len(fileToRewrite.valueIndices))
-		t.Logf("rewriting file %s with %d extant references", fileToRewrite.metadata.Physical.FileNum, n)
+		t.Logf("rewriting file %s, preserving %d values", fileToRewrite.metadata.Physical.FileNum, n)
 
 		newFile := sourceFile{
 			metadata: manifest.BlobFileMetadata{
@@ -375,7 +375,9 @@ func TestBlobRewriteRandomized(t *testing.T) {
 			newFile.referencingTables[k] = fileToRewrite.referencingTables[j]
 		}
 		slices.Sort(newFile.valueIndices)
-		t.Logf("newFile.valueIndices: %v", newFile.valueIndices)
+		for _, idx := range newFile.valueIndices {
+			t.Logf("newFile.valueIndices: %d: %q; handle: %s", idx, values[idx], handles[idx])
+		}
 
 		rewriter := newBlobFileRewriter(fch, readEnv, blobWriter, newFile.referencingTables, fileToRewrite.metadata)
 		stats, err := rewriter.Rewrite(ctx)

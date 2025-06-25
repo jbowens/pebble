@@ -151,6 +151,9 @@ func (w *FileWriter) AddValue(v []byte) Handle {
 		w.flush()
 	}
 	valuesInBlock := w.valuesEncoder.Count()
+	if len(v) > 0 {
+		fmt.Printf("AddValue(%q) writing to block %d as %d'th value in the block\n", v, w.stats.BlockCount, valuesInBlock)
+	}
 	w.stats.ValueCount++
 	w.stats.UncompressedValueBytes += uint64(len(v))
 	w.valuesEncoder.AddValue(v)

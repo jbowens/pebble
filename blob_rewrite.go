@@ -7,6 +7,7 @@ package pebble
 import (
 	"container/heap"
 	"context"
+	"fmt"
 	"iter"
 	"runtime/pprof"
 	"slices"
@@ -459,6 +460,9 @@ func (rw *blobFileRewriter) copyBlockValues(ctx context.Context, finishedBlock b
 	// Add virtual block mapping.
 	rw.writer.BeginNewVirtualBlock(finishedBlock.blockID)
 	slices.Sort(finishedBlock.liveValueIDs)
+	for range finishedBlock.liveValueIDs[0] {
+		rw.writer.AddValue(nil)
+	}
 	for i, valueID := range finishedBlock.liveValueIDs {
 		if i > 0 && finishedBlock.liveValueIDs[i-1]+1 != valueID {
 			// There's a gap in the referenced value IDs.
@@ -466,11 +470,12 @@ func (rw *blobFileRewriter) copyBlockValues(ctx context.Context, finishedBlock b
 				rw.writer.AddValue(nil)
 			}
 		}
-
-		value, _, err := rw.valueFetcher.Fetch(ctx, rw.inputBlob.FileID, finishedBlock.blockID, blob.BlockValueID(valueID))
+		value, _, err := rw.valueFetcher.Fetch(ctx, rw.inputBlob.FileID,
+			finishedBlock.blockID, blob.BlockValueID(valueID))
 		if err != nil {
 			return err
 		}
+		fmt.Printf("Retrieved value (%d,%d): %q\n", finishedBlock.blockID, valueID, value)
 		rw.writer.AddValue(value)
 	}
 	return nil

@@ -6,6 +6,7 @@ package blob
 
 import (
 	"encoding/binary"
+	"fmt"
 	"unsafe"
 
 	"github.com/cockroachdb/errors"
@@ -100,6 +101,7 @@ func (e *indexBlockEncoder) AddVirtualBlockMapping(
 		panic(errors.AssertionFailedf("virtual block ID %d is out of order; expected %d", virtualBlockID, e.countVirtualBlocks))
 	}
 	for id := BlockID(e.countVirtualBlocks); id <= virtualBlockID; id++ {
+		fmt.Printf("AddVirtualBlockMapping: %d physBlockIndex:%d valueIDOffset:%d\n", id, physicalBlockIndex, valueIDOffset)
 		e.virtualBlocks.Set(int(id), uint64(physicalBlockIndex)|(uint64(valueIDOffset)<<32))
 		e.countVirtualBlocks++
 	}
