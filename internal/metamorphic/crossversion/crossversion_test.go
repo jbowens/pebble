@@ -34,6 +34,7 @@ var (
 	factor       int
 	seed         int64
 	versions     pebbleVersions
+	testDir      string
 	artifactsDir string
 	streamOutput bool
 )
@@ -66,6 +67,9 @@ versions.`)
 moved on failure. Defaults to the current working directory.`)
 	flag.BoolVar(&streamOutput, "stream-output", false,
 		`stream TestMeta output to standard output`)
+	flag.StringVar(&testDir, "test-dir", "",
+		`the path to a directory where the test should be run. Defaults to a
+temporary directory.`)
 }
 
 func reproductionCommand() string {
@@ -95,8 +99,11 @@ func TestMetaCrossVersion(t *testing.T) {
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
-	tempDir := t.TempDir()
-	t.Logf("Test directory: %s\n", tempDir)
+	dir := testDir
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	t.Logf("Test directory: %s\n", dir)
 	t.Logf("Reproduction:\n  %s\n", reproductionCommand())
 
 	// Print all the versions supplied and ensure all the test binaries
@@ -121,7 +128,7 @@ func TestMetaCrossVersion(t *testing.T) {
 	// All randomness should be derived from `seed`. This makes reproducing a
 	// failure locally easier.
 	ctx := context.Background()
-	require.NoError(t, runCrossVersion(ctx, t, tempDir, versions, seed, factor))
+	require.NoError(t, runCrossVersion(ctx, t, dir, versions, seed, factor))
 }
 
 type pebbleVersion struct {
