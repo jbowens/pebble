@@ -206,9 +206,9 @@ func runCrossVersion(
 				nextInitialStates[i], nextInitialStates[j] = nextInitialStates[j], nextInitialStates[i]
 			})
 			// Delete the states that we're not going to use.
-			for _, s := range nextInitialStates[factor:] {
-				require.NoError(t, os.RemoveAll(s.path))
-			}
+			// for _, s := range nextInitialStates[factor:] {
+			// 	require.NoError(t, os.RemoveAll(s.path))
+			// }
 			nextInitialStates = nextInitialStates[:factor]
 		}
 		initialStates = nextInitialStates
