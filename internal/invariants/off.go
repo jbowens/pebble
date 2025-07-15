@@ -6,11 +6,17 @@
 
 package invariants
 
+import (
+	"fmt"
+	"math/rand/v2"
+	"slices"
+)
+
 // Sometimes returns true percent% of the time if invariants are Enabled (i.e.
 // we were built with the "invariants" or "race" build tags). Otherwise, always
 // returns false.
 func Sometimes(percent int) bool {
-	return false
+	return rand.Uint32N(100) < uint32(percent)
 }
 
 // CloseChecker is used to check that objects are closed exactly once. It is
@@ -19,17 +25,35 @@ func Sometimes(percent int) bool {
 // Note that in non-invariant builds, the struct is zero-sized but it can still
 // increase the size of a parent struct if it is the last field (because Go must
 // allow getting a valid pointer address of the field).
-type CloseChecker struct{}
+type CloseChecker struct {
+	closed bool
+}
 
 // Close panics if called twice on the same object (if we were built with the
 // "invariants" or "race" build tags).
-func (d *CloseChecker) Close() {}
+func (d *CloseChecker) Close() {
+	if d.closed {
+		// Note: to debug a double-close, you can add a stack field to CloseChecker
+		// and set it to string(debug.Stack()) in Close, then print that in this
+		// panic.
+		panic("double close")
+	}
+	d.closed = true
+}
 
 // AssertClosed panics in invariant builds if Close was not called.
-func (d *CloseChecker) AssertClosed() {}
+func (d *CloseChecker) AssertClosed() {
+	if !d.closed {
+		panic("not closed")
+	}
+}
 
 // AssertNotClosed panics in invariant builds if Close was called.
-func (d *CloseChecker) AssertNotClosed() {}
+func (d *CloseChecker) AssertNotClosed() {
+	if d.closed {
+		panic("closed")
+	}
+}
 
 // Value is a generic container for a value that should only exist in invariant
 // builds. In non-invariant builds, storing a value is a no-op, retrieving a
@@ -39,35 +63,54 @@ func (d *CloseChecker) AssertNotClosed() {}
 // Note that in non-invariant builds, the struct is zero-sized but it can still
 // increase the size of a parent struct if it is the last field (because Go must
 // allow getting a valid pointer address of the field).
-type Value[V any] struct{}
-
-// Get the current value, or the zero value if invariants are disabled.
-func (*Value[V]) Get() V {
-	var v V // zero value
-	return v
+type Value[V any] struct {
+	v V
 }
 
-// Set the value; no-op in non-invariant builds.
-func (*Value[V]) Set(v V) {}
+// Get the current value, or the zero-value if invariants are disabled.
+func (v *Value[V]) Get() V {
+	return v.v
+}
 
 // BufMangler is a utility that can be used to test that the caller doesn't use
-type BufMangler struct{}
+type BufMangler struct {
+	lastReturnedBuf []byte
+}
 
 // MaybeMangleLater returns either the given buffer or a copy of it which will
 // be mangled the next time this function is called.
 func (bm *BufMangler) MaybeMangleLater(buf []byte) []byte {
+	if bm.lastReturnedBuf != nil {
+		for i := range bm.lastReturnedBuf {
+			bm.lastReturnedBuf[i] = 0xCC
+		}
+		bm.lastReturnedBuf = nil
+	}
+	if rand.Uint32N(2) == 0 {
+		bm.lastReturnedBuf = slices.Clone(buf)
+		return bm.lastReturnedBuf
+	}
 	return buf
+}
+
+// Set the value; no-op in non-invariant builds.
+func (v *Value[V]) Set(inner V) {
+	v.v = inner
 }
 
 // CheckBounds panics if the index is not in the range [0, n). No-op in
 // non-invariant builds.
-func CheckBounds[T Integer](i T, n T) {}
+func CheckBounds[T Integer](i T, n T) {
+	if i < 0 || i >= n {
+		panic(fmt.Sprintf("index %d out of bounds [0, %d)", i, n))
+	}
+}
 
 // SafeSub returns a - b. If a < b, it panics in invariant builds and returns 0
 // in non-invariant builds.
 func SafeSub[T Integer](a, b T) T {
 	if a < b {
-		return 0
+		panic(fmt.Sprintf("underflow: %d - %d", a, b))
 	}
 	return a - b
 }

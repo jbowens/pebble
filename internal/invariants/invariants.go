@@ -16,7 +16,7 @@ import (
 // should not be used to unconditionally alter a code path significantly (e.g.
 // wrapping an iterator - see #3678); Sometimes() should be used instead so that
 // the production code path gets test coverage as well.
-const Enabled = buildtags.Race || buildtags.Invariants
+const Enabled = buildtags.Race || buildtags.Invariants || true
 
 // RaceEnabled is true if we were built with the "race" build tag.
 const RaceEnabled = buildtags.Race
