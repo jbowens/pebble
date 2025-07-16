@@ -8,7 +8,9 @@ import (
 	"encoding/binary"
 	"iter"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/internal/base"
+	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/sstable/blob"
 )
 
@@ -39,6 +41,9 @@ func (s *blobRefValueLivenessState) initNewBlock(refID blob.ReferenceID, blockID
 //
 //	<block ID> <values size> <n bytes of bitmap> [<bitmap>]
 func (s *blobRefValueLivenessState) finishCurrentBlock() {
+	if invariants.Enabled && s.currentBlock.valuesSize == 0 {
+		panic(errors.AssertionFailedf("no pending current block"))
+	}
 	s.finishedBlocks = binary.AppendUvarint(s.finishedBlocks, uint64(s.currentBlock.blockID))
 	s.finishedBlocks = binary.AppendUvarint(s.finishedBlocks, s.currentBlock.valuesSize)
 	s.finishedBlocks = binary.AppendUvarint(s.finishedBlocks, uint64(s.currentBlock.bitmap.Size()))

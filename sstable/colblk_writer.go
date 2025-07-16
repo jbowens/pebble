@@ -1007,16 +1007,18 @@ func (w *RawColumnWriter) Close() (err error) {
 	}
 
 	// Write the blob reference index block if non-empty.
-	if w.blobRefLivenessIndexBlock.numReferences() > 0 {
-		var encoder colblk.ReferenceLivenessBlockEncoder
-		encoder.Init()
-		for refID, buf := range w.blobRefLivenessIndexBlock.finish() {
-			encoder.AddReferenceLiveness(int(refID), buf)
+	/*
+		if w.blobRefLivenessIndexBlock.numReferences() > 0 {
+			var encoder colblk.ReferenceLivenessBlockEncoder
+			encoder.Init()
+			for refID, buf := range w.blobRefLivenessIndexBlock.finish() {
+				encoder.AddReferenceLiveness(int(refID), buf)
+			}
+			if _, err := w.layout.WriteBlobRefIndexBlock(encoder.Finish()); err != nil {
+				return err
+			}
 		}
-		if _, err := w.layout.WriteBlobRefIndexBlock(encoder.Finish()); err != nil {
-			return err
-		}
-	}
+	*/
 
 	// Write the properties block.
 	{
