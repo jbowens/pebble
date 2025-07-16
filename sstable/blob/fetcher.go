@@ -277,6 +277,7 @@ func (cr *cachedReader) GetUnsafeValue(
 		// this case to be rare, and this is a hot path for the more common case
 		// of non-rewritten blob files, so we defer optimizing for now.
 		h := cr.indexBlock.dec.BlockHandle(physicalBlockIndex)
+		cr.currentValueBlock.dec = nil
 		cr.currentValueBlock.buf.Release()
 		cr.currentValueBlock.loaded = false
 		var err error
@@ -307,7 +308,9 @@ func (cfr *cachedReader) Close() (err error) {
 	if cfr.rh != nil {
 		err = cfr.rh.Close()
 	}
+	cfr.indexBlock.dec = nil
 	cfr.indexBlock.buf.Release()
+	cfr.currentValueBlock.dec = nil
 	cfr.currentValueBlock.buf.Release()
 	// Release the cfg.Reader. closeFunc is provided by the file cache and
 	// decrements the refcount on the open file reader.
