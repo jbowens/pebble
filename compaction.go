@@ -311,11 +311,6 @@ type tableCompaction struct {
 	}
 	// iterationState contains state used during compaction iteration.
 	iterationState struct {
-		// bufferPool is a pool of buffers used when reading blocks. Compactions
-		// do not populate the block cache under the assumption that the blocks
-		// we read will soon be irrelevant when their containing sstables are
-		// removed from the LSM.
-		bufferPool sstable.BufferPool
 		// keyspanIterClosers is a list of fragment iterators to close when the
 		// compaction finishes. As iteration opens new keyspan iterators,
 		// elements are appended. Keyspan iterators must remain open for the
@@ -3299,11 +3294,8 @@ func (d *DB) compactAndWrite(
 	// a 12-buffer pool is expected to be within reason, even if all the buffers
 	// grow to the typical size of an index block (256 KiB) which would
 	// translate to 3 MiB per compaction.
-	c.iterationState.bufferPool.Init(12)
-	defer c.iterationState.bufferPool.Release()
 	blockReadEnv := block.ReadEnv{
-		BufferPool: &c.iterationState.bufferPool,
-		Stats:      &c.metrics.internalIterStats,
+		Stats: &c.metrics.internalIterStats,
 		IterStats: d.fileCache.SSTStatsCollector().Accumulator(
 			uint64(uintptr(unsafe.Pointer(c))),
 			categoryCompaction,
