@@ -277,6 +277,9 @@ func (cr *cachedReader) GetUnsafeValue(
 		// this case to be rare, and this is a hot path for the more common case
 		// of non-rewritten blob files, so we defer optimizing for now.
 		h := cr.indexBlock.dec.BlockHandle(physicalBlockIndex)
+		// Nil out the decoder before releasing the buffers to ensure the Go GC
+		// doesn't misinterpret the freed memory backing the decoders.
+		cr.currentValueBlock.dec = nil
 		cr.currentValueBlock.buf.Release()
 		cr.currentValueBlock.loaded = false
 		var err error
@@ -307,6 +310,10 @@ func (cfr *cachedReader) Close() (err error) {
 	if cfr.rh != nil {
 		err = cfr.rh.Close()
 	}
+	// Nil out the decoders before releasing the buffers to ensure the Go GC
+	// doesn't misinterpret the freed memory backing the decoders.
+	cfr.indexBlock.dec = nil
+	cfr.currentValueBlock.dec = nil
 	cfr.indexBlock.buf.Release()
 	cfr.currentValueBlock.buf.Release()
 	// Release the cfg.Reader. closeFunc is provided by the file cache and
