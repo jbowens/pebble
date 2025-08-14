@@ -165,7 +165,13 @@ type singleLevelIterator[I any, PI indexBlockIterator[I], D any, PD dataBlockIte
 	useFilterBlock         bool
 	lastBloomFilterMatched bool
 
-	transforms IterTransforms
+	transforms            IterTransforms
+	maximumSuffixProperty MaximumSuffixProperty
+	synthetic             struct {
+		kv             base.InternalKV
+		seekKey        []byte
+		atSyntheticKey bool
+	}
 
 	// All fields above this field are cleared when resetting the iterator for reuse.
 	clearForResetBoundary struct{}
@@ -276,6 +282,7 @@ func (i *singleLevelIterator[I, PI, D, PD]) init(ctx context.Context, r *Reader,
 	i.reader = r
 	i.cmp = r.Comparer.Compare
 	i.transforms = opts.Transforms
+	i.maximumSuffixProperty = opts.MaximumSuffixProperty
 	i.readEnv = opts.Env
 	i.internalValueConstructor.blobContext = opts.BlobContext
 	i.internalValueConstructor.env = &i.readEnv.Block
@@ -800,6 +807,36 @@ func (i *singleLevelIterator[I, PI, D, PD]) SeekPrefixGE(
 			key = i.lower
 		}
 	}
+	// If there's a maximum suffix property configured and the seek key contains
+	// a suffix (len(key) > len(prefix)), we might be able to defer actually
+	// performing the seek and potentially loading additional blocks.
+	if i.maximumSuffixProperty != nil && len(key) > len(prefix) {
+		prop := i.reader.UserProperties[i.maximumSuffixProperty.Name()]
+		maxSuffix, ok, err := i.maximumSuffixProperty.Extract([]byte(prop))
+		if err != nil {
+			i.err = err
+			return nil
+		}
+		// We have a max suffix. If the seek key's suffix is less than the
+		// table's max suffix, return a synthetic key with that max suffix.
+		// We'll only actually perform the seek if the synthetic key rises to
+		// the top of the iterator's heap, and the iterator is Nexted.
+		if ok && maxSuffix != nil && i.cmp(key[len(prefix):], maxSuffix) < 0 {
+			// Build the synthetic key.
+			i.synthetic.kv.K.UserKey = append(append(i.synthetic.kv.K.UserKey[:0], prefix...), maxSuffix...)
+			i.synthetic.kv.K.Trailer = base.MakeTrailer(base.SeqNumMax, base.InternalKeyKindRangeDelete)
+			i.synthetic.kv.V = base.InternalValue{}
+			i.synthetic.atSyntheticKey = true
+			// TODO(jackson): I think this copy of the seek key is necessary,
+			// but we should confirm and document exactly why--I think the seek
+			// key may be from a range tombstone iterator that is not guaranteed
+			// to still be open by the time singleLevelIterator.Next is called
+			// and we use the seek key to actually perform the seek.
+			i.synthetic.seekKey = append(i.synthetic.seekKey[:0], key...)
+			return &i.synthetic.kv
+		}
+	}
+
 	return i.seekPrefixGE(prefix, key, flags)
 }
 
@@ -1222,6 +1259,11 @@ func (i *singleLevelIterator[I, PI, D, PD]) lastInternal() *base.InternalKV {
 // Note: compactionIterator.Next mirrors the implementation of Iterator.Next
 // due to performance. Keep the two in sync.
 func (i *singleLevelIterator[I, PI, D, PD]) Next() *base.InternalKV {
+	if i.synthetic.atSyntheticKey {
+		i.synthetic.atSyntheticKey = false
+		return i.seekGEHelper(i.synthetic.seekKey, 0, base.SeekGEFlagsNone)
+	}
+
 	if i.exhaustedBounds == +1 {
 		panic("Next called even though exhausted upper bound")
 	}
