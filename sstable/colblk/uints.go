@@ -258,10 +258,10 @@ func (b *UintBuilder) Get(row int) uint64 {
 // Set sets the value of the provided row index to v.
 func (b *UintBuilder) Set(row int, v uint64) {
 	if len(b.elems) <= row {
-		// Double the size of the allocated array, or initialize it to at least 32
-		// values (256 bytes) if this is the first allocation. Then double until
+		// Double the size of the allocated array, or initialize it to at least 64
+		// values (512 bytes) if this is the first allocation. Then double until
 		// there's sufficient space.
-		n2 := max(len(b.elems)<<1, 32)
+		n2 := max(len(b.elems)<<1, 64)
 		for n2 <= row {
 			n2 <<= 1 // double the size
 		}

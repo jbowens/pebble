@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"slices"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/internal/binfmt"
@@ -149,6 +150,7 @@ var _ ColumnWriter = (*RawBytesBuilder)(nil)
 func (b *RawBytesBuilder) Init() {
 	b.offsets.Init()
 	b.Reset()
+	b.data = slices.Grow(b.data, 1024)
 }
 
 // Reset resets the builder to an empty state.
