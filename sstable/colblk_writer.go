@@ -104,6 +104,7 @@ type RawColumnWriter struct {
 	}
 	layout layoutWriter
 
+	propsBlockWriter      colblk.KeyValueBlockWriter
 	lastKeyBuf            []byte
 	separatorBuf          []byte
 	tmp                   [blockHandleLikelyMaxLen]byte
@@ -1035,10 +1036,9 @@ func (w *RawColumnWriter) Close() (err error) {
 		w.props.CompressionStats = w.layout.physBlockMaker.Compressor.Stats().String()
 		var toWrite []byte
 		if w.opts.TableFormat >= TableFormatPebblev7 {
-			var cw colblk.KeyValueBlockWriter
-			cw.Init()
-			w.props.saveToColWriter(w.opts.TableFormat, &cw)
-			toWrite = cw.Finish(cw.Rows())
+			w.propsBlockWriter.Init()
+			w.props.saveToColWriter(w.opts.TableFormat, &w.propsBlockWriter)
+			toWrite = w.propsBlockWriter.Finish(w.propsBlockWriter.Rows())
 		} else {
 			var raw rowblk.Writer
 			// The restart interval is set to infinity because the properties block
