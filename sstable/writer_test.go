@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"iter"
 	"math/rand/v2"
 	"strconv"
 	"strings"
@@ -1192,6 +1193,16 @@ func TestObsoleteBlockPropertyCollectorFilter(t *testing.T) {
 	finishAndCheck(c.FinishTable, false)
 }
 
+func tableFormatsToBench() iter.Seq[TableFormat] {
+	return func(yield func(TableFormat) bool) {
+		for tf := TableFormatPebblev2; tf <= TableFormatMax; tf++ {
+			if !yield(tf) {
+				return
+			}
+		}
+	}
+}
+
 func BenchmarkWriter(b *testing.B) {
 	keys := make([][]byte, 1e6)
 	const keyLen = 24
@@ -1203,7 +1214,7 @@ func BenchmarkWriter(b *testing.B) {
 		binary.BigEndian.PutUint64(key[16:], uint64(i))
 		keys[i] = key
 	}
-	for _, format := range []TableFormat{TableFormatPebblev2, TableFormatPebblev3, TableFormatPebblev5, TableFormatPebblev6} {
+	for format := range tableFormatsToBench() {
 		b.Run(fmt.Sprintf("format=%s", format.String()), func(b *testing.B) {
 			runWriterBench(b, keys, nil, format)
 		})
@@ -1230,7 +1241,7 @@ func BenchmarkWriterWithVersions(b *testing.B) {
 		// TableFormatPebblev2, since testkeys.Compare is expensive (mainly due to
 		// split) and with v3 we have to call it twice for 50% of the Set calls,
 		// since they have the same prefix as the preceding key.
-		for _, format := range []TableFormat{TableFormatPebblev2, TableFormatPebblev3, TableFormatPebblev5, TableFormatPebblev6} {
+		for format := range tableFormatsToBench() {
 			b.Run(fmt.Sprintf("vals-per-key=%d/format=%s", valsPerKey, format.String()), func(b *testing.B) {
 				runWriterBench(b, keys, testkeys.Comparer, format)
 			})
