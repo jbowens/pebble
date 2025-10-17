@@ -6,8 +6,8 @@ sync: .
 close: .
 open-dir: db
 close: db
-open-dir: db
 lock: db/LOCK
+open-dir: db
 open-dir: db
 open-dir: db
 open-dir: db
@@ -345,8 +345,8 @@ marker.manifest.000001.MANIFEST-000001
 
 open checkpoints/checkpoint1 readonly
 ----
-open-dir: checkpoints/checkpoint1
 lock: checkpoints/checkpoint1/LOCK
+open-dir: checkpoints/checkpoint1
 open-dir: checkpoints/checkpoint1
 open-dir: checkpoints/checkpoint1
 open-dir: checkpoints/checkpoint1
@@ -412,8 +412,8 @@ marker.manifest.000001.MANIFEST-000001
 
 open checkpoints/checkpoint2 readonly
 ----
-open-dir: checkpoints/checkpoint2
 lock: checkpoints/checkpoint2/LOCK
+open-dir: checkpoints/checkpoint2
 open-dir: checkpoints/checkpoint2
 open-dir: checkpoints/checkpoint2
 open-dir: checkpoints/checkpoint2
@@ -454,8 +454,8 @@ marker.manifest.000001.MANIFEST-000001
 
 open checkpoints/checkpoint3 readonly
 ----
-open-dir: checkpoints/checkpoint3
 lock: checkpoints/checkpoint3/LOCK
+open-dir: checkpoints/checkpoint3
 open-dir: checkpoints/checkpoint3
 open-dir: checkpoints/checkpoint3
 open-dir: checkpoints/checkpoint3
@@ -597,8 +597,8 @@ close: checkpoints/checkpoint4
 
 open checkpoints/checkpoint4 readonly
 ----
-open-dir: checkpoints/checkpoint4
 lock: checkpoints/checkpoint4/LOCK
+open-dir: checkpoints/checkpoint4
 open-dir: checkpoints/checkpoint4
 open-dir: checkpoints/checkpoint4
 open-dir: checkpoints/checkpoint4
@@ -712,8 +712,8 @@ sync: checkpoints
 close: checkpoints
 open-dir: checkpoints/checkpoint5
 close: checkpoints/checkpoint5
-open-dir: checkpoints/checkpoint5
 lock: checkpoints/checkpoint5/LOCK
+open-dir: checkpoints/checkpoint5
 open-dir: checkpoints/checkpoint5
 open-dir: checkpoints/checkpoint5
 open-dir: checkpoints/checkpoint5
@@ -814,8 +814,8 @@ sync: checkpoints
 close: checkpoints
 open-dir: checkpoints/checkpoint6
 close: checkpoints/checkpoint6
-open-dir: checkpoints/checkpoint6
 lock: checkpoints/checkpoint6/LOCK
+open-dir: checkpoints/checkpoint6
 open-dir: checkpoints/checkpoint6
 open-dir: checkpoints/checkpoint6
 open-dir: checkpoints/checkpoint6
@@ -903,8 +903,8 @@ sync: .
 close: .
 open-dir: valsepdb
 close: valsepdb
-open-dir: valsepdb
 lock: valsepdb/LOCK
+open-dir: valsepdb
 open-dir: valsepdb
 open-dir: valsepdb
 open-dir: valsepdb
@@ -1070,8 +1070,8 @@ close: checkpoints/checkpoint8
 
 open checkpoints/checkpoint8 readonly
 ----
-open-dir: checkpoints/checkpoint8
 lock: checkpoints/checkpoint8/LOCK
+open-dir: checkpoints/checkpoint8
 open-dir: checkpoints/checkpoint8
 open-dir: checkpoints/checkpoint8
 open-dir: checkpoints/checkpoint8
@@ -1182,8 +1182,8 @@ close: checkpoints/checkpoint9
 
 open checkpoints/checkpoint9 readonly
 ----
-open-dir: checkpoints/checkpoint9
 lock: checkpoints/checkpoint9/LOCK
+open-dir: checkpoints/checkpoint9
 open-dir: checkpoints/checkpoint9
 open-dir: checkpoints/checkpoint9
 open-dir: checkpoints/checkpoint9

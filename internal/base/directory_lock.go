@@ -5,8 +5,10 @@
 package base
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/cockroachdb/errors"
@@ -14,9 +16,14 @@ import (
 	"github.com/cockroachdb/pebble/vfs"
 )
 
-// AcquireOrValidateDirectoryLock attempts to acquire a lock on the
-// provided directory, or validates a pre-acquired DirLock.
-func AcquireOrValidateDirectoryLock(
+// DirLockSet maintains a set of directory locks that have been acquired.
+type DirLockSet struct {
+	acquired []*DirLock
+}
+
+// AcquireOrValidate attempts to acquire a lock on the provided directory, or
+// validates a pre-acquired DirLock.
+func (s *DirLockSet) AcquireOrValidate(
 	preAcquiredLock *DirLock, dirname string, fs vfs.FS,
 ) (*DirLock, error) {
 	// If a pre-acquired lock is provided, check that it matches the directory
@@ -25,11 +32,36 @@ func AcquireOrValidateDirectoryLock(
 		if err := preAcquiredLock.pathMatches(dirname); err != nil {
 			return preAcquiredLock, err
 		}
-		return preAcquiredLock, preAcquiredLock.refForOpen()
+		if err := preAcquiredLock.refForOpen(); err != nil {
+			return nil, err
+		}
+		s.acquired = append(s.acquired, preAcquiredLock)
+		return preAcquiredLock, nil
 	}
-
+	// If we already have a lock with this dirname, return it.
+	for _, l := range s.acquired {
+		if l.dirname == dirname {
+			return l, nil
+		}
+	}
 	// Otherwise, acquire the lock for the directory.
-	return LockDirectory(dirname, fs)
+	l, err := LockDirectory(dirname, fs)
+	if err != nil {
+		return nil, err
+	}
+	s.acquired = append(s.acquired, l)
+	return l, nil
+}
+
+// Close closes all locks that were acquired by a call to
+// AcquireOrValidateDirectoryLock.
+func (s *DirLockSet) Close() error {
+	var err error
+	for _, l := range s.acquired {
+		err = errors.CombineErrors(err, l.Close())
+	}
+	s.acquired = nil
+	return err
 }
 
 // LockDirectory acquires the directory lock in the named directory, preventing
@@ -44,13 +76,19 @@ func LockDirectory(dirname string, fs vfs.FS) (*DirLock, error) {
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("LockDirectory(%q) acquired ref 1\n", dirname)
 	l := &DirLock{dirname: dirname, fileLock: fileLock}
 	l.refs.Store(1)
-	invariants.SetFinalizer(l, func(obj interface{}) {
-		if refs := obj.(*DirLock).refs.Load(); refs > 0 {
-			panic(errors.AssertionFailedf("lock for %q finalized with %d refs", dirname, refs))
-		}
-	})
+	if invariants.Enabled {
+		// Capture the stack trace during invariant builds for debugging.
+		acquireStack := debug.Stack()
+		invariants.SetFinalizer(l, func(obj interface{}) {
+			if refs := obj.(*DirLock).refs.Load(); refs > 0 {
+				panic(errors.AssertionFailedf("lock for %q finalized with %d\nacquired:\n%s",
+					dirname, refs, string(acquireStack)))
+			}
+		})
+	}
 	return l, nil
 }
 
@@ -80,6 +118,7 @@ func (l *DirLock) refForOpen() error {
 	if !l.refs.CompareAndSwap(1, 2) {
 		return errors.Errorf("pebble: unexpected %q DirLock reference count; is the lock already in use?", l.dirname)
 	}
+	fmt.Printf("LockDirectory(%q) acquired ref 2\n", l.dirname)
 	return nil
 }
 
@@ -94,10 +133,12 @@ func (l *DirLock) Refs() int {
 func (l *DirLock) Close() error {
 	v := l.refs.Add(-1)
 	if v > 0 {
+		fmt.Printf("DirLock{%q}.Close() released ref 2\n", l.dirname)
 		return nil
 	} else if v < 0 {
 		return errors.AssertionFailedf("pebble: unexpected %q DirLock reference count %d", l.dirname, v)
 	}
+	fmt.Printf("DirLock{%q}.Close() released ref 1\n", l.dirname)
 	defer func() { l.fileLock = nil }()
 	return l.fileLock.Close()
 }

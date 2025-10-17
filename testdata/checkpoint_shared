@@ -6,8 +6,8 @@ sync: .
 close: .
 open-dir: db
 close: db
-open-dir: db
 lock: db/LOCK
+open-dir: db
 open-dir: db
 open-dir: db
 open-dir: db
@@ -324,8 +324,8 @@ marker.remote-obj-catalog.000001.REMOTE-OBJ-CATALOG-000001
 
 open checkpoints/checkpoint1 readonly
 ----
-open-dir: checkpoints/checkpoint1
 lock: checkpoints/checkpoint1/LOCK
+open-dir: checkpoints/checkpoint1
 open-dir: checkpoints/checkpoint1
 open-dir: checkpoints/checkpoint1
 open-dir: checkpoints/checkpoint1
@@ -376,8 +376,8 @@ marker.remote-obj-catalog.000001.REMOTE-OBJ-CATALOG-000001
 
 open checkpoints/checkpoint2 readonly
 ----
-open-dir: checkpoints/checkpoint2
 lock: checkpoints/checkpoint2/LOCK
+open-dir: checkpoints/checkpoint2
 open-dir: checkpoints/checkpoint2
 open-dir: checkpoints/checkpoint2
 open-dir: checkpoints/checkpoint2
