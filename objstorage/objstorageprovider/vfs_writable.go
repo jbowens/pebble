@@ -12,6 +12,9 @@ import (
 	"github.com/cockroachdb/pebble/vfs"
 )
 
+// Assert that *vfs.RingWriter implements objstorage.Writable.
+var _ objstorage.Writable = (*vfs.RingWriter)(nil)
+
 // NewFileWritable returns a Writable that uses a file as underlying storage.
 func NewFileWritable(file vfs.File) objstorage.Writable {
 	return newFileBufferedWritable(file)
