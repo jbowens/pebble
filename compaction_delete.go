@@ -104,51 +104,62 @@ func newDeleteOnlyCompaction(
 	return c
 }
 
-// deleteCompactionHintType indicates whether the deleteCompactionHint was
-// generated from a span containing a range del (point key only), a range key
-// delete (range key only), or both a point and range key.
-type deleteCompactionHintType uint8
+// tombstoneType indicates whether described tombstone(s) are RANGEDELs (which
+// only delete point keys), RANGEKEYDELs (which only delete range keys), or
+// both.
+type tombstoneType uint8
 
 const (
 	// NOTE: While these are primarily used as enumeration types, they are also
 	// used for some bitwise operations. Care should be taken when updating.
-	deleteCompactionHintTypeUnknown deleteCompactionHintType = iota
-	deleteCompactionHintTypePointKeyOnly
-	deleteCompactionHintTypeRangeKeyOnly
-	deleteCompactionHintTypePointAndRangeKey
+	tombstoneTypeUnknown tombstoneType = iota
+	tombstoneTypePointKeyOnly
+	tombstoneTypeRangeKeyOnly
+	tombstoneTypePointAndRangeKey
 )
 
+func (tt tombstoneType) keyKindsOverlap(m *manifest.TableMetadata) bool {
+	switch tt {
+	case tombstoneTypePointKeyOnly:
+		return m.HasPointKeys
+	case tombstoneTypeRangeKeyOnly:
+		return m.HasRangeKeys
+	case tombstoneTypePointAndRangeKey:
+		return true
+	}
+	return false
+}
+
 // String implements fmt.Stringer.
-func (h deleteCompactionHintType) String() string {
-	switch h {
-	case deleteCompactionHintTypeUnknown:
+func (tt tombstoneType) String() string {
+	switch tt {
+	case tombstoneTypeUnknown:
 		return "unknown"
-	case deleteCompactionHintTypePointKeyOnly:
+	case tombstoneTypePointKeyOnly:
 		return "point-key-only"
-	case deleteCompactionHintTypeRangeKeyOnly:
+	case tombstoneTypeRangeKeyOnly:
 		return "range-key-only"
-	case deleteCompactionHintTypePointAndRangeKey:
+	case tombstoneTypePointAndRangeKey:
 		return "point-and-range-key"
 	default:
-		panic(fmt.Sprintf("unknown hint type: %d", h))
+		panic(fmt.Sprintf("unknown hint type: %d", tt))
 	}
 }
 
-// compactionHintFromKeys returns a deleteCompactionHintType given a slice of
-// keyspan.Keys.
-func compactionHintFromKeys(keys []keyspan.Key) deleteCompactionHintType {
-	var hintType deleteCompactionHintType
+// tombstoneTypeFromKeys returns a tombstoneType given a slice of keyspan.Keys.
+func tombstoneTypeFromKeys(keys []keyspan.Key) tombstoneType {
+	var tombType tombstoneType
 	for _, k := range keys {
 		switch k.Kind() {
 		case base.InternalKeyKindRangeDelete:
-			hintType |= deleteCompactionHintTypePointKeyOnly
+			tombType |= tombstoneTypePointKeyOnly
 		case base.InternalKeyKindRangeKeyDelete:
-			hintType |= deleteCompactionHintTypeRangeKeyOnly
+			tombType |= tombstoneTypeRangeKeyOnly
 		default:
-			panic(fmt.Sprintf("unsupported key kind: %s", k.Kind()))
+			panic(errors.AssertionFailedf("unsupported key kind: %s", k.Kind()))
 		}
 	}
-	return hintType
+	return tombType
 }
 
 // A deleteCompactionHint records a user key and sequence number span that has been
@@ -158,9 +169,9 @@ func compactionHintFromKeys(keys []keyspan.Key) deleteCompactionHintType {
 // into the same snapshot stripe, a delete-only compaction may delete any
 // sstables within the range.
 type deleteCompactionHint struct {
-	// The type of key span that generated this hint (point key, range key, or
-	// both).
-	hintType deleteCompactionHintType
+	// The type of tombstones within this span that generated this hint
+	// (RANGEDEL, RANGEKEYDEL, or both).
+	tombstoneType tombstoneType
 	// start and end are user keys specifying a key range [start, end) of
 	// deleted keys.
 	start []byte
@@ -178,13 +189,6 @@ type deleteCompactionHint struct {
 	// tombstone largest sequence number to be deleted.
 	tombstoneLargestSeqNum  base.SeqNum
 	tombstoneSmallestSeqNum base.SeqNum
-	// The smallest sequence number of a sstable that was found to be covered
-	// by this hint. The hint cannot be resolved until this sequence number is
-	// in the same snapshot stripe as the largest tombstone sequence number.
-	// This is set when a hint is created, so the LSM may look different and
-	// notably no longer contain the sstable that contained the key at this
-	// sequence number.
-	fileSmallestSeqNum base.SeqNum
 }
 
 type deletionHintOverlap int8
@@ -201,11 +205,9 @@ const (
 
 func (h deleteCompactionHint) String() string {
 	return fmt.Sprintf(
-		"L%d.%s %s-%s seqnums(tombstone=%d-%d, file-smallest=%d, type=%s)",
+		"L%d.%s %s-%s seqnums(tombstone=%d-%d, type=%s)",
 		h.tombstoneLevel, h.tombstoneFile.TableNum, h.start, h.end,
-		h.tombstoneSmallestSeqNum, h.tombstoneLargestSeqNum, h.fileSmallestSeqNum,
-		h.hintType,
-	)
+		h.tombstoneSmallestSeqNum, h.tombstoneLargestSeqNum, h.tombstoneType)
 }
 
 func (h *deleteCompactionHint) canDeleteOrExcise(
@@ -221,7 +223,7 @@ func (h *deleteCompactionHint) canDeleteOrExcise(
 	// avoid this error, the largest pre-zeroing sequence number is maintained
 	// in LargestSeqNumAbsolute and used here to make the determination whether
 	// the file's keys are older than all of the hint's tombstones.
-	if m.LargestSeqNumAbsolute >= h.tombstoneSmallestSeqNum || m.SmallestSeqNum < h.fileSmallestSeqNum {
+	if m.LargestSeqNumAbsolute >= h.tombstoneSmallestSeqNum {
 		return hintDoesNotApply
 	}
 
@@ -234,25 +236,25 @@ func (h *deleteCompactionHint) canDeleteOrExcise(
 		return hintDoesNotApply
 	}
 
-	switch h.hintType {
-	case deleteCompactionHintTypePointKeyOnly:
+	switch h.tombstoneType {
+	case tombstoneTypePointKeyOnly:
 		// A hint generated by a range del span cannot delete tables that contain
 		// range keys.
 		if m.HasRangeKeys {
 			return hintDoesNotApply
 		}
-	case deleteCompactionHintTypeRangeKeyOnly:
+	case tombstoneTypeRangeKeyOnly:
 		// A hint generated by a range key del span cannot delete tables that
 		// contain point keys.
 		if m.HasPointKeys {
 			return hintDoesNotApply
 		}
-	case deleteCompactionHintTypePointAndRangeKey:
+	case tombstoneTypePointAndRangeKey:
 		// A hint from a span that contains both range dels *and* range keys can
 		// only be deleted if both bounds fall within the hint. The next check takes
 		// care of this.
 	default:
-		panic(fmt.Sprintf("pebble: unknown delete compaction hint type: %d", h.hintType))
+		panic(errors.AssertionFailedf("unknown tombstone type: %s", h.tombstoneType))
 	}
 	if cmp(h.start, m.Smallest().UserKey) <= 0 &&
 		base.UserKeyExclusive(h.end).CompareUpperBounds(cmp, m.UserKeyBounds().End) >= 0 {
@@ -339,7 +341,7 @@ func checkDeleteCompactionHints(
 		// ______________________________________________________________
 		//     a b c d e f g h i j k l m n o p q r s t u v w x y z
 
-		if snapshots.Index(h.tombstoneLargestSeqNum) != snapshots.Index(h.fileSmallestSeqNum) ||
+		if snapshots.Index(h.tombstoneLargestSeqNum) != 0 ||
 			(len(resolvedHints) >= maxHintsPerDeleteOnlyCompaction && exciseEnabled) {
 			// Cannot resolve yet.
 			unresolvedHints = append(unresolvedHints, h)
